@@ -1,0 +1,74 @@
+name: cinema-ticketing
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cinema}
+      POSTGRES_USER: ${POSTGRES_USER:-cinema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinema_local_only}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.6-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:17.6-alpine
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-cinema}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-cinema_local_only}
+      DB_NAME: ${POSTGRES_DB:-cinema}
+      MIGRATIONS_DIR: /workspace/db/migrations
+      MIGRATION_DIRECTION: ${MIGRATION_DIRECTION:-up}
+    volumes:
+      - ./db:/workspace/db:ro
+      - ./scripts/migrations:/workspace/scripts/migrations:ro
+    entrypoint: ["/bin/sh", "/workspace/scripts/migrations/apply.sh"]
+
+  migration-verify:
+    image: postgres:17.6-alpine
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-cinema}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-cinema_local_only}
+      DB_NAME: cinema_m0_verify
+      MIGRATIONS_DIR: /workspace/db/migrations
+    volumes:
+      - ./db:/workspace/db:ro
+      - ./scripts/migrations:/workspace/scripts/migrations:ro
+    entrypoint: ["/bin/sh", "/workspace/scripts/migrations/verify_migrations.sh"]
+
+volumes:
+  postgres-data:
+  redis-data:

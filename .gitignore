@@ -1,0 +1,21 @@
+# Environment and local overrides
+.env
+.env.*
+
+# Go
+bin/
+coverage.out
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local logs
+*.log
