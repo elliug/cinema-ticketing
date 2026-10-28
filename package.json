@@ -1,0 +1,13 @@
+{
+  "name": "cinema-ticketing",
+  "private": true,
+  "packageManager": "pnpm@12.15.0",
+  "scripts": {
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:test": "pnpm --dir apps/web test",
+    "web:lint": "pnpm --dir apps/web lint",
+    "web:typecheck": "pnpm --dir apps/web typecheck",
+    "web:build": "pnpm --dir apps/web build",
+    "check": "pnpm web:test && pnpm web:lint && pnpm web:typecheck && pnpm web:build"
+  }
+}
