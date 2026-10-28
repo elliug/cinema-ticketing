@@ -18,7 +18,7 @@ M0 establishes a runnable monorepo baseline without implementing venue, layout, 
 - T2 — S2, S4 — Go API skeleton, module boundaries, configuration, health endpoints, and tests — gentle-ai-worker + parent verification — complete; `go test ./apps/api/...` and `go vet ./apps/api/...` passed — commit: `feat(api): add M0 service foundation`
 - T3 — S2, S5 — Next.js web skeleton, health UI, and checks — gentle-ai-worker + parent verification — complete; test, lint, typecheck, and production build passed — commit: `feat(web): add M0 application foundation`
 - T4 — S2, S6 — PostgreSQL/Redis local dependencies, reversible migrations, and verification scripts — gentle-ai-worker + parent correction/verification — complete; live service health and migration up/down/up passed — commit: `feat(foundation): complete M0 operations baseline`
-- T5 — S2 — CI baseline, developer commands, documentation, and end-to-end M0 verification — parent inline — complete; `make verify-m0` passed — commit: `feat(foundation): complete M0 operations baseline`
+- T5 — S2 — CI baseline, developer commands, documentation, and end-to-end M0 verification — parent inline — complete; local `make verify-m0` and remote GitHub Actions passed without actionable annotations — commits: `feat(foundation): complete M0 operations baseline`, `ci: update action runtimes` (`3005cea`)
 - T6 — S3 — deterministic concurrency acceptance-test contract for M2 — parent inline — complete; deterministic RED observed and contract documented — commit: `feat(api): add M0 service foundation`
 
 ## Log
@@ -35,3 +35,5 @@ M0 establishes a runnable monorepo baseline without implementing venue, layout, 
 - L10 — Runtime readiness now uses real TCP probes for configured PostgreSQL and Redis addresses; focused RED/GREEN tests passed.
 - L11 — Final `make verify-m0` passed backend tests/vet, web test/lint/typecheck/build, live migration up/down/up, and exact API/web health smoke checks.
 - L12 — M2 concurrency contract remains intentionally RED until the reservation endpoint and fixture exist.
+- L13 — GitHub Actions run 40632275005 passed, with actionable annotations for Node 20-based action versions and Go cache restoration without `go.sum`; T5 reopened for a minimal CI follow-up.
+- L14 — Follow-up commit `3005cea` updated checkout/setup actions to Node 24-capable majors and disabled empty Go caching; GitHub Actions job 122632142555 passed. The remaining `ubuntu-latest` migration notice is runner-provider information, not a project defect.
