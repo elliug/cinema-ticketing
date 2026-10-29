@@ -25,7 +25,12 @@ trap cleanup EXIT INT TERM
 case "$db" in cinema_m1_smoke_[0-9]*) ;; *) fail "refusing to drop an unexpected database name" ;; esac
 
 cd "$root"
-$compose up -d postgres >/dev/null
+# On a fresh volume the container is still running initdb right after `up -d`,
+# and its temporary server makes readiness flap, so `createdb` can fail on a
+# missing socket. Wait for the declared healthcheck before touching the
+# database; compose v2 is required for `--wait`.
+$compose up -d --wait postgres >/dev/null \
+  || fail "postgres did not become healthy"
 $compose exec -T postgres createdb -U cinema "$db"
 for migration in 0001_init 0002_venue_layout; do
   $compose exec -T postgres psql -q -X -v ON_ERROR_STOP=1 -U cinema -d "$db" \
