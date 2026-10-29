@@ -38,3 +38,9 @@ jobs:
 
       - name: Verify M1 venue and layout flow
         run: make verify-m1
+
+      # The milestone's exit evidence: one winner in sixteen contenders, the
+      # durable expiry worker, and recovery after a killed sweep. It needs the
+      # compose dependencies, which the previous steps already started.
+      - name: Verify M2 reservation core
+        run: make verify-m2
