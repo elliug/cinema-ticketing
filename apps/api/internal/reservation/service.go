@@ -129,6 +129,11 @@ type Store interface {
 	RecordHold(ctx context.Context, hold Hold, record IdempotencyRecord) error
 	// ListSeatAvailability reads every seat of one event with its occupancy.
 	ListSeatAvailability(ctx context.Context, eventID string) ([]SeatAvailability, error)
+	// ExpireHolds runs one durable expiry sweep: it releases the seat rows of at
+	// most batch expired holds, marks those holds expired, and prunes the
+	// idempotency records whose retention deadline passed, all in one
+	// transaction.
+	ExpireHolds(ctx context.Context, now time.Time, batch int) (ExpiryResult, error)
 }
 
 // Service creates holds and reports seat availability.
@@ -240,6 +245,23 @@ func (s *Service) ListAvailability(ctx context.Context, eventID string) ([]SeatA
 		return nil, mapDurableError(err)
 	}
 	return seats, nil
+}
+
+// ExpireHolds runs one durable expiry sweep over the durable store.
+//
+// The sweep itself keeps no state between calls: the cadence, the batch size and
+// the loop that keeps sweeping while More is reported belong to the process
+// wiring. A caller may stop after any batch and a restarted process resumes from
+// the durable rows alone, which is what makes the sweep restart-safe.
+func (s *Service) ExpireHolds(ctx context.Context, now time.Time, batch int) (ExpiryResult, error) {
+	if err := validateSweepParams(now, batch); err != nil {
+		return ExpiryResult{}, err
+	}
+	result, err := s.store.ExpireHolds(ctx, now, batch)
+	if err != nil {
+		return ExpiryResult{}, mapDurableError(err)
+	}
+	return result, nil
 }
 
 // storedResult answers a request from its durable idempotency record. It

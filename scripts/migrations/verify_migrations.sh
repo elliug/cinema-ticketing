@@ -9,6 +9,7 @@ MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
 M1_TEST_FILE="${M1_TEST_FILE:-/workspace/tests/migrations/m1_schema.sql}"
 M2_TEST_FILE="${M2_TEST_FILE:-/workspace/tests/migrations/m2_schema.sql}"
 IDEMPOTENCY_TEST_FILE="${IDEMPOTENCY_TEST_FILE:-/workspace/tests/migrations/m2_idempotency.sql}"
+EXPIRY_TEST_FILE="${EXPIRY_TEST_FILE:-/workspace/tests/migrations/m2_expiry.sql}"
 
 log() { printf '[migrations] %s\n' "$*"; }
 fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -19,6 +20,8 @@ test -r "$MIGRATIONS_DIR/0001_init.down.sql" || fail "missing 0001_init.down.sql
 test -r "$MIGRATIONS_DIR/0002_venue_layout.up.sql" || fail "missing 0002_venue_layout.up.sql"
 test -r "$MIGRATIONS_DIR/0002_venue_layout.down.sql" || fail "missing 0002_venue_layout.down.sql"
 test -r "$M1_TEST_FILE" || fail "missing M1 schema test"
+test -r "$IDEMPOTENCY_TEST_FILE" || fail "missing M2 idempotency test"
+test -r "$EXPIRY_TEST_FILE" || fail "missing M2 expiry sweep test"
 test -r "$MIGRATIONS_DIR/0003_reservation.up.sql" || fail "missing 0003_reservation.up.sql"
 test -r "$MIGRATIONS_DIR/0003_reservation.down.sql" || fail "missing 0003_reservation.down.sql"
 test -r "$M2_TEST_FILE" || fail "missing M2 schema test"
@@ -127,6 +130,7 @@ log "M0, M1 and M2 up/down/up verification passed"
 log "applying 0004_idempotency"
 psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.up.sql"
 psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
+psql_target -q -f "$EXPIRY_TEST_FILE"
 assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
 log "rolling back 0004_idempotency"
 psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.down.sql"
@@ -136,5 +140,6 @@ psql_target -q -f "$M2_TEST_FILE"
 log "reapplying 0004_idempotency"
 psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.up.sql"
 psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
+psql_target -q -f "$EXPIRY_TEST_FILE"
 assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
-log "M0, M1, M2 and M2 idempotency up/down/up verification passed"
+log "M0, M1, M2, M2 idempotency and M2 expiry sweep up/down/up verification passed"

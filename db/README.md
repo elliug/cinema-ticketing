@@ -33,7 +33,67 @@ Both rules are pinned by `tests/migrations/m2_schema.sql`. Released rows are kep
 
 The key is the primary key, so the database decides the winner between two concurrent requests that carry the same key: the loser gets a `unique_violation` on `idempotency_keys_pkey` and the API answers it from the stored record or rejects it as a reused key with a different payload. A record and its reservation are written in one transaction, so a hold and the record that replays it can never disagree.
 
-Only successful holds are recorded. A request that lost a seat conflict is re-evaluated on retry, because storing its failure would keep reporting a conflict after the seats were freed. `expires_at` exists so records can be pruned; the retention sweep belongs to the durable expiry worker. Both the record shape and the availability predicate are pinned by `tests/migrations/m2_idempotency.sql`, which contains the same availability query the API runs.
+Only successful holds are recorded. A request that lost a seat conflict is re-evaluated on retry, because storing its failure would keep reporting a conflict after the seats were freed. `expires_at` exists so records can be pruned by the durable expiry sweep (see below), which never prunes a record whose hold is still live. Both the record shape and the availability predicate are pinned by `tests/migrations/m2_idempotency.sql`, which contains the same availability query the API runs.
+
+## Durable expiry sweep (M2)
+
+Expiry is lazy in the schema: a hold whose `expires_at` has passed stops counting as held immediately (availability checks the deadline), and a re-claim of the seat frees it through the claim trigger. What is left is the durable cleanup of holds nobody re-claims, plus the retention deadline of the idempotency records. That is one sweep, implemented by `PostgresStore.ExpireHolds` in `apps/api/internal/reservation/expiry.go` and driven by the process wiring (the cadence and the batch size are configuration, not schema).
+
+The sweep is a single transaction of four statements, and it visits the same tables in the order a claim takes them (`idempotency_keys`, `reservations`, `reservation_seats`). The table order matches but the row order does not: a claim locks its seats in ascending `event_seat_id` order while the seat update locks the rows of its reservation ids in plan order, so a collision with a multi-seat claim can deadlock (`40P01`). That is expected and harmless: the batch is retried up to three times, and a rolled back attempt changed nothing.
+
+1. Prune the idempotency records past their retention deadline, at most one batch:
+
+   ```sql
+   WITH prunable AS (
+     SELECT idempotency_key
+     FROM cinema.idempotency_keys
+     WHERE expires_at <= $1          -- retention deadline passed
+       AND hold_expires_at <= $1     -- and its hold is no longer live either
+     ORDER BY expires_at, idempotency_key
+     LIMIT $2
+     FOR UPDATE SKIP LOCKED
+   )
+   DELETE FROM cinema.idempotency_keys k USING prunable p
+   WHERE k.idempotency_key = p.idempotency_key
+   ```
+
+2. Lock at most one batch of holds whose window elapsed, oldest deadline first:
+
+   ```sql
+   SELECT r.id::text
+   FROM cinema.reservations r
+   WHERE r.status IN ('held', 'payment_pending')
+     AND r.expires_at <= $1
+   ORDER BY r.expires_at, r.id
+   LIMIT $2
+   FOR NO KEY UPDATE SKIP LOCKED
+   ```
+
+3. Release the seat rows of exactly those holds, keeping a row that is already released:
+
+   ```sql
+   UPDATE cinema.reservation_seats
+   SET released_at = $1
+   WHERE released_at IS NULL
+     AND reservation_id = ANY($2::uuid[])
+   ```
+
+4. Close the holds themselves, without ever rewriting another status:
+
+   ```sql
+   UPDATE cinema.reservations
+   SET status = 'expired'
+   WHERE id = ANY($1::uuid[])
+     AND status IN ('held', 'payment_pending')
+   ```
+
+Why this is safe and restart-safe:
+
+- **One transaction per batch.** A process killed between batches leaves the previous batches committed and nothing half-done, so a restarted process resumes from the rows alone. No in-memory state is needed for correctness.
+- **Idempotent by predicate.** A second sweep on the same data selects nothing, because the first one already moved those rows out of the held set. A hold that is partially released (a re-claim takeover freed some of its seats) still expires, and the seats that are already free keep their original `released_at`.
+- **`SKIP LOCKED` divides the work between sweeps.** Two instances running the sweep concurrently lock disjoint sets of rows instead of waiting for each other, so nothing is expired twice and two sweeps cannot deadlock. A sweep colliding with a live claim is a different case: it can deadlock, and the bounded retry covers it. `FOR NO KEY UPDATE` is the weakest lock that still excludes a second sweep, and unlike `FOR UPDATE` it does not block the `KEY SHARE` lock a claim takes on the reservation its idempotency record references.
+- **`cancelled` is never touched**, because only `held` and `payment_pending` rows are selected and the status is re-checked in the update.
+- **The deadline is a parameter**, so the sweep compares against the value the caller passes instead of `now()`. That is what makes the expiry behaviour reproducible in tests. The caller therefore owes the sweep a deadline taken from the database clock: passing a value ahead of it would expire live holds early and write a future-dated `released_at`.
 
 ## Commands
 
