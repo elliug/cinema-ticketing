@@ -6,6 +6,7 @@ DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-cinema}"
 DB_NAME="${DB_NAME:-cinema_m0_verify}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
+M1_TEST_FILE="${M1_TEST_FILE:-/workspace/tests/migrations/m1_schema.sql}"
 
 log() { printf '[migrations] %s\n' "$*"; }
 fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -13,6 +14,9 @@ fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || fail "psql is required"
 test -r "$MIGRATIONS_DIR/0001_init.up.sql" || fail "missing 0001_init.up.sql"
 test -r "$MIGRATIONS_DIR/0001_init.down.sql" || fail "missing 0001_init.down.sql"
+test -r "$MIGRATIONS_DIR/0002_venue_layout.up.sql" || fail "missing 0002_venue_layout.up.sql"
+test -r "$MIGRATIONS_DIR/0002_venue_layout.down.sql" || fail "missing 0002_venue_layout.down.sql"
+test -r "$M1_TEST_FILE" || fail "missing M1 schema test"
 
 psql_admin() {
   psql -X -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres "$@"
@@ -61,4 +65,15 @@ log "reapplying 0001_init"
 psql_target -q -f "$MIGRATIONS_DIR/0001_init.up.sql"
 assert_current
 
-log "up/down/up verification passed"
+log "applying 0002_venue_layout"
+psql_target -q -f "$MIGRATIONS_DIR/0002_venue_layout.up.sql"
+psql_target -q -f "$M1_TEST_FILE"
+log "rolling back 0002_venue_layout"
+psql_target -q -f "$MIGRATIONS_DIR/0002_venue_layout.down.sql"
+assert_current
+schema_count="$(psql_target -tA -c "SELECT count(*) FROM pg_namespace WHERE nspname = 'cinema';")"
+test "$schema_count" = "0" || fail "cinema schema must be absent after rollback"
+log "reapplying 0002_venue_layout"
+psql_target -q -f "$MIGRATIONS_DIR/0002_venue_layout.up.sql"
+psql_target -q -f "$M1_TEST_FILE"
+log "M0 and M1 up/down/up verification passed"

@@ -7,10 +7,14 @@ DB_USER="${DB_USER:-cinema}"
 DB_NAME="${DB_NAME:-cinema}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
 MIGRATION_DIRECTION="${MIGRATION_DIRECTION:-up}"
+MIGRATION_VERSION="${MIGRATION_VERSION:-0001_init}"
 
+case "$MIGRATION_VERSION" in
+  0001_init|0002_venue_layout) ;;
+  *) printf 'MIGRATION_VERSION must be 0001_init or 0002_venue_layout\n' >&2; exit 2 ;;
+esac
 case "$MIGRATION_DIRECTION" in
-  up) migration="$MIGRATIONS_DIR/0001_init.up.sql" ;;
-  down) migration="$MIGRATIONS_DIR/0001_init.down.sql" ;;
+  up|down) migration="$MIGRATIONS_DIR/$MIGRATION_VERSION.$MIGRATION_DIRECTION.sql" ;;
   *) printf 'MIGRATION_DIRECTION must be up or down\n' >&2; exit 2 ;;
 esac
 

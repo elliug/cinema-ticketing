@@ -46,6 +46,7 @@ services:
       DB_NAME: ${POSTGRES_DB:-cinema}
       MIGRATIONS_DIR: /workspace/db/migrations
       MIGRATION_DIRECTION: ${MIGRATION_DIRECTION:-up}
+      MIGRATION_VERSION: ${MIGRATION_VERSION:-0001_init}
     volumes:
       - ./db:/workspace/db:ro
       - ./scripts/migrations:/workspace/scripts/migrations:ro
@@ -67,6 +68,7 @@ services:
     volumes:
       - ./db:/workspace/db:ro
       - ./scripts/migrations:/workspace/scripts/migrations:ro
+      - ./tests/migrations:/workspace/tests/migrations:ro
     entrypoint: ["/bin/sh", "/workspace/scripts/migrations/verify_migrations.sh"]
 
 volumes:
