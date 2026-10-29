@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -484,6 +485,83 @@ func TestListAvailabilityReportsSeatsAndMapsErrors(t *testing.T) {
 	if _, err := service.ListAvailability(context.Background(), "evt-1"); !errors.Is(err, reservation.ErrUnavailable) {
 		t.Fatalf("ListAvailability error = %v, want ErrUnavailable", err)
 	}
+}
+
+// Behaviour 11 (S9): the availability read carries the layout projection the
+// browser needs. The service must not reshape what the durable store read, so a
+// projected row label, seat number and seat kind reach the transport intact.
+func TestListAvailabilityCarriesTheLayoutProjection(t *testing.T) {
+	store := newFakeStore()
+	store.seats = []reservation.SeatAvailability{
+		{ID: 1, LayoutSeatID: "seat-a1", State: "available", Held: false, RowLabel: "A", SeatNumber: "1", Kind: "standard"},
+		{ID: 2, LayoutSeatID: "seat-a2", State: "available", Held: true, RowLabel: "A", SeatNumber: "2", Kind: "accessible"},
+		{ID: 3, LayoutSeatID: "seat-d1", State: "available", Held: false, RowLabel: "D", SeatNumber: "1", Kind: "companion"},
+	}
+	service := reservation.NewService(failingLocker{}, store, testHoldTTL)
+
+	seats, err := service.ListAvailability(context.Background(), "evt-1")
+	if err != nil {
+		t.Fatalf("ListAvailability returned error: %v", err)
+	}
+	if len(seats) != len(store.seats) {
+		t.Fatalf("ListAvailability returned %d seats, want %d", len(seats), len(store.seats))
+	}
+	for index, want := range store.seats {
+		if seats[index] != want {
+			t.Fatalf("seat %d = %+v, want %+v (the projection must reach the transport intact)", index, seats[index], want)
+		}
+	}
+}
+
+// Behaviour 11 (S9), query shape without a database: the availability statement
+// is the one place that decides what the seat map can render, so its joins and
+// its ordering are pinned here as text. The statement is executed for real by
+// TestListSeatAvailabilityProjectsTheSeededLayout against PostgreSQL.
+func TestSeatAvailabilityQueryProjectsAndOrdersTheLayout(t *testing.T) {
+	source, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatalf("read service.go: %v", err)
+	}
+	query := queryConstant(string(source), "listSeatAvailabilityQuery")
+	if query == "" {
+		t.Fatalf("listSeatAvailabilityQuery is not declared in service.go")
+	}
+
+	for _, want := range []struct {
+		what string
+		sql  string
+	}{
+		{"the row label", "lsr.label"},
+		{"the seat number", "ls.number"},
+		{"the seat kind", "ls.kind"},
+		{"the layout seat join", "JOIN cinema.layout_seats ls ON ls.id = es.layout_seat_id"},
+		{"the layout row join", "JOIN cinema.layout_rows lsr ON lsr.id = ls.layout_row_id"},
+		// The L5 predicate is load-bearing: expiry is lazy, so a stored active row
+		// whose window elapsed is not a live hold and must not be reported as one.
+		{"the unchanged occupancy predicate", "released_at IS NULL"},
+		{"the unchanged deadline predicate", "r.expires_at > now()"},
+		// Deterministic ordering: rows by their position, seats by their own.
+		{"row-position ordering", "ORDER BY lsr.position, ls.position"},
+	} {
+		if !strings.Contains(query, want.sql) {
+			t.Errorf("availability query does not project %s (%q):\n%s", want.what, want.sql, query)
+		}
+	}
+}
+
+// queryConstant extracts the raw string assigned to one constant, so a shape test
+// only ever reads the statement it names.
+func queryConstant(source, name string) string {
+	start := strings.Index(source, name+" = `")
+	if start < 0 {
+		return ""
+	}
+	body := source[start+len(name)+len(" = `"):]
+	end := strings.Index(body, "`")
+	if end < 0 {
+		return ""
+	}
+	return body[:end]
 }
 
 // The service refuses a window shorter than Redis can represent before any I/O,

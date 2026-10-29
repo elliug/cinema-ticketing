@@ -124,6 +124,11 @@ func (h *Handler) createHold(w http.ResponseWriter, r *http.Request) {
 // listEventSeats reports every seat of one event with whether a live hold
 // currently owns it, which is what the seat selection UI refetches after a
 // conflict (S10).
+//
+// Each seat carries its layout projection as well (S9): `rowLabel`, `seatNumber`
+// and `kind`, so the browser can render the event's real rows, with each row's own
+// seat count and no invented geometry. The fields are additive next to the ones
+// the read already served; a client that ignores them loses only the map shape.
 func (h *Handler) listEventSeats(w http.ResponseWriter, r *http.Request) {
 	eventID := r.PathValue("eventID")
 	seats, err := h.svc.ListAvailability(r.Context(), eventID)
@@ -138,6 +143,9 @@ func (h *Handler) listEventSeats(w http.ResponseWriter, r *http.Request) {
 			"layoutSeatId": seat.LayoutSeatID,
 			"state":        seat.State,
 			"held":         seat.Held,
+			"rowLabel":     seat.RowLabel,
+			"seatNumber":   seat.SeatNumber,
+			"kind":         seat.Kind,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"eventId": eventID, "seats": items})

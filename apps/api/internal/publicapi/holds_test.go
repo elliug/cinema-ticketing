@@ -283,14 +283,19 @@ func TestCreateHoldValidatesTheRequestEnvelope(t *testing.T) {
 	})
 }
 
+type availabilitySeatBody struct {
+	ID           int64  `json:"id"`
+	LayoutSeatID string `json:"layoutSeatId"`
+	State        string `json:"state"`
+	Held         bool   `json:"held"`
+	RowLabel     string `json:"rowLabel"`
+	SeatNumber   string `json:"seatNumber"`
+	Kind         string `json:"kind"`
+}
+
 type availabilityBody struct {
-	EventID string `json:"eventId"`
-	Seats   []struct {
-		ID           int64  `json:"id"`
-		LayoutSeatID string `json:"layoutSeatId"`
-		State        string `json:"state"`
-		Held         bool   `json:"held"`
-	} `json:"seats"`
+	EventID string                 `json:"eventId"`
+	Seats   []availabilitySeatBody `json:"seats"`
 }
 
 // Behaviour 4 (S10): the availability read reports every seat of the event with
@@ -337,6 +342,45 @@ func TestListEventSeatsReportsAvailability(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"seats":[]`) {
 		t.Fatalf("empty availability body = %s, want an empty seat list", raw)
+	}
+}
+
+// Behaviour 5 (S9): the availability read serves the layout projection the
+// browser needs to draw the real irregular seat map — the row label, the seat
+// number and the seat kind — next to the fields it already served. Without them
+// the page can only degrade to one flat group with an unknown kind, so the JSON
+// names below are the contract the seat map depends on.
+func TestListEventSeatsSerialisesTheLayoutProjection(t *testing.T) {
+	svc := &fakeHoldService{seats: []reservation.SeatAvailability{
+		{ID: 21, LayoutSeatID: "seat-a1", State: "available", Held: false, RowLabel: "A", SeatNumber: "1", Kind: "standard"},
+		{ID: 22, LayoutSeatID: "seat-a2", State: "available", Held: true, RowLabel: "A", SeatNumber: "2", Kind: "accessible"},
+		{ID: 23, LayoutSeatID: "seat-d1", State: "available", Held: false, RowLabel: "D", SeatNumber: "1", Kind: "companion"},
+	}}
+	ts := mountedServer(t, svc)
+
+	response, err := http.Get(ts.URL + "/api/v1/events/evt-1/seats")
+	if err != nil {
+		t.Fatalf("GET availability: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+	body := decodeBody[availabilityBody](t, response)
+
+	// The projection is additive: every seat keeps the fields it already had.
+	want := []availabilitySeatBody{
+		{ID: 21, LayoutSeatID: "seat-a1", State: "available", Held: false, RowLabel: "A", SeatNumber: "1", Kind: "standard"},
+		{ID: 22, LayoutSeatID: "seat-a2", State: "available", Held: true, RowLabel: "A", SeatNumber: "2", Kind: "accessible"},
+		{ID: 23, LayoutSeatID: "seat-d1", State: "available", Held: false, RowLabel: "D", SeatNumber: "1", Kind: "companion"},
+	}
+	if len(body.Seats) != len(want) {
+		t.Fatalf("availability seats = %+v, want %d seats", body.Seats, len(want))
+	}
+	for index, expected := range want {
+		if body.Seats[index] != expected {
+			t.Fatalf("seat %d = %+v, want %+v (row label, seat number and kind must be served)", index, body.Seats[index], expected)
+		}
 	}
 }
 

@@ -111,7 +111,14 @@ type IdempotencyRecord struct {
 	ExpiresAt time.Time
 }
 
-// SeatAvailability is one event seat with its current occupancy.
+// SeatAvailability is one event seat with its current occupancy and the layout
+// projection the seat map needs to draw the real geometry.
+//
+// The projection is additive: ID, LayoutSeatID, State and Held are what the read
+// served before, and the three layout fields let a browser render the event's
+// actual rows instead of degrading to one flat group. They are read from the
+// layout the event materialized its seats from, so they are immutable for the
+// life of the event.
 type SeatAvailability struct {
 	// ID is the event seat identifier.
 	ID int64
@@ -121,6 +128,13 @@ type SeatAvailability struct {
 	State string
 	// Held reports whether a live hold currently owns the seat.
 	Held bool
+	// RowLabel is the label of the layout row the seat belongs to, for example
+	// "A". It is never empty for a materialized event seat.
+	RowLabel string
+	// SeatNumber is the seat number inside its row, as the layout stores it.
+	SeatNumber string
+	// Kind is the physical seat kind: standard, accessible, or companion.
+	Kind string
 }
 
 // Locker is the expiring coordination layer, satisfied by Coordinator.
@@ -394,6 +408,16 @@ func mapDurableError(err error) error {
 // whether a seat is held: an expired hold that nobody has re-claimed is still
 // stored as active until the trigger or the expiry sweep releases it, so the
 // predicate has to check the deadline as well as released_at.
+//
+// It is also the single place that projects the layout: it joins the physical
+// seat and its row so the read carries the row label, the seat number and the
+// kind the seat map renders (S9). Both joins are inner joins because a
+// materialized event seat always comes from one row of its event's layout.
+//
+// The trailing order is the map order, not an id order: rows by their own
+// position, then seats by their position inside the row. `position` is unique per
+// row and per layout version, so the pair is a total order and the response is
+// deterministic for a given layout.
 const (
 	lookupIdempotencyQuery = `
 SELECT idempotency_key, request_fingerprint, status, hold_id::text, hold_expires_at, expires_at
@@ -414,6 +438,7 @@ VALUES ($1, $2, $3)`
 
 	listSeatAvailabilityQuery = `
 SELECT es.id, es.layout_seat_id, es.state,
+       lsr.label AS row_label, ls.number AS seat_number, ls.kind AS seat_kind,
        EXISTS (
          SELECT 1
          FROM cinema.reservation_seats rs
@@ -423,8 +448,10 @@ SELECT es.id, es.layout_seat_id, es.state,
            AND r.expires_at > now()
        ) AS held
 FROM cinema.event_seats es
+JOIN cinema.layout_seats ls ON ls.id = es.layout_seat_id
+JOIN cinema.layout_rows lsr ON lsr.id = ls.layout_row_id
 WHERE es.event_id = $1
-ORDER BY es.id`
+ORDER BY lsr.position, ls.position`
 
 	eventExistsQuery = `SELECT 1 FROM cinema.events WHERE id = $1`
 )
@@ -540,7 +567,7 @@ func (s *PostgresStore) ListSeatAvailability(ctx context.Context, eventID string
 	seats := []SeatAvailability{}
 	for rows.Next() {
 		var seat SeatAvailability
-		if err := rows.Scan(&seat.ID, &seat.LayoutSeatID, &seat.State, &seat.Held); err != nil {
+		if err := rows.Scan(&seat.ID, &seat.LayoutSeatID, &seat.State, &seat.RowLabel, &seat.SeatNumber, &seat.Kind, &seat.Held); err != nil {
 			return nil, classifyDurableError(err)
 		}
 		seats = append(seats, seat)

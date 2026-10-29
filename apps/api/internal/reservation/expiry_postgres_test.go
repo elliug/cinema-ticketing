@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +212,192 @@ func TestPostgresStoreClassifiesAnUnknownReference(t *testing.T) {
 	// malformed event id is caller error and never a retryable outage.
 	if _, err := store.ListSeatAvailability(ctx, "not-an-event-uuid"); !errors.Is(err, reservation.ErrUnknownReference) {
 		t.Fatalf("ListSeatAvailability error = %v, want ErrUnknownReference", err)
+	}
+}
+
+// The layout-projection fixture is its own venue, so the recovery fixture above
+// stays untouched: M1 freezes a published layout, and a fixture that adds rows to
+// an already published one could not be re-run.
+const (
+	projectionCinema  = "00000000-0000-0000-0000-00000000e0a1"
+	projectionRoom    = "00000000-0000-0000-0000-00000000e0a2"
+	projectionLayout  = "00000000-0000-0000-0000-00000000e0a3"
+	projectionRowA    = "00000000-0000-0000-0000-00000000e0a4"
+	projectionRowB    = "00000000-0000-0000-0000-00000000e0a5"
+	projectionRowD    = "00000000-0000-0000-0000-00000000e0a6"
+	projectionSeatA1  = "00000000-0000-0000-0000-00000000e0b1"
+	projectionSeatA2  = "00000000-0000-0000-0000-00000000e0b2"
+	projectionSeatB1  = "00000000-0000-0000-0000-00000000e0b3"
+	projectionSeatB2  = "00000000-0000-0000-0000-00000000e0b4"
+	projectionSeatD1  = "00000000-0000-0000-0000-00000000e0b5"
+	projectionFilm    = "00000000-0000-0000-0000-00000000e0c1"
+	projectionEvent   = "00000000-0000-0000-0000-00000000e0c2"
+	projectionHold    = "00000000-0000-0000-0000-00000000e0c3"
+	projectionLayoutV = 2
+)
+
+// TestListSeatAvailabilityProjectsTheSeededLayout is the end-to-end truth the
+// seat map depends on: the availability read joins the layout and serves the row
+// label, the seat number and the seat kind of every seat, in row-position order
+// and seat-position order, with each row keeping its own seat count.
+//
+// The seeded venue is deliberately irregular: two seats in row A, a shorter row B
+// whose second seat is disabled (so it is never materialized), and a row D whose
+// position skips C. A rectangle, an id ordering, or a projection that forgot the
+// layout would each fail here.
+func TestListSeatAvailabilityProjectsTheSeededLayout(t *testing.T) {
+	ctx := context.Background()
+	pool, url := recoveryPool(t, ctx)
+	defer pool.Close()
+
+	seedProjectionFixture(t, ctx, pool)
+	defer cleanupProjectionFixture(ctx, t, pool)
+
+	store, err := reservation.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open reservation store: %v", err)
+	}
+	defer store.Close()
+
+	seats, err := store.ListSeatAvailability(ctx, projectionEvent)
+	if err != nil {
+		t.Fatalf("ListSeatAvailability returned error: %v", err)
+	}
+
+	want := []struct {
+		rowLabel   string
+		seatNumber string
+		kind       string
+		held       bool
+	}{
+		{"A", "1", "standard", false},
+		{"A", "2", "accessible", false},
+		// Row B keeps only its enabled seat: the disabled one is not an event seat.
+		{"B", "1", "companion", false},
+		// The live hold claimed this one, so only it reads as held.
+		{"D", "1", "standard", true},
+	}
+	if len(seats) != len(want) {
+		t.Fatalf("availability returned %d seats, want %d: %+v", len(seats), len(want), seats)
+	}
+	for index, expected := range want {
+		got := seats[index]
+		if got.RowLabel != expected.rowLabel || got.SeatNumber != expected.seatNumber || got.Kind != expected.kind {
+			t.Errorf("seat %d = row %q number %q kind %q, want row %q number %q kind %q (projection and ordering)",
+				index, got.RowLabel, got.SeatNumber, got.Kind, expected.rowLabel, expected.seatNumber, expected.kind)
+		}
+		if got.Held != expected.held {
+			t.Errorf("seat %d (row %s number %s) held = %t, want %t", index, got.RowLabel, got.SeatNumber, got.Held, expected.held)
+		}
+		// The projection is additive: the fields served before are still there.
+		if got.ID <= 0 || got.LayoutSeatID == "" || got.State != "available" {
+			t.Errorf("seat %d = %+v, want its event seat id, layout seat id and state as before", index, got)
+		}
+	}
+
+	// Each row's own seat count, never padded to a rectangle.
+	counts := map[string]int{}
+	for _, seat := range seats {
+		counts[seat.RowLabel]++
+	}
+	if counts["A"] != 2 || counts["B"] != 1 || counts["D"] != 1 || len(counts) != 3 {
+		t.Fatalf("seats per row = %v, want A=2 B=1 D=1", counts)
+	}
+
+	// The L5 predicate is unchanged by the projection: once the hold's window has
+	// elapsed, the same seat reads as free even before any sweep releases it.
+	if _, err := pool.Exec(ctx,
+		`UPDATE cinema.reservations SET expires_at = now() - interval '1 hour' WHERE id = $1`, projectionHold); err != nil {
+		t.Fatalf("backdate the live hold: %v", err)
+	}
+	seats, err = store.ListSeatAvailability(ctx, projectionEvent)
+	if err != nil {
+		t.Fatalf("ListSeatAvailability after the hold elapsed returned error: %v", err)
+	}
+	if len(seats) != len(want) {
+		t.Fatalf("availability after the hold elapsed returned %d seats, want %d", len(seats), len(want))
+	}
+	for index, seat := range seats {
+		if seat.Held {
+			t.Fatalf("seat %d (row %s number %s) still reads as held after its window elapsed", index, seat.RowLabel, seat.SeatNumber)
+		}
+	}
+}
+
+// seedProjectionFixture inserts the irregular published layout, its event, the
+// four materialized event seats, and one live hold on row D. The venue part is
+// created once because a published layout is immutable.
+func seedProjectionFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	cleanupProjectionFixture(ctx, t, pool)
+
+	var venueExists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM cinema.layout_versions WHERE id = $1)`, projectionLayout).Scan(&venueExists); err != nil {
+		t.Fatalf("inspect the projection venue fixture: %v", err)
+	}
+	if !venueExists {
+		for _, statement := range []struct {
+			what string
+			sql  string
+		}{
+			{"cinema", `INSERT INTO cinema.cinemas (id, name, timezone) VALUES ('` + projectionCinema + `','Cine Projection','UTC')`},
+			{"room", `INSERT INTO cinema.rooms (id, cinema_id, name) VALUES ('` + projectionRoom + `','` + projectionCinema + `','Sala Projection')`},
+			{"layout", `INSERT INTO cinema.layout_versions (id, room_id, version) VALUES ('` + projectionLayout + `','` + projectionRoom + `',` + strconv.Itoa(projectionLayoutV) + `)`},
+			{"rows", `INSERT INTO cinema.layout_rows (id, layout_version_id, label, position) VALUES
+			 ('` + projectionRowA + `','` + projectionLayout + `','A',1),
+			 ('` + projectionRowB + `','` + projectionLayout + `','B',2),
+			 ('` + projectionRowD + `','` + projectionLayout + `','D',4)`},
+			{"seats", `INSERT INTO cinema.layout_seats (id, layout_row_id, number, position, kind, enabled) VALUES
+			 ('` + projectionSeatA1 + `','` + projectionRowA + `','1',1,'standard',true),
+			 ('` + projectionSeatA2 + `','` + projectionRowA + `','2',2,'accessible',true),
+			 ('` + projectionSeatB1 + `','` + projectionRowB + `','1',1,'companion',true),
+			 ('` + projectionSeatB2 + `','` + projectionRowB + `','2',2,'standard',false),
+			 ('` + projectionSeatD1 + `','` + projectionRowD + `','1',1,'standard',true)`},
+			{"publish", `UPDATE cinema.layout_versions SET status = 'published' WHERE id = '` + projectionLayout + `'`},
+		} {
+			if _, err := pool.Exec(ctx, statement.sql); err != nil {
+				t.Fatalf("seed projection venue %s: %v", statement.what, err)
+			}
+		}
+	}
+
+	statements := []struct {
+		what string
+		sql  string
+	}{
+		{"film", `INSERT INTO cinema.films (id, title, runtime_minutes, rating) VALUES ('` + projectionFilm + `','Projection Film',95,'PG')`},
+		{"event", `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status)
+		 VALUES ('` + projectionEvent + `','` + projectionRoom + `','` + projectionFilm + `','` + projectionLayout + `',now(),'on_sale')`},
+		{"held seat", `INSERT INTO cinema.reservations (id, event_id, status, expires_at)
+		 VALUES ('` + projectionHold + `','` + projectionEvent + `','held', now() + interval '1 hour')`},
+		{"claim", `INSERT INTO cinema.reservation_seats (reservation_id, event_id, event_seat_id)
+		 SELECT '` + projectionHold + `', event_id, id FROM cinema.event_seats
+		 WHERE event_id = '` + projectionEvent + `' AND layout_seat_id = '` + projectionSeatD1 + `'`},
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement.sql); err != nil {
+			t.Fatalf("seed %s: %v", statement.what, err)
+		}
+	}
+}
+
+// cleanupProjectionFixture removes the rows this test creates. The cinema, room
+// and published layout stay because M1 makes a published layout immutable.
+func cleanupProjectionFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, sql := range []string{
+		`DELETE FROM cinema.reservation_seats WHERE reservation_id = '` + projectionHold + `'`,
+		`DELETE FROM cinema.reservations WHERE id = '` + projectionHold + `'`,
+		`DELETE FROM cinema.event_seats WHERE event_id = '` + projectionEvent + `'`,
+		`DELETE FROM cinema.events WHERE id = '` + projectionEvent + `'`,
+		`DELETE FROM cinema.films WHERE id = '` + projectionFilm + `'`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			if !strings.Contains(err.Error(), "does not exist") {
+				t.Logf("clean the projection fixture: %v", err)
+			}
+		}
 	}
 }
 
