@@ -139,3 +139,170 @@ code {
     padding: 1.25rem 1rem 3rem;
   }
 }
+
+/* Local administrative layout editor (M1).
+ *
+ * Rows are laid out as independent blocks, each with its own seat list, so a
+ * row with one seat and a row with twelve seats need no shared column count.
+ */
+
+.foundation.admin {
+  max-width: 64rem;
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.editor-header h1 {
+  margin-top: 0;
+}
+
+.meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.notice {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+}
+
+.problems {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+}
+
+.problems h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.problems ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.path {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.rows,
+.seats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.row-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.fields label,
+.seat label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.seat label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  font: inherit;
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.3rem 0.5rem;
+  max-width: 12rem;
+}
+
+input[type="number"] {
+  max-width: 6rem;
+}
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background-color: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.seat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.feedback {
+  margin: 0;
+  color: var(--fg);
+}
+
+.feedback.error {
+  color: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .feedback.error {
+    color: #ff8a80;
+  }
+}

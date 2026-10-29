@@ -1,11 +1,28 @@
-# cinema-web — M0 foundation
+# cinema-web — M0 foundation and M1 layout administration
 
-M0-only Next.js (App Router) + TypeScript foundation for the cinema ticketing
-platform. It proves the web application runs locally and exposes a
-deterministic health contract for local and CI checks.
+Next.js (App Router) + TypeScript web application for the cinema ticketing
+platform. It exposes a deterministic health contract for local and CI checks and,
+from M1, a local administrative layout editor.
 
-**Scope:** M0 is operational only. There is no venue, layout, reservation,
-payment, ticketing, or identity UI. Those arrive in later milestones.
+**Scope:** the layout editor is development-only administration. There is no
+reservation, payment, ticketing, or identity UI; those arrive in later milestones.
+
+## M1 layout administration
+
+`/admin/venues` creates and lists cinemas, rooms, and layout versions.
+`/admin/schedule` creates films, schedules events, and shows the materialized
+event seats. `/admin/layouts` renders one layout version from the API and lets an operator
+edit rows with different seat counts, save, publish, and clone a published
+version into a new draft. The browser never holds the bearer token: every read
+and write runs server-side through `src/lib/admin-api.ts`.
+
+| Variable | Purpose |
+| --- | --- |
+| `API_BASE_URL` | API base URL, default `http://127.0.0.1:8080` |
+| `API_LOCAL_ADMIN_TOKEN` | Development bearer token; must match the API's `API_LOCAL_ADMIN_TOKEN` |
+
+Both are server-only. The API must be started with local administration enabled
+(see the root `README.md`); otherwise `/api/v1/admin` answers 404 by design.
 
 ## Local run
 
@@ -28,7 +45,7 @@ Open http://localhost:3000.
 | `pnpm start`     | Serve the production build.                               |
 | `pnpm lint`      | Lint `src/**` with ESLint (Next core web vitals config).  |
 | `pnpm typecheck` | Type-check with `tsc --noEmit`.                          |
-| `pnpm test`      | Run the deterministic health-contract test (Node native). |
+| `pnpm test`      | Run the deterministic health-contract and admin tests (Node native). |
 
 ## Health contract
 
