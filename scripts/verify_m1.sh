@@ -109,4 +109,19 @@ api 409 POST /events "{\"roomId\":\"$room\",\"filmId\":\"$film\",\"layoutVersion
 jq -e '[.rows[] | .seats | length] == [2,2]' <(curl --silent -H "Authorization: Bearer $token" "$base/layouts/$layout") >/dev/null \
   || fail "event creation altered the published layout"
 
+# S10: cinemas, rooms and layout versions are queryable, and a missing cinema is 404.
+api 200 GET /cinemas '' "$token"
+jq -e --arg id "$cinema" '[.cinemas[] | select(.id == $id)] | length == 1' <"$tmp/body.json" >/dev/null \
+  || fail "the created cinema is not listed"
+api 200 GET "/cinemas/$cinema/rooms" '' "$token"
+jq -e --arg id "$room" '[.rooms[] | select(.id == $id)] | length == 1' <"$tmp/body.json" >/dev/null \
+  || fail "the created room is not listed"
+api 200 GET "/rooms/$room/layouts" '' "$token"
+jq -e --arg published "$layout" --arg draft "$clone" \
+  '[.layouts[] | select(.id == $published and .status == "published")] | length == 1' <"$tmp/body.json" >/dev/null \
+  || fail "the published layout version is not listed as published"
+jq -e --arg draft "$clone" '[.layouts[] | select(.id == $draft and .status == "draft")] | length == 1' <"$tmp/body.json" >/dev/null \
+  || fail "the cloned layout version is not listed as draft"
+api 404 GET "/cinemas/00000000-0000-0000-0000-000000000000/rooms" '' "$token"
+
 printf 'M1 verification passed: guard denies by default, irregular rows publish, and events materialize enabled seats only.\n'
