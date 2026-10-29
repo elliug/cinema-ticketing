@@ -3,11 +3,14 @@
 # API process, an isolated database and an isolated Redis database.
 #
 # It proves, through the public HTTP interface only:
-#   1. 16 contenders for one event seat produce exactly one 201 and fifteen 409s,
+#   1. The availability read serves the layout projection (row label, seat
+#      number, seat kind) of the seeded irregular layout, in row-position and
+#      seat-position order, with each row's own seat count.
+#   2. 16 contenders for one event seat produce exactly one 201 and fifteen 409s,
 #      and every loser is a seat conflict.
-#   2. Availability reports the winner's seat as held.
-#   3. The in-process expiry worker releases a hold whose durable deadline passed.
-#   4. The gated worker-recovery evidence: a sweep killed mid-transaction leaves no
+#   3. Availability reports the winner's seat as held.
+#   4. The in-process expiry worker releases a hold whose durable deadline passed.
+#   5. The gated worker-recovery evidence: a sweep killed mid-transaction leaves no
 #      partial state and the next sweep completes the work.
 #
 # Everything it creates is disposable: the database name is unique to this run,
@@ -84,10 +87,12 @@ done
 # S8 worker-recovery evidence. It runs before the API starts: its fixture is an
 # elapsed hold that the running worker would otherwise sweep out from under it.
 M2_RECOVERY_DATABASE_URL="$dburl" \
-  go test -count=1 -v -run 'TestExpirySweepRecoversFromAKilledWorker|TestPostgresStoreClassifiesAnUnknownReference' \
+  go test -count=1 -v -run 'TestExpirySweepRecoversFromAKilledWorker|TestPostgresStoreClassifiesAnUnknownReference|TestListSeatAvailabilityProjectsTheSeededLayout' \
   ./apps/api/internal/reservation/ 2>&1 | tee "$tmp/recovery.log"
 grep -q -- '--- PASS: TestExpirySweepRecoversFromAKilledWorker' "$tmp/recovery.log" \
   || fail "the killed-worker recovery evidence did not pass"
+grep -q -- '--- PASS: TestListSeatAvailabilityProjectsTheSeededLayout' "$tmp/recovery.log" \
+  || fail "the availability projection did not pass against PostgreSQL"
 
 go build -o "$tmp/api" ./apps/api/cmd/api || fail "the API did not build"
 
@@ -143,6 +148,29 @@ while IFS= read -r seat; do seat_ids+=("$seat"); done < <(jq -r '.seats[].id' <"
 contended="${seat_ids[0]}"
 sweep_seat="${seat_ids[1]}"
 
+# S9: the public availability read serves the layout projection the seat map
+# renders, so the browser draws this irregular layout and not a flat guess. The
+# seeded rows are A (two seats), B (two seats, one disabled and therefore never
+# materialized) and D (one seat, with position 4 skipping C). Row labels are
+# asserted in the order they arrive, which is row-position order, and the per-row
+# counts prove each row keeps its own seats instead of being padded into a
+# rectangle. A projection regression fails the milestone here.
+curl --silent --show-error "$base/api/v1/events/$event/seats" >"$tmp/projection.json"
+jq -e '(.seats | length) == 4' <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the public availability read does not serve four seats"; }
+jq -e '[.seats[].rowLabel] == ["A","A","B","D"]' <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the availability read does not project the row labels in row-position order"; }
+jq -e '[.seats[].seatNumber] == ["1","2","1","1"]' <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the availability read does not project the seat numbers in seat-position order"; }
+jq -e '[.seats[].kind] == ["standard","accessible","companion","standard"]' <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the availability read does not project the seat kinds"; }
+jq -e '[.seats[]] | group_by(.rowLabel) | map({key: .[0].rowLabel, value: length}) | from_entries == {"A":2,"B":1,"D":1}' \
+  <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the availability read does not report the seeded seats per row (expected the two-seat row A and row B without its disabled seat)"; }
+jq -e 'all(.seats[]; has("id") and has("layoutSeatId") and has("state") and has("held") and has("rowLabel") and has("seatNumber") and has("kind"))' \
+  <"$tmp/projection.json" >/dev/null \
+  || { cat "$tmp/projection.json" >&2; fail "the availability read dropped a field: the projection must be additive"; }
+
 # S7/S8: the accepted contract, parameterized with the seeded identifiers.
 M2_API_URL="$base" M2_EVENT_ID="$event" M2_SEAT_IDS="$contended" \
   go test -tags acceptance_m2 -count=1 -v ./tests/concurrency/ 2>&1 | tee "$tmp/concurrency.log"
@@ -197,4 +225,4 @@ jq -e --arg seat "$sweep_seat" '[.seats[] | select(.id == ($seat | tonumber)) | 
   <"$tmp/availability.json" >/dev/null \
   || { cat "$tmp/availability.json" >&2; fail "availability still reports the expired hold's seat as held"; }
 
-printf 'M2 verification passed: one winner in 16 contenders, losers conflict, availability follows the winner, the worker expires an elapsed hold, and a killed sweep recovers.\n'
+printf 'M2 verification passed: the availability read projects the irregular layout, one winner in 16 contenders, losers conflict, availability follows the winner, the worker expires an elapsed hold, and a killed sweep recovers.\n'

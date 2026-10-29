@@ -1,0 +1,449 @@
+// Public reservation API client contract (guest seat selection).
+//
+// The client is exercised through its public interface only: the HTTP request it
+// builds and the typed result it returns. An injected fetch keeps the tests
+// offline and deterministic, and the real customer runs are left to the browser
+// level check (see apps/web/README.md).
+//
+// Two rules matter most here:
+//
+//   - nothing administrative leaks into a guest request: no bearer token, no
+//     /admin prefix, and no credential is ever read;
+//   - every attempt carries the Idempotency-Key it was given, and a caller that
+//     retries must mint a new one.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type {
+  PublicClient,
+  PublicProblem,
+  PublicResult,
+} from "./public-api.ts";
+import {
+  createPublicClient,
+  DEFAULT_PUBLIC_BASE_URL,
+  MAX_HOLD_SEATS,
+  newIdempotencyKey,
+  PUBLIC_BASE_URL_ENV,
+  resolvePublicConfig,
+} from "./public-api.ts";
+
+const BASE_URL = "http://127.0.0.1:8080";
+
+interface RecordedCall {
+  url: string;
+  init: RequestInit;
+}
+
+interface RecordingFetch {
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  calls: RecordedCall[];
+}
+
+function recordingFetch(respond: (call: RecordedCall) => Response): RecordingFetch {
+  const calls: RecordedCall[] = [];
+  return {
+    calls,
+    fetch: (input, init) => {
+      const call: RecordedCall = { url: input, init: init ?? {} };
+      calls.push(call);
+      return Promise.resolve(respond(call));
+    },
+  };
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function makeClient(recorder: RecordingFetch): PublicClient {
+  return createPublicClient({ baseUrl: BASE_URL, fetch: recorder.fetch });
+}
+
+function unwrap<T>(result: PublicResult<T>): T {
+  assert.equal(result.ok, true, `expected success, got ${JSON.stringify(result)}`);
+  if (!result.ok) {
+    throw new Error("unreachable");
+  }
+  return result.value;
+}
+
+function unwrapError<T>(result: PublicResult<T>): PublicProblem {
+  assert.equal(result.ok, false, `expected a typed failure, got ${JSON.stringify(result)}`);
+  if (result.ok) {
+    throw new Error("unreachable");
+  }
+  return result.error;
+}
+
+function headerValue(init: RequestInit, name: string): string | undefined {
+  const headers = init.headers as Record<string, string> | undefined;
+  return headers?.[name];
+}
+
+test("resolvePublicConfig needs no credential and defaults the base URL", () => {
+  const fallback = unwrap(resolvePublicConfig({}));
+  assert.equal(fallback.baseUrl, DEFAULT_PUBLIC_BASE_URL);
+  assert.equal(fallback.baseUrl, "http://127.0.0.1:8080");
+
+  const configured = unwrap(
+    resolvePublicConfig({ [PUBLIC_BASE_URL_ENV]: "http://127.0.0.1:9999/" }),
+  );
+  assert.equal(configured.baseUrl, "http://127.0.0.1:9999");
+  assert.equal(configured.baseUrl, DEFAULT_PUBLIC_BASE_URL.replace("8080", "9999"));
+
+  // A guest request never needs an administrative token, so an operator token in
+  // the environment is ignored rather than required.
+  const withToken = unwrap(
+    resolvePublicConfig({ API_LOCAL_ADMIN_TOKEN: "should-not-be-used" }),
+  );
+  assert.equal("token" in withToken, false);
+});
+
+test("newIdempotencyKey mints a distinct key every call", () => {
+  const first = newIdempotencyKey();
+  const second = newIdempotencyKey();
+
+  assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.notEqual(first, second);
+  assert.equal(new Set([first, second, newIdempotencyKey()]).size, 3);
+});
+
+test("listEventSeats reads the public availability snapshot", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      eventId: "event-a",
+      seats: [
+        { id: 11, layoutSeatId: "layout-seat-a1", state: "available", held: false },
+        { id: 12, layoutSeatId: "layout-seat-a2", state: "held", held: true },
+      ],
+    }),
+  );
+
+  const seats = unwrap(await makeClient(recorder).listEventSeats("event-a"));
+
+  assert.equal(recorder.calls.length, 1);
+  assert.equal(
+    recorder.calls[0].url,
+    `${BASE_URL}/api/v1/events/event-a/seats`,
+  );
+  assert.equal(recorder.calls[0].init.method, "GET");
+  assert.equal(recorder.calls[0].init.cache, "no-store");
+  assert.equal(headerValue(recorder.calls[0].init, "Authorization"), undefined);
+  assert.equal(headerValue(recorder.calls[0].init, "Idempotency-Key"), undefined);
+
+  assert.equal(seats.eventId, "event-a");
+  assert.deepEqual(seats.seats, [
+    { id: 11, layoutSeatId: "layout-seat-a1", state: "available", held: false },
+    { id: 12, layoutSeatId: "layout-seat-a2", state: "held", held: true },
+  ]);
+});
+
+test("listEventSeats escapes the event id and treats a missing flag as free", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      eventId: "event a/b",
+      seats: [{ id: 11, layoutSeatId: "layout-seat-a1", state: "available" }],
+    }),
+  );
+
+  const seats = unwrap(await makeClient(recorder).listEventSeats("event a/b"));
+
+  assert.equal(
+    recorder.calls[0].url,
+    `${BASE_URL}/api/v1/events/event%20a%2Fb/seats`,
+  );
+  assert.equal(seats.seats[0].held, false);
+});
+
+test("listEventSeats reads the layout projection when the API serves it", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      eventId: "event-a",
+      seats: [
+        {
+          id: 11,
+          layoutSeatId: "layout-seat-a1",
+          state: "available",
+          held: false,
+          rowLabel: "A",
+          seatNumber: "1",
+          kind: "standard",
+        },
+        {
+          id: 12,
+          layoutSeatId: "layout-seat-a2",
+          state: "available",
+          held: true,
+          rowLabel: "B",
+          seatNumber: "2",
+          kind: "accessible",
+        },
+      ],
+    }),
+  );
+
+  const seats = unwrap(await makeClient(recorder).listEventSeats("event-a"));
+
+  // The projection is carried through as served: the map builds the real rows
+  // from it, so nothing may be dropped or renamed here.
+  assert.deepEqual(seats.seats, [
+    {
+      id: 11,
+      layoutSeatId: "layout-seat-a1",
+      state: "available",
+      held: false,
+      rowLabel: "A",
+      seatNumber: "1",
+      kind: "standard",
+    },
+    {
+      id: 12,
+      layoutSeatId: "layout-seat-a2",
+      state: "available",
+      held: true,
+      rowLabel: "B",
+      seatNumber: "2",
+      kind: "accessible",
+    },
+  ]);
+});
+
+test("a response without the layout projection keeps the older shape", async () => {
+  // An older API serves availability only; the client must not invent the
+  // missing projection, so the seat reads exactly as it did before.
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      eventId: "event-a",
+      seats: [{ id: 11, layoutSeatId: "layout-seat-a1", state: "available", held: false }],
+    }),
+  );
+
+  const seats = unwrap(await makeClient(recorder).listEventSeats("event-a"));
+
+  assert.deepEqual(seats.seats, [
+    { id: 11, layoutSeatId: "layout-seat-a1", state: "available", held: false },
+  ]);
+  assert.equal("rowLabel" in seats.seats[0], false);
+  assert.equal("seatNumber" in seats.seats[0], false);
+  assert.equal("kind" in seats.seats[0], false);
+});
+
+test("createHold posts the selection with the Idempotency-Key it was given", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(201, {
+      id: "hold-1",
+      eventId: "event-a",
+      seatIds: [11, 21],
+      expiresAt: "2026-03-01T10:10:00.000Z",
+    }),
+  );
+
+  const hold = unwrap(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [11, 21],
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/reservations/holds`);
+  assert.equal(call.init.method, "POST");
+  assert.equal(headerValue(call.init, "Idempotency-Key"), "key-1");
+  assert.equal(headerValue(call.init, "Content-Type"), "application/json");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.deepEqual(JSON.parse(call.init.body as string), {
+    eventId: "event-a",
+    seatIds: [11, 21],
+  });
+
+  assert.deepEqual(hold, {
+    id: "hold-1",
+    eventId: "event-a",
+    seatIds: [11, 21],
+    expiresAt: "2026-03-01T10:10:00.000Z",
+  });
+});
+
+test("each hold attempt sends its own key and never reuses the previous one", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(201, {
+      id: "hold-1",
+      eventId: "event-a",
+      seatIds: [11],
+      expiresAt: "2026-03-01T10:10:00.000Z",
+    }),
+  );
+  const client = makeClient(recorder);
+
+  await client.createHold({ eventId: "event-a", seatIds: [11], idempotencyKey: newIdempotencyKey() });
+  await client.createHold({ eventId: "event-a", seatIds: [11], idempotencyKey: newIdempotencyKey() });
+
+  const keys = recorder.calls.map((call) => headerValue(call.init, "Idempotency-Key"));
+  assert.equal(keys.length, 2);
+  assert.notEqual(keys[0], keys[1]);
+  for (const key of keys) {
+    assert.equal(typeof key, "string");
+    assert.ok((key as string).length >= 8);
+  }
+});
+
+test("createHold rejects an empty selection before any request", async () => {
+  const recorder = recordingFetch(() => jsonResponse(201, {}));
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [],
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(recorder.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(problem.status, 0);
+  assert.match(problem.detail, /at least one seat/i);
+});
+
+test("createHold rejects more seats than the API accepts before any request", async () => {
+  assert.equal(MAX_HOLD_SEATS, 20);
+  const recorder = recordingFetch(() => jsonResponse(201, {}));
+  const seatIds = Array.from({ length: MAX_HOLD_SEATS + 1 }, (_, index) => index + 1);
+
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds,
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(recorder.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+  assert.match(problem.detail, /20/);
+});
+
+test("createHold also requires an Idempotency-Key", async () => {
+  const recorder = recordingFetch(() => jsonResponse(201, {}));
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [11],
+      idempotencyKey: "   ",
+    }),
+  );
+
+  assert.equal(recorder.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+  assert.match(problem.detail, /Idempotency-Key/);
+});
+
+test("a 409 seat_unavailable keeps the API code", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/seat-unavailable",
+      title: "Seat unavailable",
+      status: 409,
+      code: "seat_unavailable",
+      detail: "at least one selected seat is already held by another reservation",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [11],
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(problem.status, 409);
+  assert.equal(problem.code, "seat_unavailable");
+  assert.match(problem.detail, /already held/);
+});
+
+test("a 400 hold_window_expired is distinct from a taken seat", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/hold-window-expired",
+      title: "Hold window expired",
+      status: 400,
+      code: "hold_window_expired",
+      detail: "the hold window closed before the seats could be claimed",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [11],
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(problem.status, 400);
+  assert.equal(problem.code, "hold_window_expired");
+});
+
+test("a 503 coordination failure stays a retryable status", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/coordination-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "coordination_unavailable",
+      detail: "the reservation service is temporarily unavailable; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).createHold({
+      eventId: "event-a",
+      seatIds: [11],
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(problem.status, 503);
+  assert.equal(problem.code, "coordination_unavailable");
+});
+
+test("an unreachable API becomes a typed network failure", async () => {
+  const client = createPublicClient({
+    baseUrl: BASE_URL,
+    fetch: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:8080")),
+  });
+
+  const problem = unwrapError(await client.listEventSeats("event-a"));
+  assert.equal(problem.code, "network_error");
+  assert.equal(problem.status, 0);
+  assert.doesNotMatch(problem.detail, /ECONNREFUSED/, "internals stay out of the UI");
+});
+
+test("a body that is not JSON or not the expected shape is unexpected_response", async () => {
+  const garbage = createPublicClient({
+    baseUrl: BASE_URL,
+    fetch: () => Promise.resolve(new Response("<html>oops</html>", { status: 200 })),
+  });
+  const notJson = unwrapError(await garbage.listEventSeats("event-a"));
+  assert.equal(notJson.code, "unexpected_response");
+
+  const wrongShape = recordingFetch(() => jsonResponse(200, { eventId: "event-a" }));
+  const missingSeats = unwrapError(await makeClient(wrongShape).listEventSeats("event-a"));
+  assert.equal(missingSeats.code, "unexpected_response");
+
+  const missingDeadline = recordingFetch(() =>
+    jsonResponse(201, { id: "hold-1", eventId: "event-a", seatIds: [11] }),
+  );
+  const noExpiry = unwrapError(
+    await makeClient(missingDeadline).createHold({
+      eventId: "event-a",
+      seatIds: [11],
+      idempotencyKey: "key-1",
+    }),
+  );
+  assert.equal(noExpiry.code, "unexpected_response");
+  assert.match(noExpiry.detail, /expiresAt/);
+});

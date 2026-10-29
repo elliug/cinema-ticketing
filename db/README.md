@@ -27,6 +27,26 @@ Two schema rules enforce the hold invariants:
 
 Both rules are pinned by `tests/migrations/m2_schema.sql`. Released rows are kept as history; the active hold is a single row, so availability reads must treat a seat as occupied only while `released_at IS NULL AND reservations.expires_at > now()`: an expired hold that nobody has re-claimed yet is still stored as active until the claim trigger or the expiry worker releases it.
 
+## The availability read and its layout projection (M2)
+
+`GET /api/v1/events/{eventID}/seats` serves every materialized seat of one event with its occupancy **and** the layout projection the browser needs to draw the real seat map. The read (`listSeatAvailabilityQuery` in `apps/api/internal/reservation/service.go`) joins the physical seat and its row:
+
+```sql
+FROM cinema.event_seats es
+JOIN cinema.layout_seats ls ON ls.id = es.layout_seat_id
+JOIN cinema.layout_rows lsr ON lsr.id = ls.layout_row_id
+WHERE es.event_id = $1
+ORDER BY lsr.position, ls.position
+```
+
+Both joins are inner joins because a materialized event seat always comes from one enabled seat of the event's own published layout. The wire shape is additive — `id`, `layoutSeatId`, `state`, `held` as before, plus `rowLabel`, `seatNumber` and `kind`:
+
+- **The occupancy predicate is unchanged**: `released_at IS NULL AND reservations.expires_at > now()`, evaluated by the same `EXISTS` subquery. Adding columns to the projection must never change it, because expiry is lazy.
+- **The order is the map order, not an id order.** Rows come in their own `position` order and seats in their `position` order inside the row. `position` is unique per layout version and per row (`layout_rows`, `layout_seats`), so the pair is a total order and the response is deterministic for a given layout. The browser relies on that order: it groups the seats into rows rather than re-sorting by event seat id.
+- **Each row keeps its own seat count.** `cinema.materialize_event_seats` copies only *enabled* seats, so a row whose second seat is disabled appears with one seat. Nothing pads a row to the widest one, and the projection is immutable for the life of the event because a published layout and an event's layout are both immutable.
+
+This projection is verified end to end by `make verify-m2`, which seeds the irregular layout below and asserts the served row labels, seat numbers, kinds and per-row counts — a regression in the join or the ordering fails the milestone check — and against PostgreSQL by `TestListSeatAvailabilityProjectsTheSeededLayout`, which also proves the read follows the lazy-expiry predicate. `tests/migrations/m2_idempotency.sql` keeps pinning the predicate itself.
+
 ## Hold idempotency (M2)
 
 - `cinema.idempotency_keys` — one row per client supplied `Idempotency-Key`, holding `request_fingerprint` (the payload the key was first used with), `status` (the stored outcome, `201` for a hold), `hold_id` (the reservation it produced), `hold_expires_at` (that hold's deadline, replayed verbatim so a replay never extends the window), `created_at`, and `expires_at` (the record's retention deadline).
@@ -159,4 +179,4 @@ Verify the M2 end-to-end contract: the accepted concurrency race, the loser conf
 make verify-m2
 ```
 
-That script creates a disposable database named `cinema_m2_smoke_<pid>`, applies every migration to it, runs the gated PostgreSQL tests against it (`M2_RECOVERY_DATABASE_URL`), starts the API binary on port 18081 with local administration, the public reservation surface and a 60s hold window, runs `go test -tags acceptance_m2 ./tests/concurrency/` with the seeded `M2_EVENT_ID` and `M2_SEAT_IDS`, then drops the database, flushes only the dedicated Redis database it used, and stops its own process. The default `go test ./apps/api/...` suite needs no database: the PostgreSQL-only tests skip unless `M2_RECOVERY_DATABASE_URL` is set.
+That script creates a disposable database named `cinema_m2_smoke_<pid>`, applies every migration to it, runs the gated PostgreSQL tests against it (`M2_RECOVERY_DATABASE_URL`), starts the API binary on port 18081 with local administration, the public reservation surface and a 60s hold window, asserts that the public availability read serves the seeded irregular layout projection (row labels in row-position order, seat numbers, kinds, and each row's own seat count), runs `go test -tags acceptance_m2 ./tests/concurrency/` with the seeded `M2_EVENT_ID` and `M2_SEAT_IDS`, then drops the database, flushes only the dedicated Redis database it used, and stops its own process. The default `go test ./apps/api/...` suite needs no database: the PostgreSQL-only tests skip unless `M2_RECOVERY_DATABASE_URL` is set.
