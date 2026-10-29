@@ -35,3 +35,6 @@ jobs:
 
       - name: Verify M0 foundation
         run: make verify-m0
+
+      - name: Verify M1 venue and layout flow
+        run: make verify-m1
