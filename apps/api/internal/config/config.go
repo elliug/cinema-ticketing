@@ -25,6 +25,15 @@ type Config struct {
 	LogLevel string
 	// Dependencies names the optional dependency probes wired into readiness.
 	Dependencies []string
+	// LocalAdminEnabled is explicitly enabled only for development.
+	LocalAdminEnabled bool
+	// Environment controls whether local administration may be enabled.
+	Environment string
+	// LocalAdminToken is a secret and must never be logged.
+	LocalAdminToken string
+	// DatabaseURL is required only when local administration is enabled. It may
+	// carry credentials, so it must never be logged.
+	DatabaseURL string
 }
 
 // Load reads configuration from the process environment.
@@ -39,6 +48,10 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	API_SHUTDOWN_TIMEOUT_MS    graceful shutdown budget in milliseconds (default 15000)
 //	API_READINESS_TIMEOUT_MS   readiness deadline in milliseconds (default 5000)
 //	API_DEPENDENCIES           comma-separated dependency probe names (default none)
+//	API_ENV                    environment; local administration requires development
+//	API_LOCAL_ADMIN            true or false; defaults to false
+//	API_LOCAL_ADMIN_TOKEN      secret required when local administration is enabled
+//	API_DATABASE_URL           database URL; required when local administration is enabled
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -46,6 +59,21 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		ReadinessTimeout: 5 * time.Second,
 		LogLevel:         "info",
 		Dependencies:     []string{},
+	}
+
+	cfg.Environment = getenv("API_ENV")
+	cfg.LocalAdminToken = getenv("API_LOCAL_ADMIN_TOKEN")
+	cfg.DatabaseURL = strings.TrimSpace(getenv("API_DATABASE_URL"))
+	if v := getenv("API_LOCAL_ADMIN"); v != "" {
+		if v != "true" && v != "false" {
+			return Config{}, fmt.Errorf("API_LOCAL_ADMIN must be true or false")
+		}
+		cfg.LocalAdminEnabled = v == "true"
+	}
+	if cfg.LocalAdminEnabled && (cfg.Environment != "development" || cfg.LocalAdminToken == "" || cfg.DatabaseURL == "") {
+		// The message names the required settings but never echoes their values,
+		// because the token and the database URL may both carry secrets.
+		return Config{}, fmt.Errorf("local administration requires development, a nonempty token, and a database URL")
 	}
 
 	if v := getenv("API_ADDR"); v != "" {

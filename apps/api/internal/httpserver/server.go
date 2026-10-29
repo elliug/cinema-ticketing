@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
@@ -17,10 +18,11 @@ import (
 
 // Server is the platform HTTP server.
 type Server struct {
-	cfg config.Config
-	svc *health.Service
-	log *slog.Logger
-	srv *http.Server
+	cfg   config.Config
+	svc   *health.Service
+	log   *slog.Logger
+	srv   *http.Server
+	admin http.Handler
 }
 
 // New builds a Server from configuration, a health Service, and a logger.
@@ -36,11 +38,42 @@ func New(cfg config.Config, svc *health.Service, log *slog.Logger) *Server {
 	}
 }
 
-// Handler builds the HTTP handler exposing the health routes.
+// adminPrefix is the URL prefix every administrative route is served under.
+// The registered admin handler exposes routes relative to it, which is the
+// shape adminapi.Mux returns.
+const adminPrefix = "/api/v1/admin/"
+
+// WithAdmin registers the administrative handler subtree that later milestones
+// mount. It returns the server so callers can chain configuration. The mounted
+// subtree is always placed behind AdminHandler, which is fail-closed by default,
+// so an administrative route can never be exposed unguarded.
+//
+// admin serves routes relative to /api/v1/admin/ (for example "POST /cinemas"),
+// matching adminapi.Mux; Handler strips the prefix before delegating.
+func (s *Server) WithAdmin(admin http.Handler) *Server {
+	s.admin = admin
+	return s
+}
+
+// AdminHandler gates inner behind the local-only development guard using the
+// server's configuration. It is the public boundary that administrative routes
+// plug into: every request must pass the localAdminAllowed admission check
+// before reaching inner.
+func (s *Server) AdminHandler(inner http.Handler) http.Handler {
+	return localAdminGuard(s.cfg.Environment, s.cfg.LocalAdminEnabled, s.cfg.LocalAdminToken, inner)
+}
+
+// Handler builds the HTTP handler exposing the unguarded health routes and, when
+// an administrative subtree has been registered, that subtree guarded by
+// AdminHandler. Health is never gated, so liveness/readiness stay reachable
+// regardless of administrative configuration.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.svc.ServeLive)
 	mux.HandleFunc("GET /health/ready", s.readyHandler)
+	if s.admin != nil {
+		mux.Handle(adminPrefix, http.StripPrefix(strings.TrimSuffix(adminPrefix, "/"), s.AdminHandler(s.admin)))
+	}
 	return mux
 }
 
