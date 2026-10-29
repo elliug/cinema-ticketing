@@ -10,8 +10,11 @@ import (
 // the interface keeps the service testable without a live database.
 type Store interface {
 	CreateCinema(ctx context.Context, cinema Cinema) error
+	ListCinemas(ctx context.Context) ([]Cinema, error)
 	CreateRoom(ctx context.Context, room Room) error
+	ListRooms(ctx context.Context, cinemaID string) ([]Room, error)
 	CreateLayout(ctx context.Context, layoutID, roomID string) (Layout, error)
+	ListLayouts(ctx context.Context, roomID string) ([]Layout, error)
 	ReplaceRows(ctx context.Context, layoutID string, rows []Row) (Layout, error)
 	PublishLayout(ctx context.Context, layoutID string) (Layout, error)
 	CloneLayout(ctx context.Context, sourceID, targetID string) (Layout, error)
@@ -72,6 +75,28 @@ func (s *Service) CreateLayout(ctx context.Context, roomID string) (Layout, erro
 		return Layout{}, err
 	}
 	return s.store.CreateLayout(ctx, NewID(), roomID)
+}
+
+// ListCinemas returns every cinema.
+func (s *Service) ListCinemas(ctx context.Context) ([]Cinema, error) {
+	return s.store.ListCinemas(ctx)
+}
+
+// ListRooms returns the rooms of one cinema; a missing cinema is not found.
+func (s *Service) ListRooms(ctx context.Context, cinemaID string) ([]Room, error) {
+	if err := requireID("cinemaId", cinemaID); err != nil {
+		return nil, err
+	}
+	return s.store.ListRooms(ctx, cinemaID)
+}
+
+// ListLayouts returns every layout version of one room; a missing room is not
+// found.
+func (s *Service) ListLayouts(ctx context.Context, roomID string) ([]Layout, error) {
+	if err := requireID("roomId", roomID); err != nil {
+		return nil, err
+	}
+	return s.store.ListLayouts(ctx, roomID)
 }
 
 // SetRows replaces the geometry of a draft layout.

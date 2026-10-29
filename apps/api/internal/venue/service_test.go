@@ -12,6 +12,9 @@ import (
 type fakeStore struct {
 	layout        venue.Layout
 	layouts       map[string]venue.Layout
+	layoutList    []venue.Layout
+	cinemas       []venue.Cinema
+	rooms         []venue.Room
 	events        []venue.Event
 	seats         []venue.EventSeat
 	calls         []string
@@ -84,6 +87,21 @@ func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event) error {
 func (f *fakeStore) ListEventSeats(_ context.Context, _ string) ([]venue.EventSeat, error) {
 	f.record("ListEventSeats")
 	return f.seats, f.failWith
+}
+
+func (f *fakeStore) ListCinemas(_ context.Context) ([]venue.Cinema, error) {
+	f.record("ListCinemas")
+	return f.cinemas, f.failWith
+}
+
+func (f *fakeStore) ListRooms(_ context.Context, _ string) ([]venue.Room, error) {
+	f.record("ListRooms")
+	return f.rooms, f.failWith
+}
+
+func (f *fakeStore) ListLayouts(_ context.Context, _ string) ([]venue.Layout, error) {
+	f.record("ListLayouts")
+	return f.layoutList, f.failWith
 }
 
 func TestSetRowsRejectsDuplicateSeatNumberWithoutPersisting(t *testing.T) {
@@ -196,6 +214,72 @@ func TestCreateEventRejectsZeroStart(t *testing.T) {
 	var invalid *venue.InvalidError
 	if !errors.As(err, &invalid) || invalid.Field != "startsAt" {
 		t.Fatalf("error = %v, want startsAt rejection", err)
+	}
+}
+
+func TestListRoomsRejectsEmptyCinemaID(t *testing.T) {
+	store := &fakeStore{}
+	svc := venue.NewService(store)
+	_, err := svc.ListRooms(context.Background(), "   ")
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "cinemaId" {
+		t.Fatalf("error = %v, want cinemaId rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("store calls = %v, want no read attempt", store.calls)
+	}
+}
+
+func TestListLayoutsRejectsEmptyRoomID(t *testing.T) {
+	store := &fakeStore{}
+	svc := venue.NewService(store)
+	_, err := svc.ListLayouts(context.Background(), "")
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "roomId" {
+		t.Fatalf("error = %v, want roomId rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("store calls = %v, want no read attempt", store.calls)
+	}
+}
+
+func TestListCinemasReturnsEveryStoredVenue(t *testing.T) {
+	store := &fakeStore{cinemas: []venue.Cinema{
+		{ID: "cinema-1", Name: "Central", Timezone: "Europe/Madrid"},
+		{ID: "cinema-2", Name: "Norte", Timezone: "Europe/Madrid", Address: "Sol 2"},
+	}}
+	svc := venue.NewService(store)
+	cinemas, err := svc.ListCinemas(context.Background())
+	if err != nil {
+		t.Fatalf("ListCinemas returned error: %v", err)
+	}
+	if len(cinemas) != 2 || cinemas[1].Address != "Sol 2" {
+		t.Fatalf("cinemas = %+v, want both stored venues", cinemas)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "ListCinemas" {
+		t.Fatalf("store calls = %v, want exactly ListCinemas", store.calls)
+	}
+}
+
+func TestListRoomsPropagatesMissingCinema(t *testing.T) {
+	svc := venue.NewService(&fakeStore{failWith: venue.ErrNotFound})
+	if _, err := svc.ListRooms(context.Background(), "cinema-9"); !errors.Is(err, venue.ErrNotFound) {
+		t.Fatalf("error = %v, want not found propagation", err)
+	}
+}
+
+func TestListLayoutsReturnsVersionsWithStatus(t *testing.T) {
+	store := &fakeStore{layoutList: []venue.Layout{
+		{ID: "layout-1", RoomID: "room-1", Version: 1, Status: venue.LayoutPublished},
+		{ID: "layout-2", RoomID: "room-1", Version: 2, Status: venue.LayoutDraft},
+	}}
+	svc := venue.NewService(store)
+	layouts, err := svc.ListLayouts(context.Background(), "room-1")
+	if err != nil {
+		t.Fatalf("ListLayouts returned error: %v", err)
+	}
+	if len(layouts) != 2 || layouts[0].Version != 1 || layouts[1].Status != venue.LayoutDraft {
+		t.Fatalf("layouts = %+v, want both versions in version order", layouts)
 	}
 }
 

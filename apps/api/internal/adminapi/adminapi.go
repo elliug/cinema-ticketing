@@ -16,8 +16,11 @@ import (
 // VenueService is the administrative application service contract.
 type VenueService interface {
 	CreateCinema(ctx context.Context, name, timezone, address string) (venue.Cinema, error)
+	ListCinemas(ctx context.Context) ([]venue.Cinema, error)
 	CreateRoom(ctx context.Context, cinemaID, name string) (venue.Room, error)
+	ListRooms(ctx context.Context, cinemaID string) ([]venue.Room, error)
 	CreateLayout(ctx context.Context, roomID string) (venue.Layout, error)
+	ListLayouts(ctx context.Context, roomID string) ([]venue.Layout, error)
 	SetRows(ctx context.Context, layoutID string, rows []venue.Row) (venue.Layout, error)
 	PublishLayout(ctx context.Context, layoutID string) (venue.Layout, error)
 	CloneLayout(ctx context.Context, layoutID string) (venue.Layout, error)
@@ -39,8 +42,11 @@ func New(svc VenueService) *Handler { return &Handler{svc: svc} }
 func (h *Handler) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cinemas", h.createCinema)
+	mux.HandleFunc("GET /cinemas", h.listCinemas)
 	mux.HandleFunc("POST /rooms", h.createRoom)
+	mux.HandleFunc("GET /cinemas/{cinemaId}/rooms", h.listRooms)
 	mux.HandleFunc("POST /layouts", h.createLayout)
+	mux.HandleFunc("GET /rooms/{roomId}/layouts", h.listLayouts)
 	mux.HandleFunc("PUT /layouts/{layoutId}/rows", h.setRows)
 	mux.HandleFunc("POST /layouts/{layoutId}/publish", h.publishLayout)
 	mux.HandleFunc("POST /layouts/{layoutId}/clone", h.cloneLayout)
@@ -88,12 +94,53 @@ func (h *Handler) createCinema(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	c, err := h.svc.CreateCinema(r.Context(), req.Name, req.Timezone, req.Address)
+	cinema, err := h.svc.CreateCinema(r.Context(), req.Name, req.Timezone, req.Address)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": c.ID, "name": c.Name, "timezone": c.Timezone, "address": c.Address})
+	writeJSON(w, http.StatusCreated, cinemaJSON(cinema))
+}
+
+func (h *Handler) listCinemas(w http.ResponseWriter, r *http.Request) {
+	cinemas, err := h.svc.ListCinemas(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(cinemas))
+	for _, cinema := range cinemas {
+		items = append(items, cinemaJSON(cinema))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cinemas": items})
+}
+
+func (h *Handler) listRooms(w http.ResponseWriter, r *http.Request) {
+	cinemaID := r.PathValue("cinemaId")
+	rooms, err := h.svc.ListRooms(r.Context(), cinemaID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(rooms))
+	for _, room := range rooms {
+		items = append(items, roomJSON(room))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cinemaId": cinemaID, "rooms": items})
+}
+
+func (h *Handler) listLayouts(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomId")
+	layouts, err := h.svc.ListLayouts(r.Context(), roomID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(layouts))
+	for _, layout := range layouts {
+		items = append(items, map[string]any{"id": layout.ID, "version": layout.Version, "status": layout.Status})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"roomId": roomID, "layouts": items})
 }
 
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +153,7 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": room.ID, "cinemaId": room.CinemaID, "name": room.Name})
+	writeJSON(w, http.StatusCreated, roomJSON(room))
 }
 
 func (h *Handler) createLayout(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +253,17 @@ func (h *Handler) listEventSeats(w http.ResponseWriter, r *http.Request) {
 
 func writeLayout(w http.ResponseWriter, status int, layout venue.Layout) {
 	writeJSON(w, status, layout)
+}
+
+// cinemaJSON is the wire shape of a cinema, shared by every cinema response so
+// the create and list endpoints cannot drift apart.
+func cinemaJSON(cinema venue.Cinema) map[string]any {
+	return map[string]any{"id": cinema.ID, "name": cinema.Name, "timezone": cinema.Timezone, "address": cinema.Address}
+}
+
+// roomJSON is the wire shape of a room, shared by every room response.
+func roomJSON(room venue.Room) map[string]any {
+	return map[string]any{"id": room.ID, "cinemaId": room.CinemaID, "name": room.Name}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {

@@ -53,12 +53,61 @@ func (s *PostgresStore) CreateCinema(ctx context.Context, cinema Cinema) error {
 	return classifyError(err)
 }
 
+// rowExists reports whether one row satisfies the given lookup, mapping a
+// missing row through the same classification the rest of the store uses.
+func (s *PostgresStore) rowExists(ctx context.Context, query, id string) error {
+	var found int
+	return classifyError(s.pool.QueryRow(ctx, query, id).Scan(&found))
+}
+
+// ListCinemas reads every cinema, ordered by name.
+func (s *PostgresStore) ListCinemas(ctx context.Context) ([]Cinema, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, timezone, COALESCE(address, '') FROM cinema.cinemas ORDER BY name, id`)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+	cinemas := []Cinema{}
+	for rows.Next() {
+		var cinema Cinema
+		if err := rows.Scan(&cinema.ID, &cinema.Name, &cinema.Timezone, &cinema.Address); err != nil {
+			return nil, classifyError(err)
+		}
+		cinemas = append(cinemas, cinema)
+	}
+	return cinemas, classifyError(rows.Err())
+}
+
 // CreateRoom inserts one room for an existing cinema.
 func (s *PostgresStore) CreateRoom(ctx context.Context, room Room) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO cinema.rooms (id, cinema_id, name) VALUES ($1, $2, $3)`,
 		room.ID, room.CinemaID, room.Name)
 	return classifyError(err)
+}
+
+// ListRooms reads the rooms of one cinema, ordered by name. A missing cinema is
+// reported as not found instead of as an empty list.
+func (s *PostgresStore) ListRooms(ctx context.Context, cinemaID string) ([]Room, error) {
+	if err := s.rowExists(ctx, `SELECT 1 FROM cinema.cinemas WHERE id = $1`, cinemaID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, cinema_id, name FROM cinema.rooms WHERE cinema_id = $1 ORDER BY name, id`, cinemaID)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+	rooms := []Room{}
+	for rows.Next() {
+		var room Room
+		if err := rows.Scan(&room.ID, &room.CinemaID, &room.Name); err != nil {
+			return nil, classifyError(err)
+		}
+		rooms = append(rooms, room)
+	}
+	return rooms, classifyError(rows.Err())
 }
 
 // CreateLayout inserts the next draft version for a room.
@@ -72,6 +121,30 @@ func (s *PostgresStore) CreateLayout(ctx context.Context, layoutID, roomID strin
 		return Layout{}, classifyError(err)
 	}
 	return Layout{ID: layoutID, RoomID: roomID, Version: version, Status: LayoutDraft, Rows: []Row{}}, nil
+}
+
+// ListLayouts reads every version of one room, ordered by version. A missing
+// room is reported as not found instead of as an empty list.
+func (s *PostgresStore) ListLayouts(ctx context.Context, roomID string) ([]Layout, error) {
+	if err := s.rowExists(ctx, `SELECT 1 FROM cinema.rooms WHERE id = $1`, roomID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, room_id, version, status FROM cinema.layout_versions WHERE room_id = $1 ORDER BY version`,
+		roomID)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+	layouts := []Layout{}
+	for rows.Next() {
+		layout := Layout{Rows: []Row{}}
+		if err := rows.Scan(&layout.ID, &layout.RoomID, &layout.Version, &layout.Status); err != nil {
+			return nil, classifyError(err)
+		}
+		layouts = append(layouts, layout)
+	}
+	return layouts, classifyError(rows.Err())
 }
 
 // ReplaceRows replaces the geometry of a draft layout in one transaction.

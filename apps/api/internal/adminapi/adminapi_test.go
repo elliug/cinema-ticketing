@@ -14,14 +14,17 @@ import (
 )
 
 type fakeService struct {
-	layout      venue.Layout
-	seats       []venue.EventSeat
-	calls       []string
-	createErr   error
-	lastRows    []venue.Row
-	lastEvent   venue.Event
-	lastCinema  venue.Cinema
-	lastRequest string
+	layout         venue.Layout
+	layoutVersions []venue.Layout
+	cinemas        []venue.Cinema
+	rooms          []venue.Room
+	seats          []venue.EventSeat
+	calls          []string
+	createErr      error
+	lastRows       []venue.Row
+	lastEvent      venue.Event
+	lastCinema     venue.Cinema
+	lastRequest    string
 }
 
 func (f *fakeService) CreateCinema(_ context.Context, name, timezone, address string) (venue.Cinema, error) {
@@ -78,6 +81,27 @@ func (f *fakeService) CreateEvent(_ context.Context, roomID, filmID, layoutVersi
 func (f *fakeService) ListEventSeats(_ context.Context, eventID string) ([]venue.EventSeat, error) {
 	f.calls = append(f.calls, "ListEventSeats")
 	return f.seats, f.createErr
+}
+
+func (f *fakeService) ListCinemas(_ context.Context) ([]venue.Cinema, error) {
+	f.calls = append(f.calls, "ListCinemas")
+	return f.cinemas, f.createErr
+}
+
+func (f *fakeService) ListRooms(_ context.Context, cinemaID string) ([]venue.Room, error) {
+	f.calls = append(f.calls, "ListRooms")
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.rooms, nil
+}
+
+func (f *fakeService) ListLayouts(_ context.Context, roomID string) ([]venue.Layout, error) {
+	f.calls = append(f.calls, "ListLayouts")
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.layoutVersions, nil
 }
 
 func do(t *testing.T, svc *fakeService, method, target, body string) *httptest.ResponseRecorder {
@@ -190,6 +214,117 @@ func TestCreateEventReturnsMaterializedSeatEndpoint(t *testing.T) {
 	seats, _ := body["seats"].([]any)
 	if len(seats) != 1 {
 		t.Fatalf("seats = %v, want one materialized seat", body["seats"])
+	}
+}
+
+func TestListCinemasReturnsEveryCinema(t *testing.T) {
+	svc := &fakeService{cinemas: []venue.Cinema{
+		{ID: "cinema-1", Name: "Central", Timezone: "Europe/Madrid"},
+		{ID: "cinema-2", Name: "Norte", Timezone: "Europe/Madrid", Address: "Sol 2"},
+	}}
+	w := do(t, svc, http.MethodGet, "/cinemas", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	cinemas, _ := body["cinemas"].([]any)
+	if len(cinemas) != 2 {
+		t.Fatalf("cinemas = %v, want both venues", body["cinemas"])
+	}
+	first, _ := cinemas[0].(map[string]any)
+	for _, key := range []string{"id", "name", "timezone", "address"} {
+		if _, ok := first[key]; !ok {
+			t.Fatalf("cinema is missing key %q: %v", key, first)
+		}
+	}
+	if second, _ := cinemas[1].(map[string]any); second["address"] != "Sol 2" {
+		t.Fatalf("second cinema = %v, want its address", second)
+	}
+}
+
+func TestListCinemasWithoutVenuesReturnsEmptyArray(t *testing.T) {
+	w := do(t, &fakeService{}, http.MethodGet, "/cinemas", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := decodeBody(t, w)
+	cinemas, ok := body["cinemas"].([]any)
+	if !ok || len(cinemas) != 0 {
+		t.Fatalf("cinemas = %v, want an empty JSON array", body["cinemas"])
+	}
+}
+
+func TestListRoomsReturnsRoomsOfOneCinema(t *testing.T) {
+	svc := &fakeService{rooms: []venue.Room{
+		{ID: "room-1", CinemaID: "cinema-1", Name: "Sala 1"},
+		{ID: "room-2", CinemaID: "cinema-1", Name: "Sala 2"},
+	}}
+	w := do(t, svc, http.MethodGet, "/cinemas/cinema-1/rooms", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	if body["cinemaId"] != "cinema-1" {
+		t.Fatalf("cinemaId = %v, want the requested cinema", body["cinemaId"])
+	}
+	rooms, _ := body["rooms"].([]any)
+	if len(rooms) != 2 {
+		t.Fatalf("rooms = %v, want both rooms", body["rooms"])
+	}
+	first, _ := rooms[0].(map[string]any)
+	for _, key := range []string{"id", "cinemaId", "name"} {
+		if _, ok := first[key]; !ok {
+			t.Fatalf("room is missing key %q: %v", key, first)
+		}
+	}
+}
+
+func TestListRoomsMissingCinemaReturns404(t *testing.T) {
+	svc := &fakeService{createErr: venue.ErrNotFound}
+	w := do(t, svc, http.MethodGet, "/cinemas/cinema-9/rooms", "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	if body["code"] != "not_found" || body["detail"] != "the requested resource does not exist" {
+		t.Fatalf("problem = %v, want the not_found problem", body)
+	}
+}
+
+func TestListLayoutsReturnsVersionsWithStatus(t *testing.T) {
+	svc := &fakeService{layoutVersions: []venue.Layout{
+		{ID: "layout-1", RoomID: "room-1", Version: 1, Status: venue.LayoutPublished},
+		{ID: "layout-2", RoomID: "room-1", Version: 2, Status: venue.LayoutDraft},
+	}}
+	w := do(t, svc, http.MethodGet, "/rooms/room-1/layouts", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	if body["roomId"] != "room-1" {
+		t.Fatalf("roomId = %v, want the requested room", body["roomId"])
+	}
+	layouts, _ := body["layouts"].([]any)
+	if len(layouts) != 2 {
+		t.Fatalf("layouts = %v, want both versions", body["layouts"])
+	}
+	first, _ := layouts[0].(map[string]any)
+	if first["id"] != "layout-1" || first["version"] != float64(1) || first["status"] != "published" {
+		t.Fatalf("first layout = %v, want id, version, and status", first)
+	}
+	if second, _ := layouts[1].(map[string]any); second["status"] != "draft" {
+		t.Fatalf("second layout = %v, want the draft status", second)
+	}
+}
+
+func TestListLayoutsMissingRoomReturns404(t *testing.T) {
+	svc := &fakeService{createErr: venue.ErrNotFound}
+	w := do(t, svc, http.MethodGet, "/rooms/room-9/layouts", "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%s)", w.Code, w.Body)
+	}
+	if body := decodeBody(t, w); body["code"] != "not_found" {
+		t.Fatalf("problem = %v, want not_found", body)
 	}
 }
 
