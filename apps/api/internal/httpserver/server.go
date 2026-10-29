@@ -18,11 +18,12 @@ import (
 
 // Server is the platform HTTP server.
 type Server struct {
-	cfg   config.Config
-	svc   *health.Service
-	log   *slog.Logger
-	srv   *http.Server
-	admin http.Handler
+	cfg    config.Config
+	svc    *health.Service
+	log    *slog.Logger
+	srv    *http.Server
+	admin  http.Handler
+	public http.Handler
 }
 
 // New builds a Server from configuration, a health Service, and a logger.
@@ -42,6 +43,26 @@ func New(cfg config.Config, svc *health.Service, log *slog.Logger) *Server {
 // The registered admin handler exposes routes relative to it, which is the
 // shape adminapi.Mux returns.
 const adminPrefix = "/api/v1/admin/"
+
+// publicPrefix is the URL prefix every customer facing route is served under.
+// The registered public handler exposes routes relative to it, which is the
+// shape publicapi.Mux returns.
+const publicPrefix = "/api/v1"
+
+// WithPublic registers the public application handler subtree: the customer
+// facing routes such as hold creation and seat availability. It returns the
+// server so callers can chain configuration.
+//
+// public serves routes relative to /api/v1 (for example
+// "POST /reservations/holds"), matching publicapi.Mux; Handler strips the
+// prefix before delegating. The subtree is deliberately mounted *outside*
+// AdminHandler: a customer selecting seats has no administrative token, so
+// requiring one would make the public reservation surface unreachable.
+// Administrative routes stay under /api/v1/admin/ and behind the guard.
+func (s *Server) WithPublic(public http.Handler) *Server {
+	s.public = public
+	return s
+}
 
 // WithAdmin registers the administrative handler subtree that later milestones
 // mount. It returns the server so callers can chain configuration. The mounted
@@ -63,14 +84,20 @@ func (s *Server) AdminHandler(inner http.Handler) http.Handler {
 	return localAdminGuard(s.cfg.Environment, s.cfg.LocalAdminEnabled, s.cfg.LocalAdminToken, inner)
 }
 
-// Handler builds the HTTP handler exposing the unguarded health routes and, when
-// an administrative subtree has been registered, that subtree guarded by
-// AdminHandler. Health is never gated, so liveness/readiness stay reachable
-// regardless of administrative configuration.
+// Handler builds the HTTP handler exposing the unguarded health routes, the
+// unguarded public application subtree when one has been registered, and the
+// administrative subtree guarded by AdminHandler. Health and the public
+// application routes are never gated, so liveness/readiness and seat selection
+// stay reachable regardless of administrative configuration.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.svc.ServeLive)
 	mux.HandleFunc("GET /health/ready", s.readyHandler)
+	if s.public != nil {
+		// The more specific /api/v1/admin/ pattern below still wins for the
+		// administrative subtree, so the public mount cannot expose it.
+		mux.Handle(publicPrefix+"/", http.StripPrefix(publicPrefix, s.public))
+	}
 	if s.admin != nil {
 		mux.Handle(adminPrefix, http.StripPrefix(strings.TrimSuffix(adminPrefix, "/"), s.AdminHandler(s.admin)))
 	}
