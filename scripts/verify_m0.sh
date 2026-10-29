@@ -28,10 +28,12 @@ wait_for() {
 }
 
 cd "$root"
+go build -o "$tmp/api" ./apps/api/cmd/api || { printf 'the API did not build\n' >&2; exit 1; }
+
 API_DEPENDENCIES=postgresql,redis \
 API_POSTGRESQL_ADDR=127.0.0.1:5432 \
 API_REDIS_ADDR=127.0.0.1:6379 \
-go run ./apps/api/cmd/api >"$tmp/api.log" 2>&1 &
+"$tmp/api" >"$tmp/api.log" 2>&1 &
 api_pid=$!
 
 pnpm --dir apps/web start --hostname 127.0.0.1 --port 3000 >"$tmp/web.log" 2>&1 &

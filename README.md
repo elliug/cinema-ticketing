@@ -67,12 +67,61 @@ make deps-down          # stop local containers without deleting volumes
 
 `Makefile` automatically uses either `docker compose` or `docker-compose`.
 
+## M1 local administration
+
+M1 adds cinemas, rooms, immutable versioned layouts, films, and events with
+materialized event seats. Its administrative API is **development-only and
+disabled by default**. Enable it explicitly:
+
+```sh
+API_ENV=development \
+API_LOCAL_ADMIN=true \
+API_LOCAL_ADMIN_TOKEN=local-dev-token \
+API_DATABASE_URL='postgres://cinema:cinema_local_only@127.0.0.1:5432/cinema?sslmode=disable' \
+go run ./apps/api/cmd/api
+```
+
+Requests must then come from a loopback peer and carry
+`Authorization: Bearer local-dev-token`. Loading fails if local administration
+is enabled outside `API_ENV=development` or without a token and a database URL,
+so it cannot be switched on by accident in production. This is a development
+guard, not production authentication.
+
+The administrative contract lives under `/api/v1/admin`:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/cinemas` | Create a cinema |
+| `POST` | `/rooms` | Create a room for a cinema |
+| `POST` | `/layouts` | Create the next draft layout version for a room |
+| `PUT` | `/layouts/{layoutId}/rows` | Replace a draft layout geometry; rows may hold different seat counts |
+| `POST` | `/layouts/{layoutId}/publish` | Freeze a draft layout, making it immutable |
+| `POST` | `/layouts/{layoutId}/clone` | Copy a published layout into a new draft version |
+| `GET` | `/layouts/{layoutId}` | Read a layout version with its rows and seats |
+| `POST` | `/films` | Create a catalog entry |
+| `POST` | `/events` | Schedule an event and materialize its event seats |
+| `GET` | `/events/{eventId}/seats` | Read the materialized event seats |
+
+Errors use RFC 9457 problem details with a stable `code` (`invalid_input`, `invalid_request`, `not_found`, `conflict`, `internal_error`) and a human-safe `detail`.
+
+Apply and verify the M1 migration:
+
+```sh
+MIGRATION_VERSION=0002_venue_layout docker compose --profile tools run --rm migrate
+make verify-migrations
+./scripts/verify_m1.sh
+```
+
+`scripts/verify_m1.sh` runs the built API against a temporary database and proves
+the guard, irregular layout publication, and event seat materialization through
+HTTP only.
+
 ## M0 boundaries
 
-M0 intentionally contains no cinema, room, layout, event, seat, reservation, payment, ticket, identity, or reporting behavior. The tagged test in `tests/concurrency` records M2's double-booking acceptance contract and remains RED until the reservation API exists:
+M0 intentionally contains no cinema, room, layout, event, seat, reservation, payment, ticket, identity, or reporting behavior. The M1 migration adds the `cinema` schema; reservation, payment, ticket, identity, and reporting behavior remain absent. The tagged test in `tests/concurrency` records M2's double-booking acceptance contract and remains RED until the reservation API exists:
 
 ```sh
 go test -tags=acceptance_m2 ./tests/concurrency
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and [`odd/tasks/m0-foundation.md`](odd/tasks/m0-foundation.md) for implementation evidence.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and [`odd/tasks/m0-foundation.md`](odd/tasks/m0-foundation.md) for M0 evidence and [`odd/tasks/m1-venue-layout.md`](odd/tasks/m1-venue-layout.md) for M1 evidence.
