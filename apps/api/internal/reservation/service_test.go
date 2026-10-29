@@ -28,6 +28,14 @@ type fakeStore struct {
 
 	recordCalls  int
 	lookupMisses int
+
+	// Expiry sweep double: the canned result or failure the durable layer
+	// reports, and the arguments it was asked to sweep with.
+	expireResult reservation.ExpiryResult
+	expireErr    error
+	expireCalls  int
+	expireNow    time.Time
+	expireBatch  int
 }
 
 func newFakeStore() *fakeStore {
@@ -62,6 +70,16 @@ func (f *fakeStore) RecordHold(_ context.Context, hold reservation.Hold, record 
 	f.records[record.Key] = record
 	f.holds[hold.ID] = hold
 	return nil
+}
+
+func (f *fakeStore) ExpireHolds(_ context.Context, now time.Time, batch int) (reservation.ExpiryResult, error) {
+	f.expireCalls++
+	f.expireNow = now
+	f.expireBatch = batch
+	if f.expireErr != nil {
+		return reservation.ExpiryResult{}, f.expireErr
+	}
+	return f.expireResult, nil
 }
 
 func (f *fakeStore) ListSeatAvailability(_ context.Context, eventID string) ([]reservation.SeatAvailability, error) {
