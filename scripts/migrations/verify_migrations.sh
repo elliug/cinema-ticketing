@@ -7,6 +7,7 @@ DB_USER="${DB_USER:-cinema}"
 DB_NAME="${DB_NAME:-cinema_m0_verify}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
 M1_TEST_FILE="${M1_TEST_FILE:-/workspace/tests/migrations/m1_schema.sql}"
+M2_TEST_FILE="${M2_TEST_FILE:-/workspace/tests/migrations/m2_schema.sql}"
 
 log() { printf '[migrations] %s\n' "$*"; }
 fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -17,6 +18,9 @@ test -r "$MIGRATIONS_DIR/0001_init.down.sql" || fail "missing 0001_init.down.sql
 test -r "$MIGRATIONS_DIR/0002_venue_layout.up.sql" || fail "missing 0002_venue_layout.up.sql"
 test -r "$MIGRATIONS_DIR/0002_venue_layout.down.sql" || fail "missing 0002_venue_layout.down.sql"
 test -r "$M1_TEST_FILE" || fail "missing M1 schema test"
+test -r "$MIGRATIONS_DIR/0003_reservation.up.sql" || fail "missing 0003_reservation.up.sql"
+test -r "$MIGRATIONS_DIR/0003_reservation.down.sql" || fail "missing 0003_reservation.down.sql"
+test -r "$M2_TEST_FILE" || fail "missing M2 schema test"
 
 psql_admin() {
   psql -X -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres "$@"
@@ -53,6 +57,22 @@ assert_current() {
   test "$tables" = "schema_migrations,settings" || fail "unexpected platform tables: $tables"
 }
 
+assert_versions() {
+  expected="$1"
+  versions="$(psql_target -tA -c "SELECT string_agg(version, ',' ORDER BY version) FROM platform.schema_migrations;")"
+  test "$versions" = "$expected" || fail "expected versions $expected, got $versions"
+}
+
+assert_m1_present() {
+  tables="$(psql_target -tA -c "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'cinema';")"
+  test "$tables" = "cinemas,event_seats,events,films,layout_rows,layout_seats,layout_versions,rooms" \
+    || fail "M1 tables must survive a 0003 rollback, got $tables"
+  objects="$(psql_target -tA -c "SELECT count(*) FROM pg_class WHERE relnamespace = 'cinema'::regnamespace AND relname IN ('reservation_seats_active_hold','reservation_seats_event_seat','reservations_expires_at');")"
+  test "$objects" = "0" || fail "M2 indexes must be absent after rollback, got $objects"
+  objects="$(psql_target -tA -c "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'release_expired_seat_hold') + (SELECT count(*) FROM pg_constraint WHERE conname = 'event_seats_id_event_key');")"
+  test "$objects" = "0" || fail "M2 trigger function and event-seat key must be absent after rollback, got $objects"
+}
+
 log "applying 0001_init"
 psql_target -q -f "$MIGRATIONS_DIR/0001_init.up.sql"
 assert_current
@@ -77,3 +97,17 @@ log "reapplying 0002_venue_layout"
 psql_target -q -f "$MIGRATIONS_DIR/0002_venue_layout.up.sql"
 psql_target -q -f "$M1_TEST_FILE"
 log "M0 and M1 up/down/up verification passed"
+
+log "applying 0003_reservation"
+psql_target -q -f "$MIGRATIONS_DIR/0003_reservation.up.sql"
+psql_target -q -f "$M2_TEST_FILE"
+assert_versions '0001_init,0002_venue_layout,0003_reservation'
+log "rolling back 0003_reservation"
+psql_target -q -f "$MIGRATIONS_DIR/0003_reservation.down.sql"
+assert_versions '0001_init,0002_venue_layout'
+assert_m1_present
+psql_target -q -f "$M1_TEST_FILE"
+log "reapplying 0003_reservation"
+psql_target -q -f "$MIGRATIONS_DIR/0003_reservation.up.sql"
+psql_target -q -f "$M2_TEST_FILE"
+log "M0, M1 and M2 up/down/up verification passed"
