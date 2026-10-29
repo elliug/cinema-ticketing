@@ -47,6 +47,13 @@ var (
 	// record for the key. The store cannot tell a replay from a reuse on its
 	// own, so the service resolves it by reading the stored record.
 	ErrIdempotencyKeyTaken = errors.New("reservation: idempotency key already recorded")
+
+	// ErrUnknownReference reports a claim that names an event, seat, or hold the
+	// durable store does not know. It is caller error, and it is kept apart from
+	// the validation errors the service produces itself because the PostgreSQL
+	// message behind it names tables and constraint values: that message belongs
+	// in an operator's log, never in a client's response detail.
+	ErrUnknownReference = errors.New("reservation: unknown event, seat, or hold reference")
 )
 
 const (
@@ -62,6 +69,11 @@ const (
 	// maxIdempotencyKeyLength bounds the client supplied key so a record stays
 	// a bounded row.
 	maxIdempotencyKeyLength = 200
+
+	// maxSeatsPerHold bounds one seat selection. A larger request is not a ticket
+	// purchase, and rejecting it before any I/O keeps the Redis key list and the
+	// durable transaction bounded whatever the caller sends.
+	maxSeatsPerHold = 20
 )
 
 // Hold is the durable outcome of a hold request: one reservation row plus one
@@ -319,6 +331,9 @@ func claimedSeats(eventSeatIDs []int64) ([]int64, error) {
 	if len(eventSeatIDs) == 0 {
 		return nil, fmt.Errorf("%w: at least one event seat must be selected", ErrInvalidInput)
 	}
+	if len(eventSeatIDs) > maxSeatsPerHold {
+		return nil, fmt.Errorf("%w: a hold may claim at most %d seats, got %d", ErrInvalidInput, maxSeatsPerHold, len(eventSeatIDs))
+	}
 	seen := make(map[int64]struct{}, len(eventSeatIDs))
 	seats := make([]int64, 0, len(eventSeatIDs))
 	for _, eventSeatID := range eventSeatIDs {
@@ -364,6 +379,7 @@ func mapDurableError(err error) error {
 		ErrHoldWindowExpired,
 		ErrDuplicateClaim,
 		ErrIdempotencyKeyReused,
+		ErrUnknownReference,
 		ErrEventNotFound,
 		ErrInvalidInput,
 	} {
@@ -423,6 +439,25 @@ const recordHoldAttempts = 3
 // authoritative source of truth for reservations.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+}
+
+// ReservationSchemaPresent reports whether this database carries the durable
+// reservation tables. The process uses it to decide whether the reservation
+// surface and the expiry worker belong in this deployment: mounting them against
+// an older schema would advertise routes it cannot serve and log a sweep failure
+// on every tick, which is exactly the kind of standing error that hides a real one.
+func (s *PostgresStore) ReservationSchemaPresent(ctx context.Context) (bool, error) {
+	if s == nil || s.pool == nil {
+		return false, errors.New("reservation database is not configured")
+	}
+	var present bool
+	const query = `SELECT to_regclass('cinema.reservations') IS NOT NULL
+	                  AND to_regclass('cinema.reservation_seats') IS NOT NULL
+	                  AND to_regclass('cinema.idempotency_keys') IS NOT NULL`
+	if err := s.pool.QueryRow(ctx, query).Scan(&present); err != nil {
+		return false, fmt.Errorf("read the reservation schema state: %w", err)
+	}
+	return present, nil
 }
 
 // NewPostgresStore opens a pooled connection to the given database URL.
@@ -552,7 +587,11 @@ func classifyDurableError(err error) error {
 		case "23514":
 			return fmt.Errorf("%w: %s", ErrHoldWindowExpired, pgErr.Message)
 		case "23503", "22P02":
-			return fmt.Errorf("%w: %s", ErrInvalidInput, pgErr.Message)
+			// A foreign key or cast failure means the claim named a reference the
+			// store does not know. The driver message names tables, constraints and
+			// values, so it is kept for the operator's log under its own sentinel and
+			// never used as a client's response detail.
+			return fmt.Errorf("%w: %s", ErrUnknownReference, pgErr.Message)
 		}
 	}
 	return err

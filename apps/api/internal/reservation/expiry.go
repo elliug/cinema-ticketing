@@ -3,6 +3,7 @@ package reservation
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -212,4 +213,141 @@ func (s *PostgresStore) expireHolds(ctx context.Context, now time.Time, batch in
 		return ExpiryResult{}, classifyDurableError(err)
 	}
 	return result, nil
+}
+
+// DatabaseClock reads the authoritative deadline for a sweep. PostgreSQL
+// implements it; a fake is what lets the worker be tested without a database.
+//
+// The sweep compares against this value instead of now() so the deadline is
+// explicit and reproducible. The caller therefore owes the sweep a deadline taken
+// from the database clock: a value ahead of it would expire live holds early and
+// write a future-dated released_at.
+type DatabaseClock interface {
+	DatabaseNow(ctx context.Context) (time.Time, error)
+}
+
+// databaseNowQuery reads the PostgreSQL clock. It is the single source of truth
+// for the sweep deadline, so a skewed API host cannot expire live holds early.
+const databaseNowQuery = `SELECT now()`
+
+// DatabaseNow returns the PostgreSQL clock.
+func (s *PostgresStore) DatabaseNow(ctx context.Context) (time.Time, error) {
+	var now time.Time
+	if err := s.pool.QueryRow(ctx, databaseNowQuery).Scan(&now); err != nil {
+		return time.Time{}, fmt.Errorf("reservation: read the database clock: %w", classifyDurableError(err))
+	}
+	return now, nil
+}
+
+// SweeperConfig is the process wiring of the durable expiry sweep: how often it
+// runs, how much one batch locks, and how long any single sweep may take.
+type SweeperConfig struct {
+	// Interval is the cadence between ticks. It must be positive and the process
+	// configuration keeps it at or below half the hold window.
+	Interval time.Duration
+	// Batch is how many expired holds one sweep transaction locks.
+	Batch int
+	// Timeout bounds one sweep, including the clock read, so a stalled database
+	// cannot wedge the worker.
+	Timeout time.Duration
+	// MaxBatches bounds how many batches one tick may run, so a backlog cannot
+	// monopolise the worker; the next tick continues from where this one stopped.
+	MaxBatches int
+	// Logger receives the start/stop notices and every failed tick. A sweep
+	// failure is logged and retried on the next tick, never fatal.
+	Logger *slog.Logger
+}
+
+// Sweeper runs the durable expiry sweep on a configured cadence. It keeps no
+// state between ticks: correctness lives in the durable rows, so a killed worker
+// resumes from them and two workers divide the work instead of duplicating it.
+type Sweeper struct {
+	service *Service
+	clock   DatabaseClock
+	cfg     SweeperConfig
+}
+
+// NewSweeper builds a sweep worker. It refuses a configuration that could not
+// make progress (a zero cadence, batch, batch bound, or deadline) instead of
+// starting a loop that spins or sweeps with no bound.
+func NewSweeper(service *Service, clock DatabaseClock, cfg SweeperConfig) (*Sweeper, error) {
+	if service == nil {
+		return nil, fmt.Errorf("%w: expiry sweep needs a reservation service", ErrInvalidInput)
+	}
+	if clock == nil {
+		return nil, fmt.Errorf("%w: expiry sweep needs a database clock", ErrInvalidInput)
+	}
+	if cfg.Interval <= 0 {
+		return nil, fmt.Errorf("%w: expiry sweep interval must be positive, got %s", ErrInvalidInput, cfg.Interval)
+	}
+	if cfg.Batch <= 0 {
+		return nil, fmt.Errorf("%w: expiry sweep batch must be positive, got %d", ErrInvalidInput, cfg.Batch)
+	}
+	if cfg.Timeout <= 0 {
+		return nil, fmt.Errorf("%w: expiry sweep timeout must be positive, got %s", ErrInvalidInput, cfg.Timeout)
+	}
+	if cfg.MaxBatches <= 0 {
+		return nil, fmt.Errorf("%w: expiry sweep batch bound must be positive, got %d", ErrInvalidInput, cfg.MaxBatches)
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	return &Sweeper{service: service, clock: clock, cfg: cfg}, nil
+}
+
+// Run sweeps immediately and then on every interval until the process context is
+// cancelled. A failed tick is logged and the next tick tries again, so a
+// transient database failure never stops expiry; shutdown stops the worker before
+// it starts another sweep.
+func (s *Sweeper) Run(ctx context.Context) {
+	s.cfg.Logger.Info("durable expiry sweep started",
+		"interval", s.cfg.Interval, "batch", s.cfg.Batch, "timeout", s.cfg.Timeout, "max_batches", s.cfg.MaxBatches)
+	defer s.cfg.Logger.Info("durable expiry sweep stopped")
+
+	ticker := time.NewTicker(s.cfg.Interval)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.Sweep(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			s.cfg.Logger.Error("expiry sweep failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// Sweep runs one tick: at most MaxBatches batches, each bounded by Timeout and by
+// the process context, each comparing against a deadline read from the database
+// clock. It stops as soon as the durable store reports no more work.
+func (s *Sweeper) Sweep(ctx context.Context) error {
+	for batch := 1; batch <= s.cfg.MaxBatches; batch++ {
+		result, err := s.sweepBatch(ctx)
+		if err != nil {
+			return err
+		}
+		if !result.More {
+			return nil
+		}
+	}
+	return nil
+}
+
+// sweepBatch is one bounded sweep attempt: read the database clock, then sweep.
+func (s *Sweeper) sweepBatch(ctx context.Context) (ExpiryResult, error) {
+	sweepCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
+	now, err := s.clock.DatabaseNow(sweepCtx)
+	if err != nil {
+		return ExpiryResult{}, err
+	}
+	return s.service.ExpireHolds(sweepCtx, now, s.cfg.Batch)
 }

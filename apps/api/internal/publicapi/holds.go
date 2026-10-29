@@ -171,6 +171,12 @@ func writeError(w http.ResponseWriter, err error) {
 			"the hold window closed before the seats could be claimed")
 	case errors.Is(err, reservation.ErrInvalidInput):
 		writeProblem(w, http.StatusBadRequest, "invalid_input", "Invalid input", err.Error())
+	case errors.Is(err, reservation.ErrUnknownReference):
+		// The durable store reported a reference it does not know. Its message names
+		// tables, constraints and values, so the client gets the service's own words
+		// and the driver message stays in the operator's log.
+		writeProblem(w, http.StatusBadRequest, "invalid_input", "Invalid input",
+			"the request references an event or seat that does not exist")
 	case errors.Is(err, reservation.ErrEventNotFound):
 		writeProblem(w, http.StatusNotFound, "not_found", "Not found",
 			"the requested event does not exist")

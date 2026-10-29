@@ -17,12 +17,17 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"cinema.local/ticketing/apps/api/internal/adminapi"
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
 	"cinema.local/ticketing/apps/api/internal/log"
+	"cinema.local/ticketing/apps/api/internal/publicapi"
+	"cinema.local/ticketing/apps/api/internal/reservation"
 	"cinema.local/ticketing/apps/api/internal/venue"
 
 	// Module boundaries: wired into the build so the skeleton stays explicit
@@ -72,16 +77,172 @@ func run() int {
 		defer adminStore.Close()
 	}
 
+	reservationProcess, err := mountReservation(cfg, srv, logger)
+	if err != nil {
+		logger.Error("configure the reservation surface", "error", err)
+		return 1
+	}
+	defer reservationProcess.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The sweep belongs to the process: it starts with it, keeps its deadline on
+	// the PostgreSQL clock, and stops when the process context is cancelled.
+	var sweepStopped chan struct{}
+	if reservationProcess != nil {
+		sweepStopped = make(chan struct{})
+		go func() {
+			defer close(sweepStopped)
+			reservationProcess.sweeper.Run(ctx)
+		}()
+	}
+
 	logger.Info("starting api", "addr", cfg.Addr, "log_level", cfg.LogLevel)
-	if err := srv.Serve(ctx); err != nil {
-		logger.Error("server stopped with error", "error", err)
+	serveErr := srv.Serve(ctx)
+	if serveErr != nil {
+		// A serve error (a taken port, for example) never cancels the signal
+		// context, so the worker would keep running until the shutdown budget
+		// expired. Cancel it for the same reason the server stopped.
+		stop()
+	}
+
+	if sweepStopped != nil {
+		// Wait for the worker before the deferred Close releases its pools, so
+		// shutdown never sweeps a closed store.
+		select {
+		case <-sweepStopped:
+		case <-time.After(cfg.ShutdownTimeout):
+			logger.Warn("expiry sweep did not stop within the shutdown timeout")
+		}
+	}
+
+	if serveErr != nil {
+		logger.Error("server stopped with error", "error", serveErr)
 		return 1
 	}
 	logger.Info("api stopped")
 	return 0
+}
+
+// expirySweepTimeout bounds one durable expiry sweep, including its clock read,
+// so a stalled database cannot wedge the worker.
+const expirySweepTimeout = 30 * time.Second
+
+// expirySweepMaxBatches bounds how many batches one tick may run. The next tick
+// continues from where this one stopped, so a backlog is drained across ticks
+// instead of holding the worker in one long loop.
+const expirySweepMaxBatches = 8
+
+// startupTimeout bounds the database work that happens before the server starts
+// listening. Without it a database that accepts the connection but never answers
+// would stall startup forever, which is worse than failing fast.
+const startupTimeout = 10 * time.Second
+
+// reservationProcess owns what the public reservation surface and the expiry
+// worker need, so one Close releases both pools on shutdown.
+type reservationProcess struct {
+	store   *reservation.PostgresStore
+	redis   *redis.Client
+	sweeper *reservation.Sweeper
+}
+
+// Close releases the pooled connections. It is nil-safe so the process wiring can
+// defer it unconditionally.
+func (p *reservationProcess) Close() {
+	if p == nil {
+		return
+	}
+	if p.store != nil {
+		p.store.Close()
+	}
+	if p.redis != nil {
+		_ = p.redis.Close()
+	}
+}
+
+// mountReservation wires the customer facing reservation surface: the durable
+// reservation store, the shared coordination layer, the hold service over the
+// configured window, the public routes, and the durable expiry worker.
+//
+// It mounts nothing unless a database URL is configured, because a hold without
+// durable storage could not be honoured; the default M0/M1 configuration
+// therefore keeps its routes and lifetime unchanged. The returned process must be
+// closed on shutdown and is nil when nothing was mounted. A failure is reported
+// without echoing a connection URL, which may carry credentials.
+func mountReservation(cfg config.Config, srv *httpserver.Server, logger *slog.Logger) (*reservationProcess, error) {
+	return mountReservationWithProbe(cfg, srv, logger, reservationSchemaProbe)
+}
+
+// schemaProbe reports whether the database carries the reservation tables. It is
+// a parameter so the mount decision can be tested without a live database.
+type schemaProbe func(context.Context, *reservation.PostgresStore) (bool, error)
+
+// reservationSchemaProbe is the production probe: the store's own check.
+func reservationSchemaProbe(ctx context.Context, store *reservation.PostgresStore) (bool, error) {
+	return store.ReservationSchemaPresent(ctx)
+}
+
+// mountReservationWithProbe is mountReservation with the schema check injected.
+func mountReservationWithProbe(cfg config.Config, srv *httpserver.Server, logger *slog.Logger, probe schemaProbe) (*reservationProcess, error) {
+	if cfg.DatabaseURL == "" {
+		return nil, nil
+	}
+	// config.LoadFrom rejects these, but a programmatically built Config must not
+	// reach the customer surface with a window it cannot honour or a sweeper it
+	// cannot start.
+	if cfg.HoldTTL <= 0 {
+		return nil, fmt.Errorf("reservation surface requires a positive hold window, got %s", cfg.HoldTTL)
+	}
+
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
+	store, err := reservation.NewPostgresStore(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open reservation store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+
+	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancel()
+	present, err := probe(startupCtx, store)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("check the reservation schema: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+	if !present {
+		// Fail closed without noise: no routes and no worker until the schema
+		// that backs them is applied. One line, once, instead of an error per tick.
+		store.Close()
+		logger.Info("reservation schema not present; reservation surface disabled",
+			"required", "0003_reservation, 0004_idempotency")
+		return nil, nil
+	}
+
+	options, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("parse the coordination URL: %s", redactDatabaseURL(err.Error(), cfg.RedisURL))
+	}
+	client := redis.NewClient(options)
+	svc := reservation.NewService(reservation.NewCoordinator(client), store, cfg.HoldTTL)
+
+	sweeper, err := reservation.NewSweeper(svc, store, reservation.SweeperConfig{
+		Interval:   cfg.ExpiryInterval,
+		Batch:      cfg.ExpiryBatch,
+		Timeout:    expirySweepTimeout,
+		MaxBatches: expirySweepMaxBatches,
+		Logger:     logger,
+	})
+	if err != nil {
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("configure the expiry sweep: %w", err)
+	}
+
+	srv.WithPublic(publicapi.New(svc).Mux())
+	logger.Info("public reservation API mounted",
+		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval, "expiry_batch", cfg.ExpiryBatch)
+	return &reservationProcess{store: store, redis: client, sweeper: sweeper}, nil
 }
 
 // mountAdmin wires the administrative venue API behind the local-development

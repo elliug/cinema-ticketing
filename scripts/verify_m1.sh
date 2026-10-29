@@ -73,6 +73,20 @@ done
 grep -q 'local administrative venue API mounted' "$tmp/api.log" \
   || { cat "$tmp/api.log" >&2; fail "the local administrative API was not mounted"; }
 
+# An M1 schema has no reservation tables, so the reservation surface must stay
+# unmounted and the expiry worker must not start: one clear line, and a 404 on the
+# public route instead of a failure logged on every tick.
+grep -q 'reservation schema not present; reservation surface disabled' "$tmp/api.log" \
+  || { cat "$tmp/api.log" >&2; fail "the reservation surface must be disabled without its schema"; }
+if grep -q 'expiry sweep failed' "$tmp/api.log"; then
+  cat "$tmp/api.log" >&2
+  fail "the expiry worker must not run against a schema that lacks the reservation tables"
+fi
+status="$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: m1-schema-probe" \
+  -d '{"eventId":"x","seatIds":[1]}' http://127.0.0.1:18080/api/v1/reservations/holds)"
+[ "$status" = "404" ] || fail "the public reservation route returned $status, expected 404 without the reservation schema"
+
 # S7/S9: the administrative subtree is unreachable without the development token.
 api 404 POST /cinemas '{"name":"Guarded","timezone":"UTC"}'
 api 404 POST /cinemas '{"name":"Guarded","timezone":"UTC"}' wrong-token

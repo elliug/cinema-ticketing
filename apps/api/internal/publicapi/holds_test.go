@@ -178,6 +178,7 @@ func TestCreateHoldMapsErrorsToStatuses(t *testing.T) {
 		{"self conflicting claim", reservation.ErrDuplicateClaim, http.StatusConflict, "duplicate_seat"},
 		{"own hold window expired", fmt.Errorf("%w: %s", reservation.ErrHoldWindowExpired, "its hold window already expired"), http.StatusBadRequest, "hold_window_expired"},
 		{"invalid input", fmt.Errorf("%w: eventId must not be empty", reservation.ErrInvalidInput), http.StatusBadRequest, "invalid_input"},
+		{"unknown reference behind a database message", fmt.Errorf("%w: %s", reservation.ErrUnknownReference, `insert or update on table "reservation_seats" violates foreign key constraint`), http.StatusBadRequest, "invalid_input"},
 		{"unknown event", reservation.ErrEventNotFound, http.StatusNotFound, "not_found"},
 		{"coordination unavailable", fmt.Errorf("%w: dial tcp: connection refused", reservation.ErrUnavailable), http.StatusServiceUnavailable, "coordination_unavailable"},
 		{"unclassified failure", errors.New("unexpected"), http.StatusServiceUnavailable, "coordination_unavailable"},
@@ -336,6 +337,54 @@ func TestListEventSeatsReportsAvailability(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"seats":[]`) {
 		t.Fatalf("empty availability body = %s, want an empty seat list", raw)
+	}
+}
+
+// Advisory (T4 review): a PostgreSQL message must never reach the client in an
+// error response. The driver names tables, constraints, and values, so a failure
+// classified on it is reported with the service's own words instead.
+func TestCreateHoldDoesNotEchoPostgresMessages(t *testing.T) {
+	const driverMessage = `insert or update on table "reservation_seats" violates foreign key constraint "reservation_seats_event_id_fkey"`
+
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"unknown reference", fmt.Errorf("%w: %s", reservation.ErrUnknownReference, driverMessage), http.StatusBadRequest, "invalid_input"},
+		{"deadlock detected", fmt.Errorf("%w: ERROR: deadlock detected (SQLSTATE 40P01)", reservation.ErrUnavailable), http.StatusServiceUnavailable, "coordination_unavailable"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			svc := &fakeHoldService{err: testCase.err}
+			response := postHold(t, mountedServer(t, svc), "key-1", `{"eventId":"evt-1","seatIds":[21]}`)
+			if response.StatusCode != testCase.wantStatus {
+				response.Body.Close()
+				t.Fatalf("status = %d, want %d", response.StatusCode, testCase.wantStatus)
+			}
+			raw, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			for _, leaked := range []string{"reservation_seats", "violates foreign key", "SQLSTATE", "deadlock", "insert or update on table"} {
+				if strings.Contains(string(raw), leaked) {
+					t.Fatalf("response body leaked the database message (%q): %s", leaked, raw)
+				}
+			}
+			var problem problemBody
+			if err := json.Unmarshal(raw, &problem); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if problem.Code != testCase.wantCode {
+				t.Fatalf("problem code = %q, want %q", problem.Code, testCase.wantCode)
+			}
+			if problem.Detail == "" {
+				t.Fatalf("problem detail is empty: %s", raw)
+			}
+		})
 	}
 }
 

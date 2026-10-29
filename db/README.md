@@ -37,7 +37,16 @@ Only successful holds are recorded. A request that lost a seat conflict is re-ev
 
 ## Durable expiry sweep (M2)
 
-Expiry is lazy in the schema: a hold whose `expires_at` has passed stops counting as held immediately (availability checks the deadline), and a re-claim of the seat frees it through the claim trigger. What is left is the durable cleanup of holds nobody re-claims, plus the retention deadline of the idempotency records. That is one sweep, implemented by `PostgresStore.ExpireHolds` in `apps/api/internal/reservation/expiry.go` and driven by the process wiring (the cadence and the batch size are configuration, not schema).
+Expiry is lazy in the schema: a hold whose `expires_at` has passed stops counting as held immediately (availability checks the deadline), and a re-claim of the seat frees it through the claim trigger. What is left is the durable cleanup of holds nobody re-claims, plus the retention deadline of the idempotency records. That is one sweep, implemented by `PostgresStore.ExpireHolds` in `apps/api/internal/reservation/expiry.go` and driven by `reservation.Sweeper`, which `cmd/api` starts as a goroutine bound to the process context.
+
+The worker is wired, not implicit, and every part of its shape is configuration or a documented constant:
+
+- **The deadline comes from PostgreSQL.** `Sweeper` reads `PostgresStore.DatabaseNow` (`SELECT now()`) before each batch and passes that value as the sweep deadline. The process clock is never used, so a skewed API host cannot expire live holds early.
+- **`API_EXPIRY_INTERVAL`** is the cadence, a Go duration such as `30s` or `2s`. It defaults to `30s`, is lowered to half the hold window when that window is shorter, and is rejected when it exceeds half of `API_HOLD_TTL`, so the sweep always fires at least twice per hold.
+- **`API_EXPIRY_BATCH`** is how many expired holds one sweep transaction locks. It defaults to `100` and is rejected outside `1..1000`.
+- **Each sweep is bounded**: 30s per batch including the clock read, and at most 8 batches per tick, so a backlog drains across ticks instead of holding the worker in one long loop.
+- **A failed tick is logged and retried on the next one.** Nothing about expiry is fatal, and correctness never depends on the worker running at all: the lazy predicate and the claim trigger keep every read and every claim correct.
+- **Shutdown stops the worker before the pools close**, so no sweep runs against a closed store.
 
 The sweep is a single transaction of four statements, and it visits the same tables in the order a claim takes them (`idempotency_keys`, `reservations`, `reservation_seats`). The table order matches but the row order does not: a claim locks its seats in ascending `event_seat_id` order while the seat update locks the rows of its reservation ids in plan order, so a collision with a multi-seat claim can deadlock (`40P01`). That is expected and harmless: the batch is retried up to three times, and a rolled back attempt changed nothing.
 
@@ -143,3 +152,11 @@ docker compose --profile tools run --rm migration-verify
 ```
 
 The verification command drops only a database whose name begins with `cinema_m0_verify`; it does not remove named volumes or touch the development database.
+
+Verify the M2 end-to-end contract: the accepted concurrency race, the loser conflicts, availability after the race, the running expiry worker, and the killed-worker recovery evidence.
+
+```sh
+make verify-m2
+```
+
+That script creates a disposable database named `cinema_m2_smoke_<pid>`, applies every migration to it, runs the gated PostgreSQL tests against it (`M2_RECOVERY_DATABASE_URL`), starts the API binary on port 18081 with local administration, the public reservation surface and a 60s hold window, runs `go test -tags acceptance_m2 ./tests/concurrency/` with the seeded `M2_EVENT_ID` and `M2_SEAT_IDS`, then drops the database, flushes only the dedicated Redis database it used, and stops its own process. The default `go test ./apps/api/...` suite needs no database: the PostgreSQL-only tests skip unless `M2_RECOVERY_DATABASE_URL` is set.

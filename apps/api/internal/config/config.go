@@ -34,10 +34,37 @@ type Config struct {
 	// DatabaseURL is required only when local administration is enabled. It may
 	// carry credentials, so it must never be logged.
 	DatabaseURL string
+	// RedisURL is the connection URL of the coordination layer that holds the
+	// per-seat leases. It defaults to the local compose service.
+	RedisURL string
 	// HoldTTL is the reservation hold window. It defaults to ten minutes and
 	// accepts any Go duration so tests can use seconds, but it must be positive.
 	HoldTTL time.Duration
+	// ExpiryInterval is the cadence of the durable expiry sweep. It defaults to
+	// 30s, lowered to half the hold window when that window is shorter than a
+	// minute, and it can never exceed half the hold window: a sweep has to fire at
+	// least twice before a hold it should expire would be re-claimed.
+	ExpiryInterval time.Duration
+	// ExpiryBatch is how many expired holds one sweep transaction locks at most.
+	// It defaults to 100 and must be positive.
+	ExpiryBatch int
 }
+
+// Documented defaults for the reservation surface.
+const (
+	// defaultHoldTTL is the ten minute window a hold lasts unless configured.
+	defaultHoldTTL = 10 * time.Minute
+	// defaultRedisURL is the local compose coordination service.
+	defaultRedisURL = "redis://127.0.0.1:6379/0"
+	// defaultExpiryInterval is the sweep cadence; a shorter hold window lowers it
+	// to half the window so the sweep always fires twice per hold.
+	defaultExpiryInterval = 30 * time.Second
+	// defaultExpiryBatch bounds one sweep transaction to a hundred holds.
+	defaultExpiryBatch = 100
+	// maxExpiryBatch keeps a misconfigured batch from locking an unbounded row set
+	// in one transaction.
+	maxExpiryBatch = 1000
+)
 
 // Load reads configuration from the process environment.
 func Load() (Config, error) { return LoadFrom(os.Getenv) }
@@ -56,6 +83,9 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	API_LOCAL_ADMIN_TOKEN      secret required when local administration is enabled
 //	API_DATABASE_URL           database URL; required when local administration is enabled
 //	API_HOLD_TTL              reservation hold window as a duration (default "10m"; "30s" is valid)
+//	API_REDIS_URL             coordination URL for the seat leases (default "redis://127.0.0.1:6379/0")
+//	API_EXPIRY_INTERVAL       durable expiry sweep cadence as a duration (default "30s", at most half of API_HOLD_TTL)
+//	API_EXPIRY_BATCH          expired holds one sweep locks at most (default 100, at most 1000)
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -63,7 +93,9 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		ReadinessTimeout: 5 * time.Second,
 		LogLevel:         "info",
 		Dependencies:     []string{},
-		HoldTTL:          10 * time.Minute,
+		RedisURL:         defaultRedisURL,
+		HoldTTL:          defaultHoldTTL,
+		ExpiryBatch:      defaultExpiryBatch,
 	}
 
 	cfg.Environment = getenv("API_ENV")
@@ -107,6 +139,10 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		cfg.Dependencies = parseDependencies(v)
 	}
 
+	if v := getenv("API_REDIS_URL"); v != "" {
+		cfg.RedisURL = strings.TrimSpace(v)
+	}
+
 	if v := getenv("API_HOLD_TTL"); v != "" {
 		d, err := parseHoldTTL(v)
 		if err != nil {
@@ -115,7 +151,66 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		cfg.HoldTTL = d
 	}
 
+	// The sweep cadence defaults to the shorter of the documented 30s and half the
+	// hold window, so a short window still gets two sweeps per hold.
+	cfg.ExpiryInterval = defaultExpiryInterval
+	if half := cfg.HoldTTL / 2; cfg.ExpiryInterval > half {
+		cfg.ExpiryInterval = half
+	}
+	if v := getenv("API_EXPIRY_INTERVAL"); v != "" {
+		d, err := parseExpiryInterval(v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ExpiryInterval = d
+	}
+	// A cadence slower than half the hold window is refused rather than clamped: a
+	// silently shortened interval would hide a misconfiguration.
+	if half := cfg.HoldTTL / 2; cfg.ExpiryInterval <= 0 || cfg.ExpiryInterval > half {
+		return Config{}, fmt.Errorf("API_EXPIRY_INTERVAL must be positive and at most half of API_HOLD_TTL (%s), got %s",
+			half, cfg.ExpiryInterval)
+	}
+
+	if v := getenv("API_EXPIRY_BATCH"); v != "" {
+		batch, err := parseExpiryBatch(v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ExpiryBatch = batch
+	}
+
 	return cfg, nil
+}
+
+// parseExpiryInterval accepts a Go duration such as "30s" or "5m" for the sweep
+// cadence. A value without a unit or a non-positive value is rejected instead of
+// spinning a worker loop.
+func parseExpiryInterval(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("API_EXPIRY_INTERVAL must be a duration such as 30s or 5m: %w", err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("API_EXPIRY_INTERVAL must be positive, got %q", v)
+	}
+	return d, nil
+}
+
+// parseExpiryBatch bounds how many expired holds one sweep transaction locks. A
+// non-positive batch could never make progress and an oversized one would lock an
+// unbounded row set, so both are refused.
+func parseExpiryBatch(v string) (int, error) {
+	batch, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("API_EXPIRY_BATCH must be a whole number: %w", err)
+	}
+	if batch <= 0 {
+		return 0, fmt.Errorf("API_EXPIRY_BATCH must be positive, got %q", v)
+	}
+	if batch > maxExpiryBatch {
+		return 0, fmt.Errorf("API_EXPIRY_BATCH must be at most %d, got %q", maxExpiryBatch, v)
+	}
+	return batch, nil
 }
 
 // parseHoldTTL accepts a Go duration such as "10m" or, for tests, "30s".
