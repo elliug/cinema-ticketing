@@ -92,7 +92,10 @@ The administrative contract lives under `/api/v1/admin`:
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/cinemas` | Create a cinema |
+| `GET` | `/cinemas` | List cinemas |
 | `POST` | `/rooms` | Create a room for a cinema |
+| `GET` | `/cinemas/{cinemaId}/rooms` | List a cinema's rooms |
+| `GET` | `/rooms/{roomId}/layouts` | List a room's layout versions |
 | `POST` | `/layouts` | Create the next draft layout version for a room |
 | `PUT` | `/layouts/{layoutId}/rows` | Replace a draft layout geometry; rows may hold different seat counts |
 | `POST` | `/layouts/{layoutId}/publish` | Freeze a draft layout, making it immutable |
