@@ -211,3 +211,48 @@ func TestLoadInvalidReadinessTimeout(t *testing.T) {
 		t.Fatal("expected error for invalid API_READINESS_TIMEOUT_MS, got nil")
 	}
 }
+
+// TestHoldTTL pins the hold window rule: ten minutes by default, overridable
+// with any Go duration so tests can use seconds, and rejected when it does not
+// parse or is not positive.
+func TestHoldTTL(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     string
+		want      time.Duration
+		wantError bool
+	}{
+		{"default is ten minutes", "", 10 * time.Minute, false},
+		{"seconds allowed for tests", "30s", 30 * time.Second, false},
+		{"minutes allowed", "15m", 15 * time.Minute, false},
+		{"milliseconds allowed", "1500ms", 1500 * time.Millisecond, false},
+		{"unparseable value rejected", "ten minutes", 0, true},
+		{"missing unit rejected", "30", 0, true},
+		{"zero rejected", "0s", 0, true},
+		{"negative rejected", "-5s", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			if tc.value != "" {
+				env["API_HOLD_TTL"] = tc.value
+			}
+			cfg, err := config.LoadFrom(func(key string) string { return env[key] })
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("HoldTTL = %v, want an error", cfg.HoldTTL)
+				}
+				if !strings.Contains(err.Error(), "API_HOLD_TTL") {
+					t.Fatalf("error = %q, want it to name API_HOLD_TTL", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.HoldTTL != tc.want {
+				t.Errorf("HoldTTL = %v, want %v", cfg.HoldTTL, tc.want)
+			}
+		})
+	}
+}
