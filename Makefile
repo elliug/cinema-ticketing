@@ -2,7 +2,11 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down migrate migrate-down verify-migrations smoke verify-m0 verify-m1 verify-m2
+.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2
+
+# The bootstrap command that owns the readiness wait, the development seed and the
+# ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
+BOOTSTRAP := go run ./apps/api/cmd/bootstrap
 
 install:
 	pnpm install --frozen-lockfile
@@ -23,6 +27,37 @@ deps-up:
 deps-down:
 	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
 	$(COMPOSE) down
+
+# deps-up waits for the container healthchecks; this waits for the services
+# themselves and names the one that is not ready, so a slow dependency cannot
+# leave the next target running against a half-started stack.
+# Override the bounded wait with `make up WAIT_TIMEOUT=120s`.
+up: deps-up
+	$(BOOTSTRAP) wait-deps --timeout $${WAIT_TIMEOUT:-60s}
+
+# Apply every migration that is not recorded yet and skip the rest, so it is safe
+# on a fresh database and on one that is already up to date.
+migrate-all: up
+	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
+	$(COMPOSE) --profile tools run --rm migrate-all
+
+# Development-only: the command refuses unless API_ENV=development is explicitly
+# set, and the seed itself repeats the guard.
+seed-dev: up
+	$(BOOTSTRAP) seed-dev
+
+ensure-bucket: up
+	$(BOOTSTRAP) ensure-bucket
+
+# The whole local environment in one re-runnable target.
+# Checks the seed's precondition before migrating anything, so a forgotten
+# API_ENV fails with one clear line instead of a database that is already
+# migrated and a make error halfway through.
+bootstrap:
+	@test "$${API_ENV:-}" = "development" || (echo "make bootstrap needs API_ENV=development: it migrates the database and loads demo data" >&2; exit 1)
+	$(MAKE) migrate-all
+	$(MAKE) seed-dev
+	$(MAKE) ensure-bucket
 
 migrate: deps-up
 	$(COMPOSE) --profile tools run --rm migrate

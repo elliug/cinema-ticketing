@@ -17,14 +17,14 @@ Expected result: Go tests and vet pass, the web tests/lint/typecheck/build pass,
 
 ## Run locally
 
-Start dependencies and apply the migration:
+Start dependencies and apply the migrations:
 
 ```sh
-make deps-up
-make migrate
+make up
+make migrate-all
 ```
 
-`make deps-up` starts the three local services: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci:latest`, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three services to report healthy; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
+`make deps-up` starts the three local services: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci`, pinned by digest because CI starts it on every run, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. `make up` then waits for the services themselves within a bounded timeout: PostgreSQL with `pg_isready` inside its container, Redis with `PING`, and Floci with `GET http://127.0.0.1:4566/_floci/health`. A service that does not answer fails the target and is named (`postgres is not ready after 1m0s: …`); the wait only reads and never touches the database, and its budget can be changed with `make up WAIT_TIMEOUT=120s`. Redis runs with `--maxmemory-policy noeviction`, because an eviction policy could drop a hold key before its TTL and let a second buyer hold the same seat. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three containers; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
 
 Run the API:
 
@@ -54,6 +54,8 @@ Open `http://localhost:3000`. Health endpoints:
 | `apps/api` | Go entrypoint, platform HTTP/config/health code, and module boundaries |
 | `apps/web` | Next.js App Router application and web health contract |
 | `db/migrations` | Reversible PostgreSQL migrations |
+| `db/seeds` | Development-only seed data |
+| `apps/api/cmd/bootstrap` | Readiness wait, development seed and ticket bucket creation |
 | `scripts` | Migration and M0 smoke verification |
 | `odd/tasks` | ODD specifications, task state, and evidence |
 | `ARCHITECTURE.md` | Approved system architecture and milestone scope |
@@ -64,11 +66,58 @@ Open `http://localhost:3000`. Health endpoints:
 make check              # Go and web checks
 make verify-migrations  # isolated PostgreSQL up/down/up proof
 make smoke              # API + web health smoke test (dependencies must be up)
+make migrate-all        # apply every migration that is not recorded yet
+make seed-dev           # development seed rows; requires API_ENV=development
+make ensure-bucket      # create the configured ticket bucket when it is missing
+make bootstrap          # migrate-all, then seed-dev, then ensure-bucket
 make migrate-down       # explicitly roll back the development schema
 make deps-down          # stop local containers without deleting volumes
 ```
 
 `Makefile` automatically uses either `docker compose` or `docker-compose`.
+
+## Bootstrap
+
+The whole local environment is two commands, and both are re-runnable:
+
+```sh
+make up
+export API_ENV=development
+make bootstrap
+```
+
+`make bootstrap` runs `migrate-all`, then `seed-dev`, then `ensure-bucket`:
+
+- `migrate-all` reads `platform.schema_migrations`, compares it with
+  `db/migrations/*.up.sql` in version order and applies only the missing ones, so
+  a second run applies nothing. It works on a database with no schema yet, where
+  `0001_init` creates the table.
+- `seed-dev` applies `db/seeds/dev_seed.sql`: one cinema (`Cine Prueba`), one room
+  (`Sala 1`) with one published irregular layout (row A with three seats, row B
+  with two and one of them disabled), two films and two sessions, which
+  materialize the four enabled seats as event seats. Every row has a fixed
+  identifier and `ON CONFLICT DO NOTHING`, so a second run changes no row count.
+  The layout is inserted as a draft, filled and then published, because the M1
+  guard refuses a layout inserted as published and freezes the geometry of a
+  published one. There is no price in the seed: the per-event price arrives with
+  the checkout schema.
+- `ensure-bucket` loads the validated configuration, creates the bucket when it is
+  missing and prints its name. It never prints the credentials, and it exits
+  non-zero when the object storage is not configured instead of pretending to
+  have a bucket.
+
+The seed is **development-only**. `make seed-dev` refuses to run unless
+`API_ENV=development` is explicitly set, and the seed file repeats the guard so
+that applying it with `psql` directly cannot seed a database by accident. Never
+run it against a shared or production database.
+
+The idempotence of both the migration runner and the seed is proven against a
+throwaway database that each script creates and drops:
+
+```sh
+./tests/bootstrap/migrate_all.sh
+./tests/bootstrap/seed_idempotence.sh
+```
 
 ## M1 local administration
 
