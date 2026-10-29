@@ -213,6 +213,13 @@ The worker must be safe to run concurrently and repeatedly. Metrics alert when t
 
 The external API is versioned under `/api/v1`. Error responses use RFC 9457 problem-details JSON with a stable `code`, a human-safe `detail`, and a request correlation ID.
 
+The tables below are the **target contract for v1**, not a description of the current binary. What exists today and is gated by CI:
+
+- `POST /api/v1/reservations/holds` — requires `Idempotency-Key`; answers `201` with `id`, `eventId`, `seatIds` and `expiresAt`, or `409 seat_unavailable`, `400 hold_window_expired`, `400 invalid_input`, `503` when the coordination layer or the database is unreachable. Replaying the same key returns the stored result and never extends the window.
+- `GET /api/v1/events/{eventId}/seats` — occupancy plus the layout projection (`rowLabel`, `seatNumber`, `kind`, `held`) in row and seat order.
+
+Everything else in these tables is planned. M3 adds the payment and ticket routes plus the PDF download.
+
 ### Public customer API
 
 | Method | Route | Purpose |
@@ -326,15 +333,17 @@ The first implementation milestone must begin with a deterministic red integrati
 
 ## Delivery milestones
 
-| Milestone | Outcome | Exit evidence |
-|---|---|---|
-| M0 — Foundation | Repository, local dependencies, migrations, module boundaries, CI baseline | Service and web app run locally; health checks and migration rollback verified. |
-| M1 — Venue & layout | Admin can create immutable irregular layouts and materialize event seats | Tests prove rows may differ in seat count and published layouts do not mutate. |
-| M2 — Reservation core | Atomic hold, TTL expiry, and double-booking protection | Concurrent integration test and worker recovery test pass. |
-| M3 — Checkout & tickets | Account/guest purchase through simulated payments | Payment idempotency and ticket issuance flow pass end to end. |
-| M4 — Operations | Cashier workflows, reporting, audit trail | Role/authorization and reporting accuracy tests pass. |
-| M5 — Hardening | Monitoring, backups, load characterization, security review | Runbook and measured moderate-load baseline approved. |
-| M6 — Future scale | Virtual waiting room and real payment adapter | Separate architecture decision based on measured bottlenecks. |
+| Milestone | Status | Outcome | Exit evidence |
+|---|---|---|---|
+| M0 — Foundation | Delivered | Repository, local dependencies, migrations, module boundaries, CI baseline | Service and web app run locally; health checks and migration rollback verified. Delivered by `make verify-m0`, which runs in CI. |
+| M1 — Venue & layout | Delivered | Admin can create immutable irregular layouts and materialize event seats | Tests prove rows may differ in seat count and published layouts do not mutate. Delivered by `make verify-m1`, which runs in CI. |
+| M2 — Reservation core | Delivered | Atomic hold, TTL expiry, and double-booking protection | Concurrent integration test and worker recovery test pass. Delivered by `make verify-m2`, which runs in CI; the record is `odd/tasks/m2-reservation-core.md`. |
+| M3 — Checkout & tickets | In progress | Account/guest purchase through simulated payments | Payment idempotency and ticket issuance flow pass end to end. Plan and decisions: `odd/tasks/m3-checkout-tickets.md` (T0–T8). |
+| M4 — Operations | Planned | Cashier workflows, reporting, audit trail | Role/authorization and reporting accuracy tests pass. |
+| M5 — Hardening | Planned | Monitoring, backups, load characterization, security review | Runbook and measured moderate-load baseline approved. |
+| M6 — Future scale | Planned | Virtual waiting room and real payment adapter | Separate architecture decision based on measured bottlenecks. |
+
+A milestone is *delivered* when its verification command runs in CI on the default branch; the per-milestone record lives in `odd/tasks/`.
 
 ## Implementation acceptance checklist
 
@@ -350,15 +359,20 @@ The first implementation milestone must begin with a deterministic red integrati
 - [ ] No real payment credentials or live payment flow exist in v1.
 - [ ] The virtual waiting room remains absent until explicitly scoped as a later milestone.
 
-## Open implementation decisions
+## Implementation decisions
 
-These do not change the architecture, but must be selected before their milestone starts:
+### Decided
 
-1. Exact hold duration and whether it differs for cashier-assisted sales.
-2. Identity provider and guest email/phone verification vendor.
-3. Initial currency, tax, refund, and ticket-validation policies for the deployment jurisdiction.
-4. Deployment target, backup retention, and operational ownership.
-5. Pricing-rule complexity for v1 (single price, seat type, time band, or more).
+1. Hold duration — ten minutes by default, configurable down to seconds through `API_HOLD_TTL`. Decided in M2; recorded in `odd/tasks/m2-reservation-core.md` (S3). Cashier-assisted sales may adjust it in M4.
+2. Pricing-rule complexity for v1 — one price per event, so the order amount is price × seats. Decided before M3 and recorded in `odd/tasks/m3-checkout-tickets.md`; the `cinema.events.price_cents` column itself arrives with M3's checkout schema (T2), so it does not exist yet on the default branch.
+
+### Open
+
+These do not change the architecture, but must be selected before their milestone starts.
+
+3. Identity provider and guest email/phone verification vendor.
+4. Initial currency, tax, refund, and ticket-validation policies for the deployment jurisdiction.
+5. Deployment target, backup retention, and operational ownership.
 
 ## References
 
