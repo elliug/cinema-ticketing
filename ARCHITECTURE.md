@@ -364,7 +364,7 @@ A milestone is *delivered* when its verification command runs in CI on the defau
 ### Decided
 
 1. Hold duration — ten minutes by default, configurable down to seconds through `API_HOLD_TTL`. Decided in M2; recorded in `odd/tasks/m2-reservation-core.md` (S3). Cashier-assisted sales may adjust it in M4.
-2. Pricing-rule complexity for v1 — one price per event (`cinema.events.price_cents`), so the order amount is price × seats. Decided before M3; recorded in `odd/tasks/m3-checkout-tickets.md`.
+2. Pricing-rule complexity for v1 — one price per event, so the order amount is price × seats. Decided before M3 and recorded in `odd/tasks/m3-checkout-tickets.md`; the `cinema.events.price_cents` column itself arrives with M3's checkout schema (T2), so it does not exist yet on the default branch.
 
 ### Open
 
