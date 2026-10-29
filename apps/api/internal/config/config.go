@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -48,6 +49,24 @@ type Config struct {
 	// ExpiryBatch is how many expired holds one sweep transaction locks at most.
 	// It defaults to 100 and must be positive.
 	ExpiryBatch int
+	// S3Endpoint is the base URL of the object-storage service that holds the
+	// ticket PDFs. It defaults to the local Floci compose service.
+	S3Endpoint string
+	// S3Bucket is the bucket the API may write the ticket PDFs to. It defaults to
+	// a cinema-m3-* name, the namespace local development may create.
+	S3Bucket string
+	// S3Region is the signing region. S3 needs one even for a local emulator, so
+	// it defaults to us-east-1.
+	S3Region string
+	// S3AccessKeyID identifies the object-storage credential. It defaults to the
+	// dummy value Floci accepts, which is refused for a non-local endpoint.
+	S3AccessKeyID string
+	// S3SecretAccessKey is a secret and must never be logged or echoed in an
+	// error. It defaults to the dummy value Floci accepts.
+	S3SecretAccessKey string
+	// S3PresignTTL is how long a ticket PDF download link stays valid. It defaults
+	// to five minutes and can never exceed the seven day signature limit.
+	S3PresignTTL time.Duration
 }
 
 // Documented defaults for the reservation surface.
@@ -64,6 +83,30 @@ const (
 	// maxExpiryBatch keeps a misconfigured batch from locking an unbounded row set
 	// in one transaction.
 	maxExpiryBatch = 1000
+)
+
+// Documented defaults for the object-storage surface. They describe the local
+// Floci compose service, so a developer needs no S3 variables at all; production
+// supplies its own endpoint, bucket and credentials.
+const (
+	// defaultS3Endpoint is the Floci compose service. It speaks the S3 API
+	// path-style on port 4566.
+	defaultS3Endpoint = "http://127.0.0.1:4566"
+	// defaultS3Bucket is inside the cinema-m3-* namespace this project owns, so a
+	// verification run can never touch a bucket that already held data.
+	defaultS3Bucket = "cinema-m3-tickets"
+	// defaultS3Region is required for signing even when the emulator ignores it.
+	defaultS3Region = "us-east-1"
+	// defaultS3AccessKeyID and defaultS3SecretAccessKey are the dummy pair Floci
+	// accepts. They are development values only and are refused for a non-local
+	// endpoint.
+	defaultS3AccessKeyID     = "floci"
+	defaultS3SecretAccessKey = "floci"
+	// defaultS3PresignTTL is the short-lived window a ticket download link lives
+	// for, matching the M3 decision that PDFs are served by pre-signed URL.
+	defaultS3PresignTTL = 5 * time.Minute
+	// maxS3PresignTTL is the longest lifetime a SigV4 pre-signed URL supports.
+	maxS3PresignTTL = 7 * 24 * time.Hour
 )
 
 // Load reads configuration from the process environment.
@@ -86,6 +129,12 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	API_REDIS_URL             coordination URL for the seat leases (default "redis://127.0.0.1:6379/0")
 //	API_EXPIRY_INTERVAL       durable expiry sweep cadence as a duration (default "30s", at most half of API_HOLD_TTL)
 //	API_EXPIRY_BATCH          expired holds one sweep locks at most (default 100, at most 1000)
+//	API_S3_ENDPOINT           object-storage base URL, absolute with no path (default "http://127.0.0.1:4566", the Floci service)
+//	API_S3_BUCKET             bucket holding the ticket PDFs (default "cinema-m3-tickets")
+//	API_S3_REGION             signing region (default "us-east-1")
+//	API_S3_ACCESS_KEY_ID      credential identifier (default "floci", refused for a non-local endpoint)
+//	API_S3_SECRET_ACCESS_KEY  secret credential, always set together with the key id and never echoed
+//	API_S3_PRESIGN_TTL        download link lifetime as a duration (default "5m", at most "168h")
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -179,7 +228,162 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		cfg.ExpiryBatch = batch
 	}
 
+	if err := cfg.loadObjectStorage(getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadObjectStorage reads and validates the API_S3_* settings. The defaults point
+// at the local Floci compose service with the dummy credentials it accepts, so
+// local development works with no S3 variables, and every combination that cannot
+// work is refused at startup instead of failing during checkout.
+func (c *Config) loadObjectStorage(getenv func(string) string) error {
+	c.S3Endpoint = defaultS3Endpoint
+	if v := strings.TrimSpace(getenv("API_S3_ENDPOINT")); v != "" {
+		endpoint, err := normalizeS3Endpoint(v)
+		if err != nil {
+			return err
+		}
+		c.S3Endpoint = endpoint
+	}
+
+	c.S3Bucket = defaultS3Bucket
+	if v := strings.TrimSpace(getenv("API_S3_BUCKET")); v != "" {
+		if !validBucketName(v) {
+			// The bucket name is not a secret, so naming it helps the operator.
+			return fmt.Errorf("API_S3_BUCKET must be a valid S3 bucket name of 3 to 63 lower case letters, digits, dots or hyphens, starting and ending with a letter or a digit, got %q", v)
+		}
+		c.S3Bucket = v
+	}
+
+	c.S3Region = defaultS3Region
+	if v := getenv("API_S3_REGION"); v != "" {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return fmt.Errorf("API_S3_REGION must not be blank")
+		}
+		c.S3Region = trimmed
+	}
+
+	// A half-configured credential pair cannot sign anything, so it is refused
+	// instead of being completed with the development default. Neither value is
+	// ever echoed: the secret access key may be a real one.
+	accessKeyID := strings.TrimSpace(getenv("API_S3_ACCESS_KEY_ID"))
+	secretAccessKey := strings.TrimSpace(getenv("API_S3_SECRET_ACCESS_KEY"))
+	switch {
+	case accessKeyID != "" && secretAccessKey != "":
+		c.S3AccessKeyID = accessKeyID
+		c.S3SecretAccessKey = secretAccessKey
+	case accessKeyID == "" && secretAccessKey == "":
+		c.S3AccessKeyID = defaultS3AccessKeyID
+		c.S3SecretAccessKey = defaultS3SecretAccessKey
+	default:
+		return fmt.Errorf("API_S3_ACCESS_KEY_ID and API_S3_SECRET_ACCESS_KEY must be set together")
+	}
+
+	// The development credentials cannot work anywhere but on this machine, so
+	// pairing them with a remote endpoint is refused rather than attempted.
+	if c.S3AccessKeyID == defaultS3AccessKeyID && c.S3SecretAccessKey == defaultS3SecretAccessKey && !isLocalEndpoint(c.S3Endpoint) {
+		return fmt.Errorf("API_S3_ACCESS_KEY_ID and API_S3_SECRET_ACCESS_KEY still hold the Floci development defaults, which only a local endpoint accepts")
+	}
+
+	c.S3PresignTTL = defaultS3PresignTTL
+	if v := strings.TrimSpace(getenv("API_S3_PRESIGN_TTL")); v != "" {
+		ttl, err := parsePresignTTL(v)
+		if err != nil {
+			return err
+		}
+		c.S3PresignTTL = ttl
+	}
+
+	return nil
+}
+
+// normalizeS3Endpoint validates the object-storage base URL and drops a trailing
+// slash. Path-style addressing appends "/<bucket>/<key>" to the endpoint, so a
+// path in it would silently become part of every object path.
+func normalizeS3Endpoint(v string) (string, error) {
+	u, err := url.Parse(v)
+	if err != nil {
+		// The raw value may embed credentials, so it is never echoed here.
+		return "", fmt.Errorf("API_S3_ENDPOINT must be an absolute http or https URL such as http://127.0.0.1:4566")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("API_S3_ENDPOINT must be an absolute http or https URL such as http://127.0.0.1:4566, got scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("API_S3_ENDPOINT must include a host, such as http://127.0.0.1:4566")
+	}
+	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("API_S3_ENDPOINT must not carry a path, a query, a fragment or user information")
+	}
+	return strings.TrimRight(v, "/"), nil
+}
+
+// isLocalEndpoint reports whether the endpoint points at this machine, which is
+// the only place the dummy Floci credentials can work.
+func isLocalEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
+// parsePresignTTL accepts a Go duration such as "5m" and refuses a lifetime that
+// a SigV4 signature cannot carry, which would produce a link that never works.
+func parsePresignTTL(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("API_S3_PRESIGN_TTL must be a duration such as 5m or 90s: %w", err)
+	}
+	if d < time.Second {
+		// A SigV4 signature carries whole seconds: a shorter lifetime would be
+		// signed as X-Amz-Expires=0 and produce a link that never works.
+		return 0, fmt.Errorf("API_S3_PRESIGN_TTL must be at least 1s, the smallest lifetime SigV4 can carry, got %q", v)
+	}
+	if d > maxS3PresignTTL {
+		return 0, fmt.Errorf("API_S3_PRESIGN_TTL must be at most %s, the longest SigV4 signature lifetime, got %q", maxS3PresignTTL, v)
+	}
+	return d, nil
+}
+
+// validBucketName applies the S3 bucket naming rules: lower case letters, digits,
+// dots and hyphens, three to sixty-three characters, starting and ending with a
+// letter or a digit, and never an address-shaped name. The storage package
+// validates its own configuration with the same rules, so a bucket that reaches
+// one is never refused by the other.
+func validBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 63 {
+		return false
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, ".-") || strings.Contains(name, "-.") {
+		return false
+	}
+	addressLike := true
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			addressLike = false
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '.':
+			if i == 0 || i == len(name)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	// A name without a letter is an address such as 192.168.0.1, which S3
+	// refuses because it would collide with a host name.
+	return !addressLike
 }
 
 // parseExpiryInterval accepts a Go duration such as "30s" or "5m" for the sweep

@@ -32,6 +32,21 @@ services:
       - redis-data:/data
     restart: unless-stopped
 
+  # Floci is the local S3 for the M3 ticket PDFs. The image ships its own
+  # HEALTHCHECK (a shell probe of /_floci/init), so compose reports the container
+  # healthy and `docker compose up --wait` is meaningful; no extra healthcheck is
+  # added because the image carries neither curl nor wget to write one with.
+  # Scripts still poll http://127.0.0.1:4566/_floci/health from the host.
+  floci:
+    image: floci/floci:latest
+    ports:
+      - "127.0.0.1:${FLOCI_PORT:-4566}:4566"
+    volumes:
+      # Floci persists its objects under /app/data (FLOCI_STORAGE_PERSISTENT_PATH),
+      # so the named volume is mounted there.
+      - floci-data:/app/data
+    restart: unless-stopped
+
   migrate:
     image: postgres:17.6-alpine
     profiles: ["tools"]
@@ -74,3 +89,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  floci-data:
