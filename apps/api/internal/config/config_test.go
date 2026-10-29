@@ -32,6 +32,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DatabaseURL != "" {
 		t.Errorf("DatabaseURL = %q, want empty by default", cfg.DatabaseURL)
 	}
+	if cfg.RedisURL != "redis://127.0.0.1:6379/0" {
+		t.Errorf("RedisURL = %q, want the documented local default", cfg.RedisURL)
+	}
+	if cfg.HoldTTL != 10*time.Minute {
+		t.Errorf("HoldTTL = %v, want 10m", cfg.HoldTTL)
+	}
+	if cfg.ExpiryInterval != 30*time.Second {
+		t.Errorf("ExpiryInterval = %v, want the documented 30s default", cfg.ExpiryInterval)
+	}
+	if cfg.ExpiryBatch != 100 {
+		t.Errorf("ExpiryBatch = %d, want the documented 100 default", cfg.ExpiryBatch)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -41,6 +53,7 @@ func TestLoadOverrides(t *testing.T) {
 		"API_SHUTDOWN_TIMEOUT_MS":  "3000",
 		"API_READINESS_TIMEOUT_MS": "500",
 		"API_DEPENDENCIES":         " postgresql , redis ,, ",
+		"API_REDIS_URL":            "redis://127.0.0.1:6390/9",
 	}
 	cfg, err := config.LoadFrom(func(k string) string { return env[k] })
 	if err != nil {
@@ -60,6 +73,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if len(cfg.Dependencies) != 2 || cfg.Dependencies[0] != "postgresql" || cfg.Dependencies[1] != "redis" {
 		t.Errorf("Dependencies = %q, want [postgresql redis]", cfg.Dependencies)
+	}
+	if cfg.RedisURL != "redis://127.0.0.1:6390/9" {
+		t.Errorf("RedisURL = %q, want the configured URL", cfg.RedisURL)
 	}
 }
 
@@ -85,6 +101,131 @@ func TestLocalAdminConfiguration(t *testing.T) {
 			}
 			if err == nil && cfg.LocalAdminEnabled != tc.wantEnabled {
 				t.Fatalf("enabled = %v, want %v", cfg.LocalAdminEnabled, tc.wantEnabled)
+			}
+		})
+	}
+}
+
+// TestExpiryConfiguration pins the durable sweep rules: a documented cadence and
+// batch default, seconds allowed for tests like API_HOLD_TTL, and a cadence that
+// can never exceed half the hold window, so the sweep always fires at least twice
+// inside one hold before the window closes.
+func TestExpiryConfiguration(t *testing.T) {
+	cases := []struct {
+		name         string
+		env          map[string]string
+		wantInterval time.Duration
+		wantBatch    int
+		wantError    string
+	}{
+		{
+			name:         "defaults documented in the code",
+			wantInterval: 30 * time.Second,
+			wantBatch:    100,
+		},
+		{
+			name:         "seconds allowed for tests",
+			env:          map[string]string{"API_EXPIRY_INTERVAL": "5s"},
+			wantInterval: 5 * time.Second,
+			wantBatch:    100,
+		},
+		{
+			name:         "sub-second cadence allowed",
+			env:          map[string]string{"API_EXPIRY_INTERVAL": "250ms"},
+			wantInterval: 250 * time.Millisecond,
+			wantBatch:    100,
+		},
+		{
+			name:         "batch override",
+			env:          map[string]string{"API_EXPIRY_BATCH": "25"},
+			wantInterval: 30 * time.Second,
+			wantBatch:    25,
+		},
+		{
+			name:         "a short hold window lowers the default cadence",
+			env:          map[string]string{"API_HOLD_TTL": "1s"},
+			wantInterval: 500 * time.Millisecond,
+			wantBatch:    100,
+		},
+		{
+			name:         "cadence exactly half the window is accepted",
+			env:          map[string]string{"API_HOLD_TTL": "10s", "API_EXPIRY_INTERVAL": "5s"},
+			wantInterval: 5 * time.Second,
+			wantBatch:    100,
+		},
+		{
+			name:         "the documented cadence clamps to half a longer window",
+			env:          map[string]string{"API_HOLD_TTL": "40s"},
+			wantInterval: 20 * time.Second,
+			wantBatch:    100,
+		},
+		{
+			name:      "a window too short to schedule any sweep is rejected",
+			env:       map[string]string{"API_HOLD_TTL": "1ns"},
+			wantError: "API_EXPIRY_INTERVAL",
+		},
+		{
+			name:      "cadence above half the window is rejected",
+			env:       map[string]string{"API_HOLD_TTL": "10s", "API_EXPIRY_INTERVAL": "6s"},
+			wantError: "API_EXPIRY_INTERVAL",
+		},
+		{
+			name:      "unparseable cadence rejected",
+			env:       map[string]string{"API_EXPIRY_INTERVAL": "soon"},
+			wantError: "API_EXPIRY_INTERVAL",
+		},
+		{
+			name:      "zero cadence rejected",
+			env:       map[string]string{"API_EXPIRY_INTERVAL": "0s"},
+			wantError: "API_EXPIRY_INTERVAL",
+		},
+		{
+			name:      "negative cadence rejected",
+			env:       map[string]string{"API_EXPIRY_INTERVAL": "-1s"},
+			wantError: "API_EXPIRY_INTERVAL",
+		},
+		{
+			name:      "zero batch rejected",
+			env:       map[string]string{"API_EXPIRY_BATCH": "0"},
+			wantError: "API_EXPIRY_BATCH",
+		},
+		{
+			name:      "negative batch rejected",
+			env:       map[string]string{"API_EXPIRY_BATCH": "-3"},
+			wantError: "API_EXPIRY_BATCH",
+		},
+		{
+			name:      "non numeric batch rejected",
+			env:       map[string]string{"API_EXPIRY_BATCH": "lots"},
+			wantError: "API_EXPIRY_BATCH",
+		},
+		{
+			name:      "oversized batch rejected",
+			env:       map[string]string{"API_EXPIRY_BATCH": "100000"},
+			wantError: "API_EXPIRY_BATCH",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return tc.env[key] })
+			if tc.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", tc.wantError)
+				}
+				if !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %q, want it to name %s", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.ExpiryInterval != tc.wantInterval {
+				t.Errorf("ExpiryInterval = %v, want %v", cfg.ExpiryInterval, tc.wantInterval)
+			}
+			if cfg.ExpiryBatch != tc.wantBatch {
+				t.Errorf("ExpiryBatch = %d, want %d", cfg.ExpiryBatch, tc.wantBatch)
 			}
 		})
 	}
@@ -254,5 +395,18 @@ func TestHoldTTL(t *testing.T) {
 				t.Errorf("HoldTTL = %v, want %v", cfg.HoldTTL, tc.want)
 			}
 		})
+	}
+}
+
+// The coordination URL is trimmed, so an environment file with padding still
+// yields a parseable URL rather than a startup failure.
+func TestRedisURLIsTrimmed(t *testing.T) {
+	env := map[string]string{"API_REDIS_URL": "  redis://127.0.0.1:6379/1  "}
+	cfg, err := config.LoadFrom(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatalf("LoadFrom returned error: %v", err)
+	}
+	if cfg.RedisURL != "redis://127.0.0.1:6379/1" {
+		t.Fatalf("RedisURL = %q, want it trimmed", cfg.RedisURL)
 	}
 }

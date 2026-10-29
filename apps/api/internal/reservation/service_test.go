@@ -3,7 +3,9 @@ package reservation_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +29,14 @@ type fakeStore struct {
 	seatErr   error
 
 	recordCalls  int
+	lookupCalls  int
 	lookupMisses int
 
 	// Expiry sweep double: the canned result or failure the durable layer
 	// reports, and the arguments it was asked to sweep with.
 	expireResult reservation.ExpiryResult
 	expireErr    error
+	expireFunc   func(ctx context.Context) (reservation.ExpiryResult, error)
 	expireCalls  int
 	expireNow    time.Time
 	expireBatch  int
@@ -46,6 +50,7 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) LookupIdempotency(_ context.Context, key string) (reservation.IdempotencyRecord, bool, error) {
+	f.lookupCalls++
 	if f.lookupErr != nil {
 		return reservation.IdempotencyRecord{}, false, f.lookupErr
 	}
@@ -72,10 +77,13 @@ func (f *fakeStore) RecordHold(_ context.Context, hold reservation.Hold, record 
 	return nil
 }
 
-func (f *fakeStore) ExpireHolds(_ context.Context, now time.Time, batch int) (reservation.ExpiryResult, error) {
+func (f *fakeStore) ExpireHolds(ctx context.Context, now time.Time, batch int) (reservation.ExpiryResult, error) {
 	f.expireCalls++
 	f.expireNow = now
 	f.expireBatch = batch
+	if f.expireFunc != nil {
+		return f.expireFunc(ctx)
+	}
 	if f.expireErr != nil {
 		return reservation.ExpiryResult{}, f.expireErr
 	}
@@ -505,3 +513,75 @@ func (c *countingLocker) Acquire(context.Context, string, []int64, time.Duration
 func (c *countingLocker) Release(context.Context, string, []int64) error { return nil }
 
 func (c *countingLocker) Held(context.Context, []int64) ([]bool, error) { return nil, nil }
+
+// Advisory (T4 review): an unreasonable seat count is rejected before any I/O,
+// so a caller cannot make the service build an unbounded Redis key list or an
+// unbounded durable transaction.
+func TestCreateHoldRejectsAnUnreasonableSeatCountBeforeAnyIO(t *testing.T) {
+	store := newFakeStore()
+	locker := &countingLocker{}
+	service := reservation.NewService(locker, store, testHoldTTL)
+
+	seats := make([]int64, 0, 21)
+	for seat := int64(1); seat <= 21; seat++ {
+		seats = append(seats, seat)
+	}
+
+	_, err := service.CreateHold(context.Background(), "key-too-many", "evt-1", seats)
+	if !errors.Is(err, reservation.ErrInvalidInput) {
+		t.Fatalf("CreateHold error = %v, want ErrInvalidInput", err)
+	}
+	if !strings.Contains(err.Error(), "seats") {
+		t.Fatalf("error = %q, want it to name the seat limit", err)
+	}
+	if locker.calls != 0 || store.recordCalls != 0 || store.lookupCalls != 0 {
+		t.Fatalf("rejected seat count reached I/O: locker=%d lookups=%d durable writes=%d",
+			locker.calls, store.lookupCalls, store.recordCalls)
+	}
+}
+
+// Advisory (T4 review): a reference the durable store does not know is caller
+// error, but it is reported under its own sentinel because the PostgreSQL
+// message behind it names tables and constraint values and must never be echoed
+// to a client as the request detail.
+func TestMapDurableErrorKeepsAnUnknownReferenceDistinct(t *testing.T) {
+	// The reference error a claim carries up from the store also carries the
+	// driver message, which the transport must not echo.
+	reference := fmt.Errorf("%w: %s", reservation.ErrUnknownReference,
+		`insert or update on table "reservation_seats" violates foreign key constraint "reservation_seats_event_id_fkey"`)
+
+	store := newFakeStore()
+	store.recordErr = reference
+	service, _, server := newTestService(t, store)
+
+	_, err := service.CreateHold(context.Background(), "key-unknown-reference", "evt-1", []int64{41})
+	if !errors.Is(err, reservation.ErrUnknownReference) {
+		t.Fatalf("CreateHold error = %v, want ErrUnknownReference", err)
+	}
+	if errors.Is(err, reservation.ErrUnavailable) {
+		t.Fatalf("CreateHold error = %v, want caller error rather than a retryable failure", err)
+	}
+	if server.Exists(seatKey(41)) {
+		t.Fatal("the rejected claim left seat 41 held in Redis")
+	}
+}
+
+// The limit is a boundary, not an approximation: exactly twenty seats is a valid
+// hold and must reach the coordination layer once.
+func TestCreateHoldAcceptsTheSeatLimitBoundary(t *testing.T) {
+	store := newFakeStore()
+	locker := &countingLocker{}
+	service := reservation.NewService(locker, store, testHoldTTL)
+
+	seats := make([]int64, 0, 20)
+	for seat := int64(1); seat <= 20; seat++ {
+		seats = append(seats, seat)
+	}
+
+	if _, err := service.CreateHold(context.Background(), "key-at-limit", "evt-1", seats); err != nil {
+		t.Fatalf("CreateHold at the seat limit returned error: %v", err)
+	}
+	if locker.calls != 1 {
+		t.Fatalf("coordination calls = %d, want exactly 1 acquire", locker.calls)
+	}
+}
