@@ -8,6 +8,7 @@ DB_NAME="${DB_NAME:-cinema_m0_verify}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
 M1_TEST_FILE="${M1_TEST_FILE:-/workspace/tests/migrations/m1_schema.sql}"
 M2_TEST_FILE="${M2_TEST_FILE:-/workspace/tests/migrations/m2_schema.sql}"
+IDEMPOTENCY_TEST_FILE="${IDEMPOTENCY_TEST_FILE:-/workspace/tests/migrations/m2_idempotency.sql}"
 
 log() { printf '[migrations] %s\n' "$*"; }
 fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -21,6 +22,9 @@ test -r "$M1_TEST_FILE" || fail "missing M1 schema test"
 test -r "$MIGRATIONS_DIR/0003_reservation.up.sql" || fail "missing 0003_reservation.up.sql"
 test -r "$MIGRATIONS_DIR/0003_reservation.down.sql" || fail "missing 0003_reservation.down.sql"
 test -r "$M2_TEST_FILE" || fail "missing M2 schema test"
+test -r "$MIGRATIONS_DIR/0004_idempotency.up.sql" || fail "missing 0004_idempotency.up.sql"
+test -r "$MIGRATIONS_DIR/0004_idempotency.down.sql" || fail "missing 0004_idempotency.down.sql"
+test -r "$IDEMPOTENCY_TEST_FILE" || fail "missing M2 idempotency schema test"
 
 psql_admin() {
   psql -X -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres "$@"
@@ -73,6 +77,14 @@ assert_m1_present() {
   test "$objects" = "0" || fail "M2 trigger function and event-seat key must be absent after rollback, got $objects"
 }
 
+assert_idempotency_absent() {
+  objects="$(psql_target -tA -c "SELECT count(*) FROM pg_class WHERE relnamespace = 'cinema'::regnamespace AND relname IN ('idempotency_keys','idempotency_keys_expires_at');")"
+  test "$objects" = "0" || fail "idempotency objects must be absent after 0004 rollback, got $objects"
+  # The 0003 hold schema must survive a 0004 rollback untouched.
+  objects="$(psql_target -tA -c "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace = 'cinema'::regnamespace AND relname IN ('reservations','reservation_seats','reservation_seats_active_hold','reservation_seats_event_seat','reservations_expires_at')) + (SELECT count(*) FROM pg_proc WHERE proname = 'release_expired_seat_hold');")"
+  test "$objects" = "6" || fail "the 0003 hold schema must survive a 0004 rollback, got $objects of 6 objects"
+}
+
 log "applying 0001_init"
 psql_target -q -f "$MIGRATIONS_DIR/0001_init.up.sql"
 assert_current
@@ -111,3 +123,18 @@ log "reapplying 0003_reservation"
 psql_target -q -f "$MIGRATIONS_DIR/0003_reservation.up.sql"
 psql_target -q -f "$M2_TEST_FILE"
 log "M0, M1 and M2 up/down/up verification passed"
+
+log "applying 0004_idempotency"
+psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.up.sql"
+psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
+assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
+log "rolling back 0004_idempotency"
+psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.down.sql"
+assert_versions '0001_init,0002_venue_layout,0003_reservation'
+assert_idempotency_absent
+psql_target -q -f "$M2_TEST_FILE"
+log "reapplying 0004_idempotency"
+psql_target -q -f "$MIGRATIONS_DIR/0004_idempotency.up.sql"
+psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
+assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
+log "M0, M1, M2 and M2 idempotency up/down/up verification passed"
