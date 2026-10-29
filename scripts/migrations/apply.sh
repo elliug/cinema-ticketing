@@ -10,8 +10,8 @@ MIGRATION_DIRECTION="${MIGRATION_DIRECTION:-up}"
 MIGRATION_VERSION="${MIGRATION_VERSION:-0001_init}"
 
 case "$MIGRATION_VERSION" in
-  0001_init|0002_venue_layout) ;;
-  *) printf 'MIGRATION_VERSION must be 0001_init or 0002_venue_layout\n' >&2; exit 2 ;;
+  0001_init|0002_venue_layout|0003_reservation) ;;
+  *) printf 'MIGRATION_VERSION must be 0001_init, 0002_venue_layout or 0003_reservation\n' >&2; exit 2 ;;
 esac
 case "$MIGRATION_DIRECTION" in
   up|down) migration="$MIGRATIONS_DIR/$MIGRATION_VERSION.$MIGRATION_DIRECTION.sql" ;;
