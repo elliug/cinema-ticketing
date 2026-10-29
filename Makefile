@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down migrate migrate-down verify-migrations smoke verify-m0
+.PHONY: install check api-test web-check deps-up deps-down migrate migrate-down verify-migrations smoke verify-m0 verify-m1
 
 install:
 	pnpm install --frozen-lockfile
@@ -37,3 +37,6 @@ smoke:
 	./scripts/verify_m0.sh
 
 verify-m0: check verify-migrations smoke
+
+verify-m1:
+	./scripts/verify_m1.sh
