@@ -26,13 +26,15 @@ Builds on the integrated M2 reservation core.
 
 ## Tasks
 
-- T1 — S6, S7, S8 — simulated payment adapter behind the payment boundary, idempotent charge and callback — pending definition
-- T2 — S7 — checkout that converts a held reservation into a paid order and issues tickets — pending definition
-- T3 — S4, S8 — ticket detail projection shared by the web surface and the PDF — pending definition
-- T4 — S3, S5 — PDF generation, storage in S3 (Floci) and download — pending definition
-- T5 — S4 — QR encoding the ticket detail and its server-side verification — pending definition
-- T6 — S1 — web confirmation and ticket surfaces, guest and signed-in — pending definition
-- T7 — S1 — `make verify-m3` end-to-end proof against compose including Floci — pending definition
+- T0 — S5 — Floci as a compose service (image `floci/floci:latest`, port 4566, healthcheck, volume) plus the validated S3 configuration (`API_S3_ENDPOINT`, `API_S3_BUCKET`, `API_S3_REGION`, credentials) and a replaceable object-storage adapter with `Put`, `Get` and `PresignGet` — pending
+- T1 — S6, S8 — simulated payment adapter behind the payment boundary: a deterministic approved/declined outcome, one provider reference per attempt, idempotent replay, no real credentials — pending
+- T2 — S7 — reversible `0005_checkout` schema for orders, tickets, payment attempts and the outbox, with the constraints that make double payment and duplicate tickets impossible — pending
+- T3 — S7, S8 — checkout service and `POST /api/v1/reservations/{reservationId}/payment`: one transaction that captures the payment, marks the reservation paid, sells the seats, issues one ticket per seat and writes the outbox row; releases the Redis hold after commit; replay returns the stored result — pending
+- T4 — S4 — the single `TicketDetail` projection and `GET /api/v1/tickets/{ticketId}`, shared by the web view and the PDF — pending
+- T5 — S4 — signed QR token (HMAC over ticket, event and seats) attached to the detail, plus a verification endpoint that rejects forged or unknown tokens — pending
+- T6 — S3, S5 — PDF generation at confirmation, upload to the bucket and `GET /api/v1/tickets/{ticketId}/pdf` answering with a short-lived pre-signed redirect — pending
+- T7 — S1, S3 — guest web confirmation and ticket pages, with the ticket detail and the download action — pending
+- T8 — S1 — `make verify-m3` end to end against compose including Floci: hold, pay, ticket, PDF in the bucket, pre-signed download and QR verification — pending
 
 ## Decided
 
@@ -49,3 +51,4 @@ These were answered before implementation, so M3 starts with them fixed.
 - L1 — "Mientras acabamos M2 me gustaría iterar y dar más contexto a M3 para cuando tengamos que implementarla. Quiero que tras M3 tengamos una aplicación end to end funcional y que ya se pueda mostrar al usuario. PAra ello, como en M3 se va a relizar la proma de pago (simulada) me gustaría que al pagar y que el usuairio tenga la confirmación de la entrada en la web se pueda descargar un PDF con la entrada y que la entrada tanto en web como en pdf tenga el detalle y disponga de un QR con el detalle. Este pdf me gustaría que se almacenara en S3 (para ello quiero que utilices como infraestructura floci en forma de docker como redis y postgre)"
 - L2 — Floci confirmed as the S3 emulator: `floci/floci:latest`, port 4566, S3-compatible with pre-signed URLs, no real credentials.
 - L3 — Decided with the user before implementation: signed opaque QR token verified server side; PDF generated at purchase, stored in S3 and served by pre-signed URL; one price per event (`events.price_cents`) with amount = price × seats; the agreed ticket detail shared by web and PDF; web-only download, no email.
+- L4 — Startup plan: the slice order is infrastructure (Floci plus the storage adapter), then the payment adapter, the checkout schema, the checkout transaction, the ticket projection, the QR, the PDF, the web surfaces and the milestone verification. Each slice gets its own branch created before its first commit, and `assess` runs before every commit, because those are the two process rules this project learned the hard way.
