@@ -24,6 +24,8 @@ make deps-up
 make migrate
 ```
 
+`make deps-up` starts the three local services: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci:latest`, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three services to report healthy; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
+
 Run the API:
 
 ```sh
@@ -42,6 +44,7 @@ Open `http://localhost:3000`. Health endpoints:
 |---|---|---|
 | API | `GET http://localhost:8080/health/live` | Process liveness |
 | API | `GET http://localhost:8080/health/ready` | PostgreSQL and Redis TCP readiness |
+| Floci | `GET http://localhost:4566/_floci/health` | Local S3 readiness, probed from the host |
 | Web | `GET http://localhost:3000/api/health` | Web runtime health contract |
 
 ## Repository map

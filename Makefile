@@ -18,7 +18,7 @@ check: api-test web-check
 
 deps-up:
 	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
-	$(COMPOSE) up -d postgres redis
+	$(COMPOSE) up -d --wait --wait-timeout 90 postgres redis floci
 
 deps-down:
 	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)

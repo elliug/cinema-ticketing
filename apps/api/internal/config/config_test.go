@@ -204,6 +204,16 @@ func TestExpiryConfiguration(t *testing.T) {
 			env:       map[string]string{"API_EXPIRY_BATCH": "100000"},
 			wantError: "API_EXPIRY_BATCH",
 		},
+		{
+			name:      "a sub-second presign lifetime is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "500ms"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+		{
+			name:      "a compose-network endpoint with the dummy pair is rejected",
+			env:       map[string]string{"API_S3_ENDPOINT": "https://floci:4566", "API_S3_ACCESS_KEY_ID": "floci", "API_S3_SECRET_ACCESS_KEY": "floci"},
+			wantError: "API_S3_ACCESS_KEY_ID",
+		},
 	}
 
 	for _, tc := range cases {
@@ -408,5 +418,234 @@ func TestRedisURLIsTrimmed(t *testing.T) {
 	}
 	if cfg.RedisURL != "redis://127.0.0.1:6379/1" {
 		t.Fatalf("RedisURL = %q, want it trimmed", cfg.RedisURL)
+	}
+}
+
+// TestS3Configuration pins the object-storage rules: the documented defaults that
+// make a local Floci container work with no environment variables at all, and the
+// combinations that cannot work, which are refused instead of started.
+func TestS3Configuration(t *testing.T) {
+	const secret = "local-floci-secret"
+
+	cases := []struct {
+		name          string
+		env           map[string]string
+		wantEndpoint  string
+		wantBucket    string
+		wantRegion    string
+		wantAccessKey string
+		wantSecret    string
+		wantPresign   time.Duration
+		wantError     string
+	}{
+		{
+			name:          "defaults documented in the code",
+			wantEndpoint:  "http://127.0.0.1:4566",
+			wantBucket:    "cinema-m3-tickets",
+			wantRegion:    "us-east-1",
+			wantAccessKey: "floci",
+			wantSecret:    "floci",
+			wantPresign:   5 * time.Minute,
+		},
+		{
+			name: "every setting overridden",
+			env: map[string]string{
+				"API_S3_ENDPOINT":          "https://objects.example.test",
+				"API_S3_BUCKET":            "cinema-m3-production",
+				"API_S3_REGION":            "eu-west-1",
+				"API_S3_ACCESS_KEY_ID":     "AKIAEXAMPLE",
+				"API_S3_SECRET_ACCESS_KEY": secret,
+				"API_S3_PRESIGN_TTL":       "90s",
+			},
+			wantEndpoint:  "https://objects.example.test",
+			wantBucket:    "cinema-m3-production",
+			wantRegion:    "eu-west-1",
+			wantAccessKey: "AKIAEXAMPLE",
+			wantSecret:    secret,
+			wantPresign:   90 * time.Second,
+		},
+		{
+			name: "a trailing slash on the endpoint is trimmed",
+			env: map[string]string{
+				"API_S3_ENDPOINT": " http://127.0.0.1:9000/ ",
+			},
+			wantEndpoint:  "http://127.0.0.1:9000",
+			wantBucket:    "cinema-m3-tickets",
+			wantRegion:    "us-east-1",
+			wantAccessKey: "floci",
+			wantSecret:    "floci",
+			wantPresign:   5 * time.Minute,
+		},
+		{
+			name:      "an endpoint without a scheme is rejected",
+			env:       map[string]string{"API_S3_ENDPOINT": "127.0.0.1:4566"},
+			wantError: "API_S3_ENDPOINT",
+		},
+		{
+			name:      "an endpoint with a path is rejected",
+			env:       map[string]string{"API_S3_ENDPOINT": "http://127.0.0.1:4566/prefix"},
+			wantError: "API_S3_ENDPOINT",
+		},
+		{
+			name:      "an endpoint with a query is rejected",
+			env:       map[string]string{"API_S3_ENDPOINT": "http://127.0.0.1:4566?x=1"},
+			wantError: "API_S3_ENDPOINT",
+		},
+		{
+			name:      "an unsupported endpoint scheme is rejected",
+			env:       map[string]string{"API_S3_ENDPOINT": "ftp://127.0.0.1:4566"},
+			wantError: "API_S3_ENDPOINT",
+		},
+		{
+			name:      "an upper case bucket is rejected",
+			env:       map[string]string{"API_S3_BUCKET": "Cinema-M3-Tickets"},
+			wantError: "API_S3_BUCKET",
+		},
+		{
+			name:      "an underscore in the bucket is rejected",
+			env:       map[string]string{"API_S3_BUCKET": "cinema_m3_tickets"},
+			wantError: "API_S3_BUCKET",
+		},
+		{
+			name:      "a bucket that starts with a hyphen is rejected",
+			env:       map[string]string{"API_S3_BUCKET": "-cinema-m3"},
+			wantError: "API_S3_BUCKET",
+		},
+		{
+			name:      "a too short bucket is rejected",
+			env:       map[string]string{"API_S3_BUCKET": "m3"},
+			wantError: "API_S3_BUCKET",
+		},
+		{
+			name:      "a blank region is rejected",
+			env:       map[string]string{"API_S3_REGION": "   "},
+			wantError: "API_S3_REGION",
+		},
+		{
+			name:      "an access key without a secret is rejected",
+			env:       map[string]string{"API_S3_ACCESS_KEY_ID": "AKIAEXAMPLE"},
+			wantError: "API_S3_SECRET_ACCESS_KEY",
+		},
+		{
+			name:      "a secret without an access key is rejected",
+			env:       map[string]string{"API_S3_SECRET_ACCESS_KEY": secret},
+			wantError: "API_S3_ACCESS_KEY_ID",
+		},
+		{
+			name: "the development credential pair is rejected for a remote endpoint",
+			env: map[string]string{
+				"API_S3_ENDPOINT": "https://objects.example.test",
+			},
+			wantError: "API_S3_ACCESS_KEY_ID",
+		},
+		{
+			name: "a named local host accepts the development credentials",
+			env: map[string]string{
+				"API_S3_ENDPOINT": "http://localhost:4566",
+			},
+			wantEndpoint:  "http://localhost:4566",
+			wantBucket:    "cinema-m3-tickets",
+			wantRegion:    "us-east-1",
+			wantAccessKey: "floci",
+			wantSecret:    "floci",
+			wantPresign:   5 * time.Minute,
+		},
+		{
+			name: "a remote endpoint accepts real credentials",
+			env: map[string]string{
+				"API_S3_ENDPOINT":          "https://objects.example.test",
+				"API_S3_ACCESS_KEY_ID":     "AKIAEXAMPLE",
+				"API_S3_SECRET_ACCESS_KEY": secret,
+			},
+			wantEndpoint:  "https://objects.example.test",
+			wantBucket:    "cinema-m3-tickets",
+			wantRegion:    "us-east-1",
+			wantAccessKey: "AKIAEXAMPLE",
+			wantSecret:    secret,
+			wantPresign:   5 * time.Minute,
+		},
+		{
+			name:      "an unparseable pre-sign lifetime is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "five minutes"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+		{
+			name:      "a pre-sign lifetime without a unit is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "300"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+		{
+			name:      "a zero pre-sign lifetime is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "0s"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+		{
+			name:      "a negative pre-sign lifetime is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "-1m"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+		{
+			name:      "a pre-sign lifetime beyond the seven day signature limit is rejected",
+			env:       map[string]string{"API_S3_PRESIGN_TTL": "169h"},
+			wantError: "API_S3_PRESIGN_TTL",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return tc.env[key] })
+			if tc.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", tc.wantError)
+				}
+				if !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %q, want it to name %s", err, tc.wantError)
+				}
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error message leaked the secret: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.S3Endpoint != tc.wantEndpoint {
+				t.Errorf("S3Endpoint = %q, want %q", cfg.S3Endpoint, tc.wantEndpoint)
+			}
+			if cfg.S3Bucket != tc.wantBucket {
+				t.Errorf("S3Bucket = %q, want %q", cfg.S3Bucket, tc.wantBucket)
+			}
+			if cfg.S3Region != tc.wantRegion {
+				t.Errorf("S3Region = %q, want %q", cfg.S3Region, tc.wantRegion)
+			}
+			if cfg.S3AccessKeyID != tc.wantAccessKey {
+				t.Errorf("S3AccessKeyID = %q, want %q", cfg.S3AccessKeyID, tc.wantAccessKey)
+			}
+			if cfg.S3SecretAccessKey != tc.wantSecret {
+				t.Errorf("S3SecretAccessKey does not match the configured secret")
+			}
+			if cfg.S3PresignTTL != tc.wantPresign {
+				t.Errorf("S3PresignTTL = %v, want %v", cfg.S3PresignTTL, tc.wantPresign)
+			}
+		})
+	}
+}
+
+// TestS3ConfigurationNeverEchoesTheSecret pins that a rejected object-storage
+// configuration names the variables only: the secret access key must never reach
+// a log or a crash report through an error message.
+func TestS3ConfigurationNeverEchoesTheSecret(t *testing.T) {
+	const secret = "broken-bucket-secret-value"
+	env := map[string]string{
+		"API_S3_BUCKET":            "Not_A_Bucket",
+		"API_S3_ACCESS_KEY_ID":     "AKIAEXAMPLE",
+		"API_S3_SECRET_ACCESS_KEY": secret,
+	}
+	_, err := config.LoadFrom(func(key string) string { return env[key] })
+	if err == nil {
+		t.Fatal("expected an error for an invalid bucket, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error message leaked the secret: %v", err)
 	}
 }
