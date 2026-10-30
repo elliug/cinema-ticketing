@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -87,6 +88,9 @@ type Event struct {
 	LayoutVersionID string    `json:"layoutVersionId"`
 	StartsAt        time.Time `json:"startsAt"`
 	Status          string    `json:"status"`
+	// PriceCents is the price of one seat, in minor units, from
+	// cinema.events.price_cents. Zero is a legal free screening.
+	PriceCents int64 `json:"priceCents"`
 }
 
 // EventSeat is the sale state of one layout seat for one event.
@@ -117,6 +121,41 @@ func NewInvalidError(field, message string) error {
 
 // ErrConflict reports a rejected duplicate or a state that forbids the change.
 var ErrConflict = errors.New("conflict")
+
+// MaxPriceCents is the largest value cinema.events.price_cents can hold: the column is
+// a PostgreSQL integer, and a price is never negative.
+const MaxPriceCents int64 = 2147483647
+
+// eventIDPattern is the canonical UUID spelling. A stored event is addressed by one of
+// these, so a value that cannot be one names no event and is rejected before SQL.
+var eventIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// ValidateEventID rejects an event identifier that cannot name a stored event. It is
+// shared by the administrative read and the price write so both answer the same
+// rejection for the same bad value instead of one reaching SQL and one not.
+func ValidateEventID(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return NewInvalidError("eventId", "must not be empty")
+	}
+	if !eventIDPattern.MatchString(trimmed) {
+		return NewInvalidError("eventId", "must be a valid identifier")
+	}
+	return nil
+}
+
+// ValidatePriceCents enforces the column's range before any SQL. Zero is accepted: a
+// free screening is a product decision, not an invalid price, and the checkout decides
+// whether it can be sold.
+func ValidatePriceCents(priceCents int64) error {
+	if priceCents < 0 {
+		return NewInvalidError("priceCents", "must be zero or greater")
+	}
+	if priceCents > MaxPriceCents {
+		return NewInvalidError("priceCents", "must be at most 2147483647")
+	}
+	return nil
+}
 
 // ErrNotFound reports a missing aggregate.
 var ErrNotFound = errors.New("not found")

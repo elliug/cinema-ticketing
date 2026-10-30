@@ -18,12 +18,16 @@ type fakeService struct {
 	layoutVersions []venue.Layout
 	cinemas        []venue.Cinema
 	rooms          []venue.Room
+	event          venue.Event
+	events         []venue.Event
 	seats          []venue.EventSeat
 	calls          []string
 	createErr      error
 	lastRows       []venue.Row
 	lastEvent      venue.Event
 	lastCinema     venue.Cinema
+	lastEventID    string
+	lastPriceCents int64
 	lastRequest    string
 }
 
@@ -81,6 +85,38 @@ func (f *fakeService) CreateEvent(_ context.Context, roomID, filmID, layoutVersi
 func (f *fakeService) ListEventSeats(_ context.Context, eventID string) ([]venue.EventSeat, error) {
 	f.calls = append(f.calls, "ListEventSeats")
 	return f.seats, f.createErr
+}
+
+func (f *fakeService) ListEvents(_ context.Context) ([]venue.Event, error) {
+	f.calls = append(f.calls, "ListEvents")
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.events, nil
+}
+
+func (f *fakeService) GetEvent(_ context.Context, eventID string) (venue.Event, error) {
+	f.calls = append(f.calls, "GetEvent")
+	f.lastEventID = eventID
+	if f.createErr != nil {
+		return venue.Event{}, f.createErr
+	}
+	event := f.event
+	event.ID = eventID
+	return event, nil
+}
+
+func (f *fakeService) SetEventPrice(_ context.Context, eventID string, priceCents int64) (venue.Event, error) {
+	f.calls = append(f.calls, "SetEventPrice")
+	f.lastEventID = eventID
+	f.lastPriceCents = priceCents
+	if f.createErr != nil {
+		return venue.Event{}, f.createErr
+	}
+	event := f.event
+	event.ID = eventID
+	event.PriceCents = priceCents
+	return event, nil
 }
 
 func (f *fakeService) ListCinemas(_ context.Context) ([]venue.Cinema, error) {

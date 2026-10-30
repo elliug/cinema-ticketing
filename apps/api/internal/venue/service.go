@@ -22,6 +22,9 @@ type Store interface {
 	CreateFilm(ctx context.Context, film Film) error
 	CreateEvent(ctx context.Context, event Event) error
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
+	ListEvents(ctx context.Context) ([]Event, error)
+	GetEvent(ctx context.Context, eventID string) (Event, error)
+	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error)
 }
 
 // Service applies M1 validation before persisting venue aggregates.
@@ -203,6 +206,34 @@ func (s *Service) ListEventSeats(ctx context.Context, eventID string) ([]EventSe
 		return nil, err
 	}
 	return s.store.ListEventSeats(ctx, eventID)
+}
+
+// ListEvents returns every screening in start order, for the administration that has to
+// find the price it is about to change.
+func (s *Service) ListEvents(ctx context.Context) ([]Event, error) {
+	return s.store.ListEvents(ctx)
+}
+
+// GetEvent returns one screening. A value that cannot be an event identifier is
+// rejected before the store, so a wrong guess never becomes a cast error.
+func (s *Service) GetEvent(ctx context.Context, eventID string) (Event, error) {
+	if err := ValidateEventID(eventID); err != nil {
+		return Event{}, err
+	}
+	return s.store.GetEvent(ctx, eventID)
+}
+
+// SetEventPrice validates the identifier and the price, then lets the store write the
+// single guarded statement. A missing event is not found and an out-of-range value is a
+// rejected field, both before SQL; zero is accepted as a free screening.
+func (s *Service) SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error) {
+	if err := ValidateEventID(eventID); err != nil {
+		return Event{}, err
+	}
+	if err := ValidatePriceCents(priceCents); err != nil {
+		return Event{}, err
+	}
+	return s.store.SetEventPrice(ctx, eventID, priceCents)
 }
 
 func requireID(field, value string) error {

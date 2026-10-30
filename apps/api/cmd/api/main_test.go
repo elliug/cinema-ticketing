@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"cinema.local/ticketing/apps/api/internal/adminapi"
 	"cinema.local/ticketing/apps/api/internal/catalog"
 	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
@@ -20,6 +21,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/reservation"
 	"cinema.local/ticketing/apps/api/internal/tickets"
+	"cinema.local/ticketing/apps/api/internal/venue"
 )
 
 const adminTestURL = "postgres://cinema:s3cr3t-pw@127.0.0.1:5432/cinema?sslmode=disable"
@@ -1017,5 +1019,47 @@ func TestMountReservationFailsWhenTheReadProbeCannotAnswer(t *testing.T) {
 		if strings.Contains(err.Error(), leaked) {
 			t.Fatalf("error leaked %q: %v", leaked, err)
 		}
+	}
+}
+
+// T2 (S4): the two screening reads and the price write are part of the administrative
+// subtree, so they are mounted behind the same local-only guard as the venue routes.
+// An unauthorized request is indistinguishable from a missing route, and a guarded one
+// reaches the new handler.
+func TestAdminScreeningRoutesAreBehindTheGuard(t *testing.T) {
+	cfg := config.Config{Environment: "development", LocalAdminEnabled: true, LocalAdminToken: "admin-guard-token"}
+	srv := httpserver.New(cfg, health.New(health.ProcessProbe{}), discardLogger())
+	srv.WithAdmin(adminapi.New(venue.NewService(nil)).Mux())
+
+	call := func(method, target, token string) int {
+		request := httptest.NewRequest(method, target, strings.NewReader(`{"priceCents":1250}`))
+		request.RemoteAddr = "127.0.0.1:12345"
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, request)
+		return w.Code
+	}
+
+	for _, target := range []string{"/api/v1/admin/events", "/api/v1/admin/events/not-an-event"} {
+		if status := call(http.MethodGet, target, ""); status != http.StatusNotFound {
+			t.Fatalf("GET %s without a token = %d, want 404 like a missing route", target, status)
+		}
+		if status := call(http.MethodGet, target, "wrong-token"); status != http.StatusNotFound {
+			t.Fatalf("GET %s with a wrong token = %d, want 404 like a missing route", target, status)
+		}
+	}
+	if status := call(http.MethodPatch, "/api/v1/admin/events/not-an-event", ""); status != http.StatusNotFound {
+		t.Fatalf("PATCH without a token = %d, want 404 like a missing route", status)
+	}
+	// A guarded request reaches the handler: the malformed identifier is the handler's
+	// rejection, which proves the route is present behind the guard without needing a
+	// database or a service.
+	if status := call(http.MethodPatch, "/api/v1/admin/events/not-an-event", "admin-guard-token"); status != http.StatusBadRequest {
+		t.Fatalf("PATCH with the token = %d, want the handler's 400", status)
+	}
+	if status := call(http.MethodGet, "/api/v1/admin/events/not-an-event", "admin-guard-token"); status != http.StatusBadRequest {
+		t.Fatalf("GET one event with the token = %d, want the handler's 400", status)
 	}
 }
