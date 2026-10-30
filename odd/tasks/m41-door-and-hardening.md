@@ -231,3 +231,39 @@ were the only untested part of a slice, and the second time they passed once act
 capture, leaving the capture to fail with the provider having already taken the money. Expiry
 carries the same window today; this change neither widens nor closes it. Recorded as T13 rather
 than absorbed into a slice about cancelling.
+
+### L9 — the CI stopped lying, and T5 is split before it starts
+
+#64 merged (`3cb6f35`): one CI run per ref, so a superseded push cannot finish red and leave its
+failure on a pull request that is green. Three false alarms in one session were three too many,
+and the eight-line slice cost nine minutes end to end — the cheapest evidence so far that the
+milestone's real problem was never effort but **slice size**.
+
+T5 is split for that reason, before writing any of it: **T5a** is the API (`GET /events` pages and
+filters, and says how to ask for the next page), **T5b** is the catalogue screen that consumes it.
+They are different questions with different failure modes — a cursor that skips a screening versus
+a button that never appears — and a reviewer holding both cannot tell which one is wrong when a
+gate goes red.
+
+### L10 — T5a delivered, and the size problem is mine, not the writers'
+
+The catalogue pages with a keyset cursor over `(starts_at, id)`, bounds its pages with optional
+`from`/`to`, refuses a limit or a cursor it cannot mean by naming the field, and adds a sibling
+`page` object the web client can ignore until T5b consumes it. Proven against a real database:
+the gated tests the writer could not run — the bounded page, the full walk at four limits, the
+**insertion mid-walk that neither repeats nor skips**, the inclusive bounds, the refusal of an
+impossible request — all pass once run.
+
+**And it came to 1506 authored lines**, the third slice in a row between 700 and 1500. That is no
+longer bad luck or a verbose writer; it is a decomposition problem in this milestone. Two slices
+this size would have been caught earlier if I had set the rule before writing them rather than
+after: **one behaviour per PR, and a slice whose diff crosses roughly 600 authored lines is
+re-scoped before it is reviewed**, not explained afterwards in a body.
+
+What the pattern has cost, concretely: three PRs whose review load was carried by CI rather than
+by a reader, and native review declining all three on `under_budget`. A change that is never read
+closely is a change whose defects are found by gates or by users, in that order.
+
+Concretely for what remains: T5b is the catalogue screen only. T6 is one migration. T7 is the
+redeem schema **or** the endpoint, not both. T8 is one screen. The remaining work is small enough
+to be sliced small; the only thing standing in the way was this document not saying so until now.

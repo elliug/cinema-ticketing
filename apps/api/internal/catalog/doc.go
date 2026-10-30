@@ -9,6 +9,9 @@
 // somebody already had: the seat map needs an event id, the ticket needs a ticket id.
 // A stranger arriving at the site has neither, so the catalogue answers the screenings
 // a buyer can actually buy and the web no longer has to know an identifier in advance.
+// It answers one bounded page of them and says where the next page starts, because a
+// catalogue is a list that changes under its readers: [ListQuery] records why that
+// position is a keyset over `(starts_at, id)` and not an offset.
 // The reservation read is the other half: without it, reloading the confirmation page
 // loses the state the buyer just produced with a hold or a payment.
 //

@@ -216,6 +216,7 @@ The external API is versioned under `/api/v1`. Error responses use RFC 9457 prob
 The tables below are the **target contract for v1**, not a description of the current binary. What exists today and is gated by CI:
 
 - `POST /api/v1/reservations/holds` — requires `Idempotency-Key`; answers `201` with `id`, `eventId`, `seatIds` and `expiresAt`, or `409 seat_unavailable`, `400 hold_window_expired`, `400 invalid_input`, `503` when the coordination layer or the database is unreachable. Replaying the same key returns the stored result and never extends the window.
+- `GET /api/v1/events` — one bounded page of the catalogue: `limit` (1–100, 20 when unnamed, refused out of range rather than clamped) and optional `from`/`to` bounds on the screening start, answered with a keyset cursor over `(starts_at, id)` that says how to ask for the next page (`null` on the last one).
 - `GET /api/v1/events/{eventId}/seats` — occupancy plus the layout projection (`rowLabel`, `seatNumber`, `kind`, `held`) in row and seat order.
 
 Everything else in these tables is planned. M3 adds the payment and ticket routes plus the PDF download.

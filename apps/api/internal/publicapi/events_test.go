@@ -36,7 +36,10 @@ import (
 // transport asked it.
 type fakeCatalogService struct {
 	screenings []catalog.Screening
-	err        error
+	// next is the position the reader says the next page starts at, or nil when the
+	// configured screenings are the last page. The transport must echo it, not compute it.
+	next *catalog.Cursor
+	err  error
 
 	// The single screening read's own configuration, so a test can answer a screening
 	// that is not on sale — which the list can never carry — without inventing a second
@@ -45,15 +48,17 @@ type fakeCatalogService struct {
 	singleErr error
 
 	calls    int
+	queries  []catalog.ListQuery
 	askedIDs []string
 }
 
-func (f *fakeCatalogService) Events(context.Context) ([]catalog.Screening, error) {
+func (f *fakeCatalogService) Events(_ context.Context, query catalog.ListQuery) (catalog.Page, error) {
 	f.calls++
+	f.queries = append(f.queries, query)
 	if f.err != nil {
-		return nil, f.err
+		return catalog.Page{}, f.err
 	}
-	return f.screenings, nil
+	return catalog.Page{Screenings: f.screenings, Next: f.next}, nil
 }
 
 func (f *fakeCatalogService) Event(_ context.Context, eventID string) (catalog.Screening, error) {
@@ -221,8 +226,10 @@ func TestCatalogRouteServesTheCatalogue(t *testing.T) {
 
 	// The key names are the contract the web catalogue screen reads, so they are
 	// pinned as a set: an added, renamed or dropped key is a change it would notice.
-	if got := objectKeys(t, raw); !equalKeys(got, []string{"events"}) {
-		t.Fatalf("catalogue keys = %v, want only events", got)
+	// The page object is a sibling of the array and not a replacement: the screen reads
+	// `events` exactly as it did before the catalogue was paged.
+	if got := objectKeys(t, raw); !equalKeys(got, []string{"events", "page"}) {
+		t.Fatalf("catalogue keys = %v, want events beside page", got)
 	}
 	entries := arrayField(t, raw, "events")
 	if len(entries) != len(want) {

@@ -1,8 +1,8 @@
 // The PostgreSQL reads of the projections.
 //
-// One statement answers the whole catalogue, the same statement answers one screening,
-// and one statement answers the whole reservation, so a buyer never sees an entry
-// assembled from two different instants of the database, the seat page never sees a
+// One statement answers one page of the catalogue, the same statement answers one
+// screening, and one statement answers the whole reservation, so a buyer never sees an
+// entry assembled from two different instants of the database, the seat page never sees a
 // screening the list would disagree with, and the counts are decided by the same clock
 // that governs holds.
 
@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -77,19 +78,38 @@ JOIN LATERAL (
   WHERE es.event_id = e.id
 ) occupancy ON TRUE`
 
-	// eventsQuery answers the whole catalogue: the shared projection, filtered by the
-	// eligibility column it already carries. `screening.*` is the projection's own column
-	// order, so the wire shape and the scan order cannot drift apart.
+	// eventsQuery answers one page of the catalogue: the shared projection, filtered by the
+	// eligibility column it already carries and by the caller's bounds, continued from the
+	// caller's cursor. `screening.*` is the projection's own column order, so the wire shape
+	// and the scan order cannot drift apart.
 	//
 	// The order is the contract the catalogue screen renders: screening time ascending,
 	// with the identifier as the tiebreaker so two screenings at the same minute cannot
-	// swap places between two reads.
+	// swap places between two reads. That order is also what the cursor addresses: the page
+	// continues at the first row whose `(starts_at, id)` is greater than the cursor's pair,
+	// so a screening inserted or cancelled elsewhere in the catalogue can neither repeat an
+	// entry a client already saw nor step over one it has not — which an `OFFSET` would do,
+	// because an offset is a count of rows before the page rather than a position in the
+	// data. [ListQuery] records that decision where it belongs.
+	//
+	// `LIMIT` asks for one row more than the page answers. That extra row is the only way
+	// this read can know a further page exists without a second query or a count, and it is
+	// never answered: a page that said "more" by carrying an extra screening would be a page
+	// of the wrong size.
+	//
+	// The bounds are inclusive on both sides: `from` and `to` name screenings, not gaps
+	// between them, so a caller that asks for a day gets that day's first and last
+	// screening too.
 	eventsQuery = `
 SELECT screening.*
 FROM (` + screeningQuery + `
 ) screening
 WHERE screening.on_sale
-ORDER BY screening.starts_at, screening.id`
+  AND ($1::timestamptz IS NULL OR screening.starts_at >= $1)
+  AND ($2::timestamptz IS NULL OR screening.starts_at <= $2)
+  AND ($3::timestamptz IS NULL OR (screening.starts_at, screening.id) > ($3, $4::text))
+ORDER BY screening.starts_at, screening.id
+LIMIT $5`
 
 	// eventQuery answers one screening, whatever its status, from the same projection: a
 	// buyer who followed a link to a screening that is no longer offered is told so by the
@@ -233,33 +253,63 @@ func (s *PostgresStore) ReadSchemaPresent(ctx context.Context) (bool, error) {
 	return present, nil
 }
 
-// Events answers the screenings a buyer can buy right now, in screening order.
+// Events answers one page of the screenings a buyer can buy right now, in screening order.
 //
-// A catalogue with nothing to sell answers an empty list and no error: "nothing on sale"
-// is a fact about the programme, not a failed read, and a transport must be able to
-// answer it with 200.
-func (s *PostgresStore) Events(ctx context.Context) ([]Screening, error) {
-	if s == nil || s.pool == nil {
-		return nil, fmt.Errorf("%w: the catalogue store is not configured", ErrUnavailable)
-	}
-	rows, err := s.pool.Query(ctx, eventsQuery)
+// The request is validated here as well as in the transport, and by the same function: a
+// caller of this store that forgot the limit is refused instead of being handed the whole
+// programme, and a cursor that names no screening is refused instead of being compared.
+// A page with nothing to sell answers an empty page and no error: "nothing on sale" is a
+// fact about the programme, not a failed read, and a transport must be able to answer it
+// with 200.
+func (s *PostgresStore) Events(ctx context.Context, query ListQuery) (Page, error) {
+	query, err := query.Normalize()
 	if err != nil {
-		return nil, classifyReadError(err)
+		return Page{}, err
+	}
+	if s == nil || s.pool == nil {
+		return Page{}, fmt.Errorf("%w: the catalogue store is not configured", ErrUnavailable)
+	}
+
+	// The bounds and the cursor travel as SQL nulls when they are absent, which is what the
+	// query's own `IS NULL` guards read. The cursor's identifier is text, exactly the type
+	// the projection answers for `screening.id`.
+	var (
+		afterStartsAt *time.Time
+		afterID       *string
+	)
+	if query.After != nil {
+		startsAt := query.After.StartsAt
+		afterStartsAt = &startsAt
+		afterID = &query.After.ID
+	}
+
+	rows, err := s.pool.Query(ctx, eventsQuery, query.From, query.To, afterStartsAt, afterID, query.Limit+1)
+	if err != nil {
+		return Page{}, classifyReadError(err)
 	}
 	defer rows.Close()
 
-	screenings := []Screening{}
+	page := Page{Screenings: []Screening{}}
 	for rows.Next() {
 		screening, err := scanScreening(rows)
 		if err != nil {
-			return nil, classifyReadError(err)
+			return Page{}, classifyReadError(err)
 		}
-		screenings = append(screenings, screening)
+		page.Screenings = append(page.Screenings, screening)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, classifyReadError(err)
+		return Page{}, classifyReadError(err)
 	}
-	return screenings, nil
+
+	// The row beyond the limit is the sentinel: it proves another page exists and is not
+	// answered. The next page starts after the last screening this one answers, so the two
+	// share no entry.
+	if len(page.Screenings) > query.Limit {
+		page.Screenings = page.Screenings[:query.Limit]
+		last := page.Screenings[query.Limit-1]
+		page.Next = &Cursor{StartsAt: last.StartsAt.UTC(), ID: last.ID}
+	}
+	return page, nil
 }
 
 // Event answers one screening, whatever its status, from the same statement that fills
