@@ -30,6 +30,11 @@ type fakeService struct {
 	lastEventID    string
 	lastUpdate     venue.EventUpdate
 	lastRequest    string
+	// lastCreatePrice and lastCreateStatus are what POST /events carried, so a test can tell
+	// "the field was not sent" from "the field was sent as zero" — the difference the create
+	// and the update both hinge on.
+	lastCreatePrice  *int64
+	lastCreateStatus *string
 }
 
 func (f *fakeService) CreateCinema(_ context.Context, name, timezone, address string) (venue.Cinema, error) {
@@ -77,9 +82,17 @@ func (f *fakeService) CreateFilm(_ context.Context, title string, runtimeMinutes
 	return venue.Film{ID: "film-1", Title: title, RuntimeMinutes: runtimeMinutes, Rating: rating}, f.createErr
 }
 
-func (f *fakeService) CreateEvent(_ context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (venue.Event, error) {
+func (f *fakeService) CreateEvent(_ context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time, priceCents *int64, status *string) (venue.Event, error) {
 	f.calls = append(f.calls, "CreateEvent")
-	f.lastEvent = venue.Event{ID: "event-1", RoomID: roomID, FilmID: filmID, LayoutVersionID: layoutVersionID, StartsAt: startsAt, Status: "draft"}
+	f.lastCreatePrice, f.lastCreateStatus = priceCents, status
+	event := venue.Event{ID: "event-1", RoomID: roomID, FilmID: filmID, LayoutVersionID: layoutVersionID, StartsAt: startsAt, Status: venue.EventDraft}
+	if priceCents != nil {
+		event.PriceCents = *priceCents
+	}
+	if status != nil {
+		event.Status = *status
+	}
+	f.lastEvent = event
 	return f.lastEvent, f.createErr
 }
 

@@ -20,6 +20,16 @@ const (
 
 var testStartsAt = time.Date(2030, time.January, 2, 18, 0, 0, 0, time.UTC)
 
+// testVenueTimezone is the zone the read fixtures store. It is an hour ahead of UTC in
+// January and two in July, so a read that answered the UTC hour twice cannot pass.
+const testVenueTimezone = "Europe/Madrid"
+
+// testStartsAtLocal is testStartsAt in the fixture venue's own zone.
+const testStartsAtLocal = "2030-01-02T19:00:00+01:00"
+
+// eventFixture is one stored screening. It carries the venue zone the administrative
+// reads join because the reads render the venue's hour from it; the write responses ignore
+// it, since RETURNING cannot join and the write answers the stored columns only.
 func eventFixture() venue.Event {
 	return venue.Event{
 		ID:              testEventID,
@@ -28,6 +38,7 @@ func eventFixture() venue.Event {
 		LayoutVersionID: "layout-1",
 		StartsAt:        testStartsAt,
 		Status:          "on_sale",
+		CinemaTimezone:  testVenueTimezone,
 	}
 }
 
@@ -46,9 +57,18 @@ func namedEventFixture() venue.Event {
 // named what it is. It is what the create and the update write still answer.
 var storedEventKeys = []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"}
 
-// eventReadKeys is the administrative read's shape: the stored keys plus the three
-// names, and nothing else.
+// eventReadKeys is the administrative read's shape: the stored keys plus the three names
+// and the venue's own hour, and nothing else. startsAtLocal is here because these fixtures
+// store a zone that resolves; a venue whose zone does not is covered separately, and its
+// read omits the hour instead of guessing.
 var eventReadKeys = []string{
+	"id", "roomId", "filmId", "layoutVersionId", "startsAt", "startsAtLocal", "status", "priceCents", "priceDisplay",
+	"filmTitle", "roomName", "cinemaName",
+}
+
+// eventReadKeysWithoutLocal is the same read for a venue whose stored zone does not resolve:
+// everything the read knows, minus the hour it refuses to invent.
+var eventReadKeysWithoutLocal = []string{
 	"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay",
 	"filmTitle", "roomName", "cinemaName",
 }
@@ -501,6 +521,186 @@ func TestUpdateEventRejectsMalformedAndOversizedBodies(t *testing.T) {
 			}
 			if len(svc.calls) != 0 {
 				t.Fatalf("calls = %v, want no service call", svc.calls)
+			}
+		})
+	}
+}
+
+// Putting a screening on sale is one request: the price and the status travel with the
+// create, so the administration does not have to schedule and then patch.
+func TestCreateEventCarriesAPriceAndAStatusInOneRequest(t *testing.T) {
+	svc := &fakeService{}
+	w := do(t, svc, http.MethodPost, "/events",
+		`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z","priceCents":1400,"status":"on_sale"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", w.Code, w.Body)
+	}
+	if len(svc.calls) != 1 || svc.calls[0] != "CreateEvent" {
+		t.Fatalf("calls = %v, want exactly one create", svc.calls)
+	}
+	if svc.lastCreatePrice == nil || *svc.lastCreatePrice != 1400 {
+		t.Fatalf("price = %v, want 1400", svc.lastCreatePrice)
+	}
+	if svc.lastCreateStatus == nil || *svc.lastCreateStatus != venue.EventOnSale {
+		t.Fatalf("status = %v, want on_sale", svc.lastCreateStatus)
+	}
+	body := decodeBody(t, w)
+	requireKeys(t, "created event", body, storedEventKeys)
+	if body["priceCents"] != float64(1400) || body["priceDisplay"] != "14.00" || body["status"] != venue.EventOnSale {
+		t.Fatalf("event = %v, want the on_sale screening at 14.00", body)
+	}
+}
+
+// A create that says nothing about the price and the status behaves exactly as it did
+// before they were accepted: a draft at no price. That is the request the web form and the
+// gate send today.
+func TestCreateEventStaysADraftAtNoPriceWhenNeitherIsSent(t *testing.T) {
+	svc := &fakeService{}
+	w := do(t, svc, http.MethodPost, "/events",
+		`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", w.Code, w.Body)
+	}
+	// Nothing was sent, so nothing may be invented: neither a price nor a status reaches the
+	// service, and the defaults are the schema's own.
+	if svc.lastCreatePrice != nil {
+		t.Fatalf("price = %v, want no price sent", *svc.lastCreatePrice)
+	}
+	if svc.lastCreateStatus != nil {
+		t.Fatalf("status = %v, want no status sent", *svc.lastCreateStatus)
+	}
+	body := decodeBody(t, w)
+	requireKeys(t, "created event", body, storedEventKeys)
+	if body["status"] != venue.EventDraft || body["priceCents"] != float64(0) || body["priceDisplay"] != "0.00" {
+		t.Fatalf("event = %v, want the default draft at no price", body)
+	}
+}
+
+// Zero is a free screening, not a missing price, so an explicit zero reaches the service as
+// the value it is.
+func TestCreateEventAcceptsAnExplicitZeroPrice(t *testing.T) {
+	svc := &fakeService{}
+	w := do(t, svc, http.MethodPost, "/events",
+		`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z","priceCents":0}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", w.Code, w.Body)
+	}
+	if svc.lastCreatePrice == nil || *svc.lastCreatePrice != 0 {
+		t.Fatalf("price = %v, want the explicit zero", svc.lastCreatePrice)
+	}
+	if svc.lastCreateStatus != nil {
+		t.Fatalf("status = %v, want a price-only create to carry no status", *svc.lastCreateStatus)
+	}
+	body := decodeBody(t, w)
+	if body["priceCents"] != float64(0) || body["priceDisplay"] != "0.00" || body["status"] != venue.EventDraft {
+		t.Fatalf("event = %v, want the free draft screening", body)
+	}
+}
+
+// What a legal price and a legal status are is one rule, not two: the same value sent to the
+// create and to the update is refused in the same words, and neither route writes anything.
+func TestCreateEventRefusesTheSameValuesAsTheUpdate(t *testing.T) {
+	for _, field := range []string{
+		`"priceCents":-1`,
+		`"priceCents":2147483648`,
+		`"priceCents":12.5`,
+		`"priceCents":"12"`,
+		`"priceCents":null`,
+		`"status":"sold_out"`,
+		`"status":1`,
+		`"status":null`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			svc := &fakeService{event: eventFixture()}
+			created := do(t, svc, http.MethodPost, "/events",
+				`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z",`+field+`}`)
+			updated := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{`+field+`}`)
+			if created.Code != http.StatusBadRequest {
+				t.Fatalf("create status = %d, want 400 (%s)", created.Code, created.Body)
+			}
+			if updated.Code != http.StatusBadRequest {
+				t.Fatalf("update status = %d, want 400 (%s)", updated.Code, updated.Body)
+			}
+			createProblem, updateProblem := decodeBody(t, created), decodeBody(t, updated)
+			if createProblem["code"] != "invalid_input" || updateProblem["code"] != "invalid_input" {
+				t.Fatalf("problems = %v / %v, want the invalid_input problem from both routes", createProblem, updateProblem)
+			}
+			if createProblem["detail"] != updateProblem["detail"] {
+				t.Fatalf("create refused %q but the update refused %q, want one rule in one spelling",
+					createProblem["detail"], updateProblem["detail"])
+			}
+			if len(svc.calls) != 0 {
+				t.Fatalf("calls = %v, want no service call from either route", svc.calls)
+			}
+		})
+	}
+}
+
+// The administrative reads answer the venue's own hour beside the stored instant, so an
+// operator scheduling a month of screenings does not convert by hand. startsAt keeps its
+// exact UTC value and format: the local hour is added, never substituted.
+func TestEventReadsCarryTheVenueHourBesideStartsAt(t *testing.T) {
+	svc := &fakeService{event: namedEventFixture(), events: []venue.Event{namedEventFixture()}}
+
+	listed := do(t, svc, http.MethodGet, "/events", "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (%s)", listed.Code, listed.Body)
+	}
+	events, ok := decodeBody(t, listed)["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("events = %v, want the one screening", events)
+	}
+	entry, _ := events[0].(map[string]any)
+	requireKeys(t, "listed event", entry, eventReadKeys)
+	if entry["startsAt"] != "2030-01-02T18:00:00Z" {
+		t.Fatalf("listed startsAt = %v, want the stored instant in UTC", entry["startsAt"])
+	}
+	if entry["startsAtLocal"] != testStartsAtLocal {
+		t.Fatalf("listed startsAtLocal = %v, want %q", entry["startsAtLocal"], testStartsAtLocal)
+	}
+
+	single := do(t, svc, http.MethodGet, "/events/"+testEventID, "")
+	if single.Code != http.StatusOK {
+		t.Fatalf("read status = %d, want 200 (%s)", single.Code, single.Body)
+	}
+	body := decodeBody(t, single)
+	requireKeys(t, "event", body, eventReadKeys)
+	if body["startsAt"] != "2030-01-02T18:00:00Z" {
+		t.Fatalf("startsAt = %v, want the stored instant in UTC", body["startsAt"])
+	}
+	if body["startsAtLocal"] != testStartsAtLocal {
+		t.Fatalf("startsAtLocal = %v, want %q", body["startsAtLocal"], testStartsAtLocal)
+	}
+}
+
+// A stored zone that does not resolve is a legacy row the backfill has not reached yet. The
+// read still answers the stored instant, and the local hour is absent: a screen that shows a
+// wrong hour is worse than one that shows none, so the API never guesses.
+func TestEventReadsOmitTheVenueHourWhenTheTimezoneDoesNotResolve(t *testing.T) {
+	for _, timezone := range []string{"America/Madrid", ""} {
+		t.Run("timezone "+timezone, func(t *testing.T) {
+			event := namedEventFixture()
+			event.CinemaTimezone = timezone
+			svc := &fakeService{event: event, events: []venue.Event{event}}
+
+			listed := do(t, svc, http.MethodGet, "/events", "")
+			if listed.Code != http.StatusOK {
+				t.Fatalf("list status = %d, want 200 (%s)", listed.Code, listed.Body)
+			}
+			events, ok := decodeBody(t, listed)["events"].([]any)
+			if !ok || len(events) != 1 {
+				t.Fatalf("events = %v, want the one screening", events)
+			}
+			entry, _ := events[0].(map[string]any)
+			requireKeys(t, "listed event without a resolvable zone", entry, eventReadKeysWithoutLocal)
+			if entry["startsAt"] != "2030-01-02T18:00:00Z" || entry["cinemaName"] != "Cine Central" {
+				t.Fatalf("listed event = %v, want the stored instant and the names kept", entry)
+			}
+
+			body := decodeBody(t, do(t, svc, http.MethodGet, "/events/"+testEventID, ""))
+			requireKeys(t, "event without a resolvable zone", body, eventReadKeysWithoutLocal)
+			if body["startsAt"] != "2030-01-02T18:00:00Z" {
+				t.Fatalf("startsAt = %v, want the stored instant in UTC", body["startsAt"])
 			}
 		})
 	}

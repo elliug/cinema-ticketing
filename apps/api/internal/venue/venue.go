@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
 // SeatKind enumerates the supported physical seat kinds.
@@ -92,14 +94,16 @@ type Event struct {
 	// cinema.events.price_cents. Zero is a legal free screening.
 	PriceCents int64 `json:"priceCents"`
 
-	// FilmTitle, RoomName and CinemaName are the names of what the screening is
-	// stored against. The administrative reads project them in the same statement as
-	// the columns above, so a list of screenings is one query and never an n+1 of
-	// films, rooms and cinemas. A write answers the stored columns only and leaves
-	// these empty: a name nobody read is not a name to answer.
-	FilmTitle  string `json:"filmTitle,omitempty"`
-	RoomName   string `json:"roomName,omitempty"`
-	CinemaName string `json:"cinemaName,omitempty"`
+	// FilmTitle, RoomName, CinemaName and CinemaTimezone are the names of what the
+	// screening is stored against, and the zone that the venue keeps its own clock in. The
+	// administrative reads project them in the same statement as the columns above, so a
+	// list of screenings is one query and never an n+1 of films, rooms and cinemas. A write
+	// answers the stored columns only and leaves these empty: a name nobody read is not a
+	// name to answer, and the zone is what [Event.LocalStartsAt] would render from.
+	FilmTitle      string `json:"filmTitle,omitempty"`
+	RoomName       string `json:"roomName,omitempty"`
+	CinemaName     string `json:"cinemaName,omitempty"`
+	CinemaTimezone string `json:"cinemaTimezone,omitempty"`
 }
 
 // EventSeat is the sale state of one layout seat for one event.
@@ -209,24 +213,50 @@ func ValidateEventStatus(status string) error {
 	return NewInvalidError("status", "must be one of "+strings.Join(EventStatuses, ", "))
 }
 
-// ValidateEventUpdate rejects an update that would change nothing and validates every
-// field it does carry. It is exported so the HTTP layer refuses a body with neither field
-// in the same words the service uses rather than in a second copy of the rule.
-func ValidateEventUpdate(update EventUpdate) error {
-	if update.PriceCents == nil && update.Status == nil {
-		return NewInvalidError("", "nothing to change: provide priceCents or status")
-	}
-	if update.PriceCents != nil {
-		if err := ValidatePriceCents(*update.PriceCents); err != nil {
+// ValidateEventFields validates the two writable screening fields a request carries, and
+// nothing else: a nil field was not sent and has nothing to validate. Zero is a legal price
+// here, so "not sent" and "free" stay different answers.
+//
+// This is the single rule for what a legal price and a legal status are. The update applies
+// it to a body that has to name at least one field and the create applies it to a body that
+// may name neither, so the two routes cannot refuse the same value in two different words.
+func ValidateEventFields(priceCents *int64, status *string) error {
+	if priceCents != nil {
+		if err := ValidatePriceCents(*priceCents); err != nil {
 			return err
 		}
 	}
-	if update.Status != nil {
-		if err := ValidateEventStatus(*update.Status); err != nil {
+	if status != nil {
+		if err := ValidateEventStatus(*status); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ValidateEventUpdate rejects an update that would change nothing and validates every
+// field it does carry. It is exported so the HTTP layer refuses a body with neither field
+// in the same words the service uses rather than in a second copy of the rule. The two
+// fields themselves are validated by ValidateEventFields, the rule the create shares.
+func ValidateEventUpdate(update EventUpdate) error {
+	if update.PriceCents == nil && update.Status == nil {
+		return NewInvalidError("", "nothing to change: provide priceCents or status")
+	}
+	return ValidateEventFields(update.PriceCents, update.Status)
+}
+
+// LocalStartsAt renders the screening time in the venue's own timezone, with an explicit
+// offset (RFC 3339), and it is added beside the stored instant rather than in place of it:
+// the instant is what storage and every comparison use, and this is what a person reads.
+//
+// The rule is not reimplemented here. The stored instant and the venue zone are handed to
+// [tickets.EventDetail], whose [tickets.EventDetail.LocalStartsAt] the ticket detail route
+// and the PDF already use, so the administrative screen and the ticket cannot disagree about
+// the hour a screening starts. A venue whose stored zone cannot be resolved (a row the
+// timezone backfill has not repaired) is an error rather than a silent UTC answer: a screen
+// that shows a wrong hour is worse than one that shows none.
+func (e Event) LocalStartsAt() (string, error) {
+	return tickets.EventDetail{ID: e.ID, StartsAt: e.StartsAt, Timezone: e.CinemaTimezone}.LocalStartsAt()
 }
 
 // ErrNotFound reports a missing aggregate.

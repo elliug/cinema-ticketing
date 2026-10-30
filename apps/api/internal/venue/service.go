@@ -21,7 +21,11 @@ type Store interface {
 	GetLayout(ctx context.Context, layoutID string) (Layout, error)
 	CreateFilm(ctx context.Context, film Film) error
 	ListFilms(ctx context.Context) ([]Film, error)
-	CreateEvent(ctx context.Context, event Event) error
+	// CreateEvent inserts the event. priceCents is the caller's intent, not the
+	// stored value: nil means the request named no price at all, and the store then
+	// omits the column — an M1 schema has no price_cents yet, and a create that never
+	// mentions a price must keep working there.
+	CreateEvent(ctx context.Context, event Event, priceCents *int64) error
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
 	ListEvents(ctx context.Context) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (Event, error)
@@ -191,9 +195,16 @@ func (s *Service) ListFilms(ctx context.Context) ([]Film, error) {
 	return s.store.ListFilms(ctx)
 }
 
-// CreateEvent schedules a screening; PostgreSQL materializes exactly one
-// event seat per enabled layout seat inside the same transaction.
-func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (Event, error) {
+// CreateEvent schedules a screening, optionally at a price and in a status, and PostgreSQL
+// materializes exactly one event seat per enabled layout seat inside the same transaction.
+//
+// The price and the status travel with the create so putting a screening on sale is one
+// request rather than a create followed by a patch. A request that names neither stores what
+// the administration's first step always stored — a draft at no price — and an explicit zero
+// price is a free screening rather than a missing field, so both are pointers exactly as they
+// are on [EventUpdate]. They are validated by [ValidateEventFields], the rule the update
+// applies, so creating a screening cannot accept a value the update would refuse.
+func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time, priceCents *int64, status *string) (Event, error) {
 	for field, value := range map[string]string{"roomId": roomID, "filmId": filmID, "layoutVersionId": layoutVersionID} {
 		if err := requireID(field, value); err != nil {
 			return Event{}, err
@@ -201,6 +212,9 @@ func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersion
 	}
 	if startsAt.IsZero() {
 		return Event{}, NewInvalidError("startsAt", "must be a valid timestamp")
+	}
+	if err := ValidateEventFields(priceCents, status); err != nil {
+		return Event{}, err
 	}
 	event := Event{
 		ID:              NewID(),
@@ -210,7 +224,13 @@ func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersion
 		StartsAt:        startsAt.UTC(),
 		Status:          EventDraft,
 	}
-	if err := s.store.CreateEvent(ctx, event); err != nil {
+	if status != nil {
+		event.Status = *status
+	}
+	if priceCents != nil {
+		event.PriceCents = *priceCents
+	}
+	if err := s.store.CreateEvent(ctx, event, priceCents); err != nil {
 		return Event{}, err
 	}
 	return event, nil

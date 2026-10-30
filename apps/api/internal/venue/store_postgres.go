@@ -309,13 +309,32 @@ func (s *PostgresStore) ListFilms(ctx context.Context) ([]Film, error) {
 	return films, classifyError(rows.Err())
 }
 
-// CreateEvent inserts the event; the database materializes its seats in the
-// same transaction, so a failure leaves no event and no partial seats.
-func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status)
+// CreateEvent inserts the event; the database materializes its seats in the same
+// transaction, so a failure leaves no event and no partial seats.
+//
+// The price column is written **only when the request named a price**. That is not a
+// micro-optimisation: `price_cents` arrives with the checkout schema (0005), so an M1
+// database has no such column at all, and a create that mentions no price — the request the
+// M1 gate sends — must keep working there. Writing the column unconditionally turned that
+// request into a 500 ("column price_cents does not exist", SQLSTATE 42703) the moment the
+// create learned about prices.
+const createEventStatement = `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)`
+
+// createEventWithPriceStatement is the same row plus the price, for a request that named
+// one: a zero here is the free screening the column documents, not an omission.
+const createEventWithPriceStatement = `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status, price_cents)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+func (s *PostgresStore) CreateEvent(ctx context.Context, event Event, priceCents *int64) error {
+	var err error
+	if priceCents == nil {
+		_, err = s.pool.Exec(ctx, createEventStatement,
+			event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status)
+	} else {
+		_, err = s.pool.Exec(ctx, createEventWithPriceStatement,
+			event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status, event.PriceCents)
+	}
 	return classifyError(err)
 }
 
@@ -325,11 +344,12 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
 const eventColumns = `id, room_id, film_id, layout_version_id, starts_at, status, price_cents`
 
 // eventReadColumns is the administrative read's projection: the stored columns of a
-// screening plus the names of what it is scheduled against. The names come from the same
-// statement, so a list of screenings is one query and never an n+1 of films, rooms and
-// cinemas.
+// screening plus the names of what it is scheduled against and the venue's own zone. The
+// names and the zone come from the same statement, so a list of screenings is one query and
+// never an n+1 of films, rooms and cinemas, and the venue hour a read renders needs no
+// second read.
 const eventReadColumns = `e.id, e.room_id, e.film_id, e.layout_version_id, e.starts_at, e.status,
-       e.price_cents, f.title, r.name, c.name`
+       e.price_cents, f.title, r.name, c.name, c.timezone`
 
 // eventReadFrom is the FROM clause and the joins every administrative screening read
 // walks. All three joins are inner ones because cinema.events references a film and a room
@@ -347,15 +367,16 @@ func eventTargets(event *Event) []any {
 		&event.StartsAt, &event.Status, &event.PriceCents}
 }
 
-// eventReadTargets is eventTargets plus the three names eventReadColumns projects, in the
-// order that projection selects them.
+// eventReadTargets is eventTargets plus the three names and the venue zone
+// eventReadColumns projects, in the order that projection selects them.
 func eventReadTargets(event *Event) []any {
-	return append(eventTargets(event), &event.FilmTitle, &event.RoomName, &event.CinemaName)
+	return append(eventTargets(event), &event.FilmTitle, &event.RoomName, &event.CinemaName, &event.CinemaTimezone)
 }
 
 // ListEvents reads every screening in start order, with the identifier as the
 // tiebreaker so two screenings at the same minute cannot swap places between two reads,
-// and names the film, the room and the cinema each one is against.
+// and names the film, the room and the cinema each one is against — plus the venue's own
+// zone, from which the caller renders the screening's local hour.
 func (s *PostgresStore) ListEvents(ctx context.Context) ([]Event, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+eventReadColumns+eventReadFrom+`

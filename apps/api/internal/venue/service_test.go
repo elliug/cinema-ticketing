@@ -10,20 +10,21 @@ import (
 )
 
 type fakeStore struct {
-	layout        venue.Layout
-	layouts       map[string]venue.Layout
-	layoutList    []venue.Layout
-	cinemas       []venue.Cinema
-	rooms         []venue.Room
-	events        []venue.Event
-	films         []venue.Film
-	seats         []venue.EventSeat
-	calls         []string
-	failWith      error
-	lastRowsSet   []venue.Row
-	layoutCreated int
-	lastEventID   string
-	lastUpdate    venue.EventUpdate
+	createdWithPrice *int64
+	layout           venue.Layout
+	layouts          map[string]venue.Layout
+	layoutList       []venue.Layout
+	cinemas          []venue.Cinema
+	rooms            []venue.Room
+	events           []venue.Event
+	films            []venue.Film
+	seats            []venue.EventSeat
+	calls            []string
+	failWith         error
+	lastRowsSet      []venue.Row
+	layoutCreated    int
+	lastEventID      string
+	lastUpdate       venue.EventUpdate
 }
 
 func (f *fakeStore) record(name string) {
@@ -81,8 +82,12 @@ func (f *fakeStore) CreateFilm(_ context.Context, _ venue.Film) error {
 	return f.failWith
 }
 
-func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event) error {
+func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event, priceCents *int64) error {
 	f.record("CreateEvent")
+	// The pointer is the caller's intent, recorded so a test can tell "named no price" from
+	// "named zero": the store writes the column only in the second case, and an M1 schema has
+	// no such column.
+	f.createdWithPrice = priceCents
 	f.events = append(f.events, event)
 	return f.failWith
 }
@@ -308,7 +313,7 @@ func TestCreateFilmRejectsInvalidRuntime(t *testing.T) {
 
 func TestCreateEventRejectsZeroStart(t *testing.T) {
 	svc := venue.NewService(&fakeStore{})
-	_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Time{})
+	_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Time{}, nil, nil)
 	var invalid *venue.InvalidError
 	if !errors.As(err, &invalid) || invalid.Field != "startsAt" {
 		t.Fatalf("error = %v, want startsAt rejection", err)
@@ -384,7 +389,7 @@ func TestListLayoutsReturnsVersionsWithStatus(t *testing.T) {
 func TestCreateEventPropagatesMaterializationConflict(t *testing.T) {
 	store := &fakeStore{failWith: errors.Join(venue.ErrConflict, errors.New("event requires a published layout for its room"))}
 	svc := venue.NewService(store)
-	_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now())
+	_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now(), nil, nil)
 	if !errors.Is(err, venue.ErrConflict) {
 		t.Fatalf("error = %v, want conflict propagation", err)
 	}
@@ -392,15 +397,109 @@ func TestCreateEventPropagatesMaterializationConflict(t *testing.T) {
 
 const serviceEventID = "00000000-0000-0000-0000-000000000e01"
 
+// A create that names neither field stores what the administration's first step always
+// stored: a draft at no price. The defaults are one product decision, in one place.
 func TestCreateEventDefaultsThePriceToZero(t *testing.T) {
 	store := &fakeStore{}
 	svc := venue.NewService(store)
-	event, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now())
+	event, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now(), nil, nil)
 	if err != nil {
 		t.Fatalf("CreateEvent returned error: %v", err)
 	}
 	if event.PriceCents != 0 {
 		t.Fatalf("price = %d, want the schema default zero", event.PriceCents)
+	}
+	if event.Status != venue.EventDraft {
+		t.Fatalf("status = %q, want the default draft", event.Status)
+	}
+}
+
+// Putting a screening on sale is one call: the price and the status travel with the create,
+// so the administration does not schedule one request and publish with a second.
+func TestCreateEventStoresThePriceAndStatusItWasGiven(t *testing.T) {
+	store := &fakeStore{}
+	svc := venue.NewService(store)
+	event, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now(),
+		ptrInt64(1400), ptrString(venue.EventOnSale))
+	if err != nil {
+		t.Fatalf("CreateEvent returned error: %v", err)
+	}
+	if event.PriceCents != 1400 || event.Status != venue.EventOnSale {
+		t.Fatalf("event = %+v, want on_sale at 1400", event)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "CreateEvent" {
+		t.Fatalf("store calls = %v, want exactly one create", store.calls)
+	}
+	if len(store.events) != 1 || store.events[0].PriceCents != 1400 || store.events[0].Status != venue.EventOnSale {
+		t.Fatalf("stored events = %+v, want the price and the status stored with the screening", store.events)
+	}
+}
+
+// The update path is the one that decides what a legal price and a legal status are, so the
+// create refuses the same values in the same words instead of forming a second opinion.
+// The store writes the price column only when the request named a price, because
+// price_cents arrives with the checkout schema and an M1 database has no such column: a
+// create that never mentions a price has to keep working there. So the service must hand the
+// store the caller's intent, not its own default — "named zero" is a free screening, and
+// "named nothing" is a column that must not appear in the INSERT at all.
+func TestCreateEventTellsTheStoreWhetherAPriceWasNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		price    *int64
+		wantPoin bool
+		wantZero bool
+	}{
+		{"omitted", nil, false, false},
+		{"explicit zero", ptrInt64(0), true, true},
+		{"a price", ptrInt64(1400), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			svc := venue.NewService(store)
+			if _, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now().UTC().Add(time.Hour), tc.price, nil); err != nil {
+				t.Fatalf("CreateEvent() = %v", err)
+			}
+			if got := store.createdWithPrice != nil; got != tc.wantPoin {
+				t.Fatalf("store received price intent = %v, want pointer present = %v", store.createdWithPrice, tc.wantPoin)
+			}
+			if tc.wantZero && store.createdWithPrice != nil && *store.createdWithPrice != 0 {
+				t.Fatalf("store received %d, want the explicit zero", *store.createdWithPrice)
+			}
+		})
+	}
+}
+
+func TestCreateEventRefusesWhatTheUpdateRefuses(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		price  *int64
+		status *string
+	}{
+		"negative price": {price: ptrInt64(-1)},
+		"price above int4": {
+			price: ptrInt64(venue.MaxPriceCents + 1),
+		},
+		"unknown status": {status: ptrString("sold_out")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft}}}
+			svc := venue.NewService(store)
+			_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now(), testCase.price, testCase.status)
+			var invalid *venue.InvalidError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("error = %v, want a rejected field", err)
+			}
+			// The same value through the update must be refused in exactly these words.
+			_, updateErr := svc.UpdateEvent(context.Background(), serviceEventID,
+				venue.EventUpdate{PriceCents: testCase.price, Status: testCase.status})
+			var updateInvalid *venue.InvalidError
+			if !errors.As(updateErr, &updateInvalid) || updateInvalid.Error() != invalid.Error() {
+				t.Fatalf("create refused %q but the update refused %v, want one rule", invalid.Error(), updateErr)
+			}
+			// Neither route reached the store, so a refused request wrote nothing.
+			if len(store.calls) != 0 {
+				t.Fatalf("store calls = %v, want no persistence attempt", store.calls)
+			}
+		})
 	}
 }
 
@@ -616,5 +715,59 @@ func TestListEventsAndGetEventKeepTheNamesTheStoreProjected(t *testing.T) {
 	}
 	if single.FilmTitle != "The Quiet Cartographer" || single.RoomName != "Sala 2" || single.CinemaName != "Cine Central" {
 		t.Fatalf("event = %+v, want the store's names kept", single)
+	}
+}
+
+// The administrative read carries the venue's own hour beside the stored instant, and it is
+// the ticket detail's own rule: the stored instant and the venue zone through the same
+// time.LoadLocation path the ticket page and the PDF already use.
+func TestEventLocalStartsAtRendersTheVenueHour(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		startsAt time.Time
+		timezone string
+		want     string
+	}{
+		"Madrid in winter": {
+			startsAt: time.Date(2030, time.January, 2, 18, 0, 0, 0, time.UTC),
+			timezone: "Europe/Madrid",
+			want:     "2030-01-02T19:00:00+01:00",
+		},
+		"Madrid in summer": {
+			startsAt: time.Date(2030, time.July, 2, 18, 0, 0, 0, time.UTC),
+			timezone: "Europe/Madrid",
+			want:     "2030-07-02T20:00:00+02:00",
+		},
+		"a venue on UTC keeps its offset spelled out": {
+			startsAt: time.Date(2030, time.January, 2, 18, 0, 0, 0, time.UTC),
+			timezone: "UTC",
+			want:     "2030-01-02T18:00:00+00:00",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			event := venue.Event{ID: serviceEventID, StartsAt: testCase.startsAt, CinemaTimezone: testCase.timezone}
+			got, err := event.LocalStartsAt()
+			if err != nil {
+				t.Fatalf("LocalStartsAt() = unexpected error %v", err)
+			}
+			if got != testCase.want {
+				t.Fatalf("LocalStartsAt() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// A stored zone nobody can resolve is a row the backfill has not repaired yet. The hour is
+// refused rather than guessed at in UTC: a screen that shows a wrong hour is worse than one
+// that shows none.
+func TestEventLocalStartsAtRefusesAnUnusableVenueTimezone(t *testing.T) {
+	for _, timezone := range []string{"America/Madrid", ""} {
+		event := venue.Event{ID: serviceEventID, StartsAt: time.Date(2030, time.January, 2, 18, 0, 0, 0, time.UTC), CinemaTimezone: timezone}
+		got, err := event.LocalStartsAt()
+		if err == nil {
+			t.Fatalf("LocalStartsAt() with timezone %q = %q, want a refusal", timezone, got)
+		}
+		if got != "" {
+			t.Fatalf("LocalStartsAt() with timezone %q answered %q next to its error", timezone, got)
+		}
 	}
 }
