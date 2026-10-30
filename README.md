@@ -47,6 +47,44 @@ Open `http://localhost:3000`. Health endpoints:
 | Floci | `GET http://localhost:4566/_floci/health` | Local S3 readiness, probed from the host |
 | Web | `GET http://localhost:3000/api/health` | Web runtime health contract |
 
+## Configuring an environment that is not development
+
+Nothing below is needed locally: `API_ENV=development` supplies documented defaults,
+including the ticket QR signing key. A deployment other people can reach must set them
+explicitly, because the defaults either assume the local services or are refused once
+`API_ENV` is anything else.
+
+| Variable | Effect outside development |
+|---|---|
+| `API_ENV` | The only value that enables the development defaults and the local administrative surface. Leave it unset and the process behaves like a real environment, without the defaults. |
+| `API_DATABASE_URL` | Without it no customer surface is mounted at all: no holds, no payment, no tickets. |
+| `API_TICKET_QR_KEY` | **Required.** At least 32 bytes of entropy-bearing text. The documented development key is refused, and with the ticket schema present the process **exits with an error** instead of serving tickets it cannot sign. |
+| `API_S3_ENDPOINT`, `API_S3_BUCKET`, `API_S3_REGION`, `API_S3_ACCESS_KEY_ID`, `API_S3_SECRET_ACCESS_KEY` | Where the ticket PDFs live. The dummy `floci` credentials are refused for a non-local endpoint, and without storage the download route is not mounted. |
+| `API_S3_PRESIGN_TTL` | Download-link lifetime (`5m` by default, capped at `168h`): a longer link is a longer-lived credential. |
+| `API_REDIS_URL`, `API_HOLD_TTL`, `API_EXPIRY_INTERVAL`, `API_EXPIRY_BATCH` | Coordination and the expiry sweep; the defaults point at the local services. |
+| `API_LOCAL_ADMIN`, `API_LOCAL_ADMIN_TOKEN` | Leave administration off in a deployment; when it is enabled, the development token is refused. |
+
+Generate the signing key with real entropy and keep it out of the repository (`.env`
+is ignored; the value belongs in the deployment's secret store):
+
+```sh
+openssl rand -base64 48
+```
+
+Three properties worth knowing before the first deploy:
+
+- **A key that cannot sign stops the process.** With the ticket schema present, a
+  missing or short key is a startup failure naming the variable, not a degraded run with
+  half of the ticket surface missing.
+- **Rotating the key invalidates every code already printed.** The QR token carries no
+  key identifier, so there is no overlap period: a ticket issued before the change stops
+  verifying until its detail is served again, which mints a new code. Treat rotation as
+  a planned act with a decision about the tickets already sold.
+- **The stored PDF is an immutable artefact.** It is written once when the payment is
+  confirmed and never re-rendered, so it keeps describing the sale even if the screening
+  is later cancelled or the ticket voided. Validity is answered by the ticket page and by
+  the door — the server-side verification of the QR — never by the PDF.
+
 ## Repository map
 
 | Path | Responsibility |
