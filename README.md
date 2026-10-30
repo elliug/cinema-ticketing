@@ -1,6 +1,6 @@
 # Cinema ticketing foundation
 
-M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. Product behavior starts in M1; reservations and concurrency guarantees start in M2.
+M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. Product behavior starts in M1; reservations and concurrency guarantees in M2; a guest buys a ticket through a simulated payment and receives it as a PDF in M3.
 
 ## Quick path
 
@@ -108,6 +108,7 @@ make migrate-all        # apply every migration that is not recorded yet
 make seed-dev           # development seed rows; requires API_ENV=development
 make ensure-bucket      # create the configured ticket bucket when it is missing
 make bootstrap          # migrate-all, then seed-dev, then ensure-bucket
+make verify-m3          # M3 gate end to end: hold, pay, ticket, code, PDF from the bucket
 make migrate-down       # explicitly roll back the development schema
 make deps-down          # stop local containers without deleting volumes
 ```
@@ -209,12 +210,43 @@ make verify-migrations
 the guard, irregular layout publication, and event seat materialization through
 HTTP only.
 
+## M3 checkout and ticket delivery
+
+A guest, with no account, turns a hold into a ticket they can show and print.
+
+The buyer holds seats (`POST /api/v1/reservations/holds`), pays
+(`POST /api/v1/reservations/{id}/payment`, idempotent by an `Idempotency-Key` header),
+and gets one ticket per seat — `GET /api/v1/tickets/{id}` for the detail,
+`GET /api/v1/tickets/{id}/qr.svg` for the code, `GET /api/v1/tickets/{id}/pdf` for a
+redirect to a short-lived pre-signed URL of the stored PDF. The web app walks the same
+path: `/reservations/{id}` to pay, `/tickets/{id}` to show the ticket.
+
+Three things are worth knowing before relying on it:
+
+- **The payment key belongs to the reservation.** A reservation with an open payment
+  attempt can only be settled by the request holding its key, so the browser keeps it and
+  a page reload resumes rather than starting over. A retry with a different key is answered
+  as a conflict, which is the honest answer: a payment is already under way.
+- **The PDF is a record of the sale, not a certificate.** It is written once, when the
+  payment is captured, and never re-rendered, so a later cancellation or a voided ticket
+  changes what the page and the door say — not the document.
+- **The code is signed, not encrypted.** It carries the ticket, event and seat identifiers
+  and nothing personal; anyone holding it can read those and fetch the detail. What it
+  proves is provenance: a forged, tampered or unknown code is refused server side, and
+  single use is the next milestone's work.
+
+`make verify-m3` proves the milestone against the running stack and runs in CI as its own
+job: it holds seats, pays, fetches the ticket, verifies the code, downloads the PDF through
+its redirect, and shows the artefact survives a Floci restart and a container recreation.
+Two gates share Redis logical database 9 by default (`verify-m2`, `verify-m3`) and refuse
+to run concurrently rather than flushing each other.
+
 ## M0 boundaries
 
-M0 intentionally contains no cinema, room, layout, event, seat, reservation, payment, ticket, identity, or reporting behavior. The M1 migration adds the `cinema` schema; reservation, payment, ticket, identity, and reporting behavior remain absent. The tagged test in `tests/concurrency` records M2's double-booking acceptance contract and remains RED until the reservation API exists:
+M0 intentionally contained no cinema, room, layout, event, seat, reservation, payment, ticket, identity, or reporting behavior. The M1 migration added the `cinema` schema; the M2 migrations added durable holds with per-seat exclusivity and expiry; the M3 migrations added the price per event, the payment attempt, the sold ticket, the outbox and the guard that allows one open payment attempt per reservation. Identity and reporting remain absent, and so does single-use redemption: a ticket is issued and can be verified, but nothing yet marks it as used at a door. The tagged acceptance test for the double-booking contract still runs as its own proof:
 
 ```sh
 go test -tags=acceptance_m2 ./tests/concurrency
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and [`odd/tasks/m0-foundation.md`](odd/tasks/m0-foundation.md) for M0 evidence and [`odd/tasks/m1-venue-layout.md`](odd/tasks/m1-venue-layout.md) for M1 evidence.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and the milestone table, and the records in [`odd/tasks/`](odd/tasks): `m0-foundation.md`, `m1-venue-layout.md`, `m2-reservation-core.md` and `m3-checkout-tickets.md`.
