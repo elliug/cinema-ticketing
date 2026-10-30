@@ -44,3 +44,40 @@ jobs:
       # compose dependencies, which the previous steps already started.
       - name: Verify M2 reservation core
         run: make verify-m2
+
+  # The M3 gate is its own job so the foundation checks keep their shape and their
+  # runtime: this one starts the same three compose services (Floci is pinned by
+  # digest in the compose file), bootstraps the stack the way a developer does, and
+  # then proves the milestone end to end against them — a hold, a payment, the
+  # tickets, the signed code, the PDF in the bucket and its survival across a Floci
+  # restart. `make verify-m3` also refuses to run without jq and openssl, which the
+  # runner image carries; they are checked explicitly so a missing tool is a clear
+  # failure rather than a confusing one later.
+  m3-checkout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check the tools the gate needs
+        run: |
+          docker compose version
+          docker-compose version 2>/dev/null || true
+          jq --version
+          openssl version
+
+      # The project's own bootstrap: compose services, every migration, the
+      # development seed and the ticket bucket. The gate below creates and removes
+      # its own database, Redis index, port and bucket on top of that.
+      - name: Bootstrap the stack
+        env:
+          API_ENV: development
+        run: make bootstrap
+
+      - name: Verify M3 checkout, tickets and PDF delivery
+        run: make verify-m3

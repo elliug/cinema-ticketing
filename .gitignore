@@ -1,6 +1,9 @@
 # Environment and local overrides
 .env
 .env.*
+# ...but the template itself is documentation and must reach a clone: without this
+exception the file exists only on the machine that wrote it.
+!.env.example
 
 # Go
 bin/

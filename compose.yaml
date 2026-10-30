@@ -46,9 +46,17 @@ services:
     image: floci/floci@sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9
     ports:
       - "127.0.0.1:${FLOCI_PORT:-4566}:4566"
+    environment:
+      # Floci's S3 storage defaults to memory mode, where objects live in the process
+      # and vanish on any restart — the named volume below stored nothing on its own.
+      # This setting is what makes the storage durable, and mounting the volume on the
+      # image's persistent path (/app/data, see below) is what carries the objects
+      # across a restart and across a container recreation.
+      FLOCI_STORAGE_SERVICES_S3_MODE: persistent
     volumes:
-      # Floci persists its objects under /app/data (FLOCI_STORAGE_PERSISTENT_PATH),
-      # so the named volume is mounted there.
+      # The directory the persistent store writes to (the image already sets
+      # FLOCI_STORAGE_PERSISTENT_PATH=/app/data), so the ticket PDFs survive a
+      # `docker compose restart floci`, a `--force-recreate` and a `docker compose down`.
       - floci-data:/app/data
     restart: unless-stopped
 
