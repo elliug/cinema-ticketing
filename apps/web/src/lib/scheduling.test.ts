@@ -17,6 +17,7 @@ import type { SchedulingDeps } from "./scheduling.ts";
 import {
   ADMIN_SCHEDULE_PATH,
   createFilm,
+  DEFAULT_EVENT_STATUS,
   describeScreeningStatus,
   EVENT_STATUSES,
   EVENT_STATUS_OPTIONS,
@@ -329,6 +330,98 @@ test("scheduleEvent never reaches the API with an invalid form", async () => {
   assert.deepEqual(run.calls, []);
 });
 
+// ── One request, when the scheduling form names a price and a status (M4.1 · T3b · S9)
+//
+// The API grew two optional fields on `POST /admin/events` (T3), so the scheduling form can
+// put a screening on sale in one submit instead of a create followed by a PATCH. The rule
+// that keeps the old path intact is the first one below: a form that names neither field
+// must send neither, so its request is byte for byte the one this screen sent before.
+
+test("eventInput carries a price and a status when the scheduling form names them", () => {
+  const input = unwrap(
+    eventInput({ ...EVENT_FORM, price: "12.50", status: "on_sale" }),
+  );
+
+  assert.deepEqual(input, {
+    roomId: "room-1",
+    filmId: "film-1",
+    layoutVersionId: "layout-1",
+    startsAt: "2024-05-01T18:00:00.000Z",
+    priceCents: 1250,
+    status: "on_sale",
+  });
+});
+
+test("a scheduling form that names neither field sends neither of them", () => {
+  // The draft is the column's own default, so choosing it — which is where the select
+  // opens — is the same request as choosing nothing at all.
+  for (const values of [
+    EVENT_FORM,
+    { ...EVENT_FORM, status: DEFAULT_EVENT_STATUS },
+    { ...EVENT_FORM, price: "   ", status: " draft " },
+  ]) {
+    const input = unwrap(eventInput(values));
+
+    assert.deepEqual(
+      Object.keys(input).sort(),
+      ["filmId", "layoutVersionId", "roomId", "startsAt"],
+      `${JSON.stringify(values)} named neither a price nor a status`,
+    );
+  }
+});
+
+test("eventInput refuses the values the create request would refuse, naming their field", () => {
+  assert.equal(
+    unwrapError(eventInput({ ...EVENT_FORM, price: "12.505", status: "on_sale" })).detail,
+    "priceCents: must have at most two decimal places",
+  );
+  assert.equal(
+    unwrapError(eventInput({ ...EVENT_FORM, price: "12.50", status: "archived" })).detail,
+    "status: must be one of draft, published, on_sale, started, completed, cancelled",
+  );
+});
+
+test("scheduleEvent puts a screening on sale in one request", async () => {
+  const onSale = { ...EVENT, status: "on_sale", priceCents: 1250, priceDisplay: "12.50" };
+  const run = harness(() => Promise.resolve({ ok: true, value: onSale }));
+
+  const created = unwrap(
+    await scheduleEvent(run.deps, { ...EVENT_FORM, price: "12.50", status: "on_sale" }),
+  );
+
+  assert.equal(created.status, "on_sale");
+  assert.equal(created.priceDisplay, "12.50");
+  assert.deepEqual(run.calls, [
+    {
+      method: "createEvent",
+      args: [
+        {
+          roomId: "room-1",
+          filmId: "film-1",
+          layoutVersionId: "layout-1",
+          startsAt: "2024-05-01T18:00:00.000Z",
+          priceCents: 1250,
+          status: "on_sale",
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(run.revalidated, [ADMIN_SCHEDULE_PATH]);
+});
+
+test("a create refused for its price never reaches the API and refreshes nothing", async () => {
+  const run = harness();
+
+  const refused = unwrapError(
+    await scheduleEvent(run.deps, { ...EVENT_FORM, price: "12.505", status: "on_sale" }),
+  );
+
+  assert.equal(refused.code, "invalid_input");
+  assert.equal(refused.detail, "priceCents: must have at most two decimal places");
+  assert.deepEqual(run.calls, []);
+  assert.deepEqual(run.revalidated, []);
+});
+
 test("readEventSeats delegates to the client and revalidates nothing", async () => {
   const seats = {
     eventId: "event-1",
@@ -433,9 +526,9 @@ test("priceCentsFromText refuses a price it cannot represent", () => {
   );
 });
 
-test("create then publish sends the price and the status in one request", () => {
-  // The create stored a draft at price 0 and cannot carry either field, so this is the
-  // second and last request of the flow.
+test("the price-and-status form sends the price and the status in one request", () => {
+  // A screening stored as a draft at price 0 — which the create now only does when the
+  // operator named neither field — is published by this one request.
   const update = unwrap(
     screeningUpdateInput(DRAFT, { price: "12.50", status: "on_sale" }),
   );

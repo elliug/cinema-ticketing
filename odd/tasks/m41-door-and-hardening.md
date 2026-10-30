@@ -56,7 +56,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 |---|---|---|---|
 | T1 | S6, S7 | gate: insecure origin + second engine | 1 · `8b2afc0` (#59) |
 | T2 | S8 | the five cheap defects | 2 · `3c26259` (#60) |
-| T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 · `501bbb6` |
+| T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 · `8560cf1` (#61) |
 | T3b | S9 | the schedule form creates on sale in one request | 3b |
 | T4 | S10 | `POST /reservations/{id}/cancel` end to end | 4 |
 | T5 | S11 | catalogue pagination and filters | 5 |
@@ -164,3 +164,31 @@ run (no database URL) was run against a throwaway database migrated by the proje
 proving that the INSERT writes the price and that the read's join renders the venue hour. The
 throwaway database was dropped afterwards. The rest: 16 Go packages ok, `gofmt -l` empty,
 `go vet` clean, and the differential create-versus-update refusal test passing on eight values.
+
+### L6 — T3 merged, and the M1 gate caught what the suite could not
+
+Merged as #61 (`8560cf1`), in two commits after a defect that only one gate could see.
+
+With the API half in, CI's `foundation` job went red: `POST /events` answered **500** where the M1
+gate expected **409**. The cause:
+
+```
+ERROR: column "price_cents" of relation "events" does not exist (SQLSTATE 42703)
+```
+
+`price_cents` arrives with `0005_checkout`, and `verify-m1` runs the API against a database
+migrated only to M1. Writing the column unconditionally therefore broke a schema the
+administrative surface is supposed to keep working on. Sixteen Go packages and 336 web tests
+were green throughout, because none of them runs the API against a partially migrated database.
+
+The fix: the create picks its INSERT from the caller's **intent** — no price named, no column;
+a price (including an explicit zero, the free screening) writes it. The service passes the
+caller's pointer rather than its own default, because "named nothing" and "named zero" are now
+different statements. `./scripts/verify_m1.sh` passes, which is the only proof that mattered.
+
+**A verification lesson, recorded because it is mine:** earlier the same day I claimed to have
+closed the gated-test gap by running "the full gated suite". I had run a `-run` subset, against a
+database whose name the tests' own guard rejected — four of them "failed" without testing
+anything. When I finally ran the full suite with a valid name, the store passed; the defect was
+one layer above it, in the schema. Shortcut verification produced a stronger claim than the
+evidence supported, twice in one day.

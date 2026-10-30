@@ -185,6 +185,16 @@ export interface CreateEventInput {
   filmId: string;
   layoutVersionId: string;
   startsAt: string;
+  /**
+   * The price per seat in minor units, or absent when the caller names no price.
+   *
+   * Absent and zero are different requests: the API writes the price column only when it is
+   * named, because a database migrated to M1 has no such column. An explicit zero is the free
+   * screening and is written.
+   */
+  priceCents?: number;
+  /** The status, or absent to keep the column's default of `draft`. */
+  status?: string;
 }
 
 /**
