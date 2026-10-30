@@ -1,5 +1,6 @@
 // The public reservation read, GET /api/v1/reservations/{reservationId}, lives in this
-// file.
+// file, and so does the body it answers: the cancel route renders that same body (see
+// cancel.go), so one order is described in one shape whichever route answers for it.
 //
 // It exists so reloading the confirmation page keeps its state: the hold response and
 // the payment response are one-shot answers, and a browser that refreshes has nothing
@@ -45,19 +46,28 @@ func (h *Handler) WithReservations(svc ReservationService) *Handler {
 	return h
 }
 
-// getReservation answers the stored state of the order named by the path.
-//
-// The amount is the money that was actually taken, and it is answered as `null` while
-// there is none: an unpaid order has no charge, so `0` would claim one and a price
-// multiplied by the seats would claim one that never happened. The seats are the ones
-// the order holds or sold, in seat order, and the ticket list is always an array.
+// getReservation answers the stored state of the order named by the path, which is what
+// keeps a reloaded confirmation showing the same order.
 func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 	detail, err := h.reservations.Reservation(r.Context(), r.PathValue("reservationID"))
 	if err != nil {
 		writeReservationError(w, err)
 		return
 	}
+	writeReservationState(w, detail)
+}
 
+// writeReservationState answers the state of one order in the confirmation read's body.
+//
+// It is the single place that shapes that body, so the cancel route — whose answer is the
+// reservation's new state — serves the same keys, the same nullability and the same UTC
+// deadline. A client that already renders an order reads one vocabulary, not two.
+//
+// The amount is the money that was actually taken, and it is answered as `null` while
+// there is none: an unpaid order has no charge, so `0` would claim one and a price
+// multiplied by the seats would claim one that never happened. The seats are the ones
+// the order holds or sold, in seat order, and the ticket list is always an array.
+func writeReservationState(w http.ResponseWriter, detail catalog.ReservationDetail) {
 	// The amount is nullable on the wire on purpose, and both of its forms are answered
 	// so a client never has to format money itself. They are null together: an order
 	// without a charge has neither a number nor a text for one.

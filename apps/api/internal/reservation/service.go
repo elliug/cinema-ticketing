@@ -155,6 +155,10 @@ type Store interface {
 	RecordHold(ctx context.Context, hold Hold, record IdempotencyRecord) error
 	// ListSeatAvailability reads every seat of one event with its occupancy.
 	ListSeatAvailability(ctx context.Context, eventID string) ([]SeatAvailability, error)
+	// Cancel ends one live hold: it makes the guarded status transition, releases the
+	// seat rows of the hold it cancelled, or reports the stored state that explains why
+	// there was nothing to release. See cancel.go for what it guarantees.
+	Cancel(ctx context.Context, reservationID string) (Cancellation, error)
 	// ExpireHolds runs one durable expiry sweep: it releases the seat rows of at
 	// most batch expired holds, marks those holds expired, and prunes the
 	// idempotency records whose retention deadline passed, all in one
@@ -395,6 +399,8 @@ func mapDurableError(err error) error {
 		ErrIdempotencyKeyReused,
 		ErrUnknownReference,
 		ErrEventNotFound,
+		ErrReservationNotFound,
+		ErrAlreadyPaid,
 		ErrInvalidInput,
 	} {
 		if errors.Is(err, sentinel) {

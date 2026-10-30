@@ -537,14 +537,15 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 
 	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).WithTicketPDFs(ticketPDFs).
-		WithCatalog(catalogue).WithReservations(reservationReads).Mux())
+		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
 		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent,
 		"ticket_pdfs", ticketPDFs != nil, "catalogue", catalogue != nil)
 	if catalogue != nil {
 		logger.Info("catalogue and reservation read routes mounted",
-			"routes", []string{"/api/v1/events", "/api/v1/events/{eventID}", "/api/v1/reservations/{reservationId}"})
+			"routes", []string{"/api/v1/events", "/api/v1/events/{eventID}", "/api/v1/reservations/{reservationId}",
+				"/api/v1/reservations/{reservationId}/cancel"})
 	}
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret

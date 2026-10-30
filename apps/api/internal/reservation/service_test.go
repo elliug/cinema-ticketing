@@ -41,6 +41,13 @@ type fakeStore struct {
 	expireCalls  int
 	expireNow    time.Time
 	expireBatch  int
+
+	// Cancel double: the state the durable layer reports for one reservation and
+	// the seats it says this request released.
+	cancelResult reservation.Cancellation
+	cancelErr    error
+	cancelCalls  int
+	cancelID     string
 }
 
 func newFakeStore() *fakeStore {
@@ -89,6 +96,19 @@ func (f *fakeStore) ExpireHolds(ctx context.Context, now time.Time, batch int) (
 		return reservation.ExpiryResult{}, f.expireErr
 	}
 	return f.expireResult, nil
+}
+
+func (f *fakeStore) Cancel(_ context.Context, reservationID string) (reservation.Cancellation, error) {
+	f.cancelCalls++
+	f.cancelID = reservationID
+	if f.cancelErr != nil {
+		return reservation.Cancellation{}, f.cancelErr
+	}
+	result := f.cancelResult
+	if result.ReservationID == "" {
+		result.ReservationID = reservationID
+	}
+	return result, nil
 }
 
 func (f *fakeStore) ListSeatAvailability(_ context.Context, eventID string) ([]reservation.SeatAvailability, error) {
