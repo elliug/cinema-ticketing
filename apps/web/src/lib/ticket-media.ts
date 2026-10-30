@@ -92,6 +92,16 @@ export interface TicketMediaEnvironment {
   readonly fetchImpl?: typeof fetch;
   /** Defaults to `TICKET_MEDIA_TIMEOUT_MS`; kept overridable so a test need not wait it out. */
   readonly timeoutMs?: number;
+  /**
+   * A deadline to use instead of building one from `timeoutMs`.
+   *
+   * It exists because `AbortSignal.timeout` schedules its expiry on a timer that does **not**
+   * keep the event loop alive: in a server that is irrelevant, since the request being answered
+   * is itself a handle, but a test double holds nothing else and can have its loop drained
+   * before the deadline fires. Injecting an already-aborted signal tests the same path without
+   * asking the clock to be kind.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** The address the API serves this media at. */
@@ -171,6 +181,7 @@ export async function ticketMedia(
   const env = environment.env ?? process.env;
   const fetchImpl = environment.fetchImpl ?? fetch;
   const timeoutMs = environment.timeoutMs ?? TICKET_MEDIA_TIMEOUT_MS;
+  const signal = environment.signal ?? AbortSignal.timeout(timeoutMs);
 
   let upstream: Response;
   try {
@@ -183,7 +194,7 @@ export async function ticketMedia(
     upstream = await fetchImpl(apiMediaUrl(kind, id, env), {
       cache: "no-store",
       redirect: "follow",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
   } catch {
     // A deadline that expired lands here with the network failures, and for the same reason:

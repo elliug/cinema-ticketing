@@ -49,6 +49,12 @@ function neverAnswering() {
         reject(new Error("the forwarded request carried no abort signal"));
         return;
       }
+      // An expired deadline is already aborted and will never fire an event: checking it first
+      // is what lets a test drive this path without waiting on a clock.
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
       signal.addEventListener("abort", () => reject(signal.reason));
     });
   }) as typeof fetch;
@@ -161,7 +167,15 @@ test("an API that fails its own way is a 502 rather than a status passed through
 // is the same answer an unreachable API already gets: this side could not fetch the ticket.
 test("an API that accepts the connection and never answers is a bounded 502", async () => {
   const { fetchImpl, forwardedSignal } = neverAnswering();
-  const response = await ticketMedia("pdf", "ticket-1", { env: ENV, fetchImpl, timeoutMs: 50 });
+  // An expired deadline, injected rather than waited out: `AbortSignal.timeout` schedules its
+  // expiry on an unref'd timer, so a test double that holds nothing else can have its event loop
+  // drained before the deadline fires — which is exactly how this test passed locally and failed
+  // in CI. The path exercised is the same one an expired deadline takes.
+  const response = await ticketMedia("pdf", "ticket-1", {
+    env: ENV,
+    fetchImpl,
+    signal: AbortSignal.abort(new DOMException("deadline expired", "TimeoutError")),
+  });
 
   assert.ok(
     forwardedSignal() instanceof AbortSignal,
