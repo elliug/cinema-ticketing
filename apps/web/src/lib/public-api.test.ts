@@ -1071,3 +1071,196 @@ test("the catalogue carries the same sale state as the single read", async () =>
   assert.equal(events[1].availableSeats, 0);
   assert.equal(events[1].onSale, true, "sold out is still on sale");
 });
+
+// ── The order, read again (M3.5 · T6 · S3, S5, S8) ──────────────────────────
+//
+// The confirmation page must survive a reload, and the two answers M3 relied on (the
+// hold and the payment) are one-shot: a browser that refreshes has nothing left to
+// show. `GET /reservations/{id}` is what it reads instead, so this parser is the
+// contract the reloaded page stands on. Two rules decide what it refuses:
+//
+//   - everything the page prints is served: the screening (film, venue, room and the
+//     venue's own hour), the deadline and the seats. A read without them would leave
+//     the page inventing the context it just lost;
+//   - the amount is nullable on the wire and stays nullable here. `0` would claim a
+//     charge that never happened, and `price × seats` is a number this client cannot
+//     compute because the read carries no price at all.
+
+const RESERVATION_BODY = {
+  reservationId: "reservation-a",
+  status: "held",
+  expiresAt: "2026-05-04T18:40:00Z",
+  amountCents: null,
+  amountDisplay: null,
+  seats: [
+    { eventSeatId: 11, rowLabel: "A", seatNumber: "1" },
+    { eventSeatId: 12, rowLabel: "A", seatNumber: "2" },
+  ],
+  ticketIds: [],
+  eventId: "event-a",
+  filmTitle: "The Long Take",
+  cinemaName: "Cinema Centro",
+  roomName: "Room 1",
+  startsAt: "2026-05-04T18:30:00Z",
+  startsAtLocal: "2026-05-04T20:30:00+02:00",
+};
+
+test("getReservation reads GET /reservations/{id} and keeps what the page prints", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, RESERVATION_BODY));
+
+  const order = unwrap(await makeClient(recorder).getReservation("reservation-a"));
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/reservations/reservation-a`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined, "a read sends no key");
+
+  // A reload keeps its context: the screening, its venue's own hour and the seats.
+  assert.equal(order.status, "held");
+  assert.equal(order.filmTitle, "The Long Take");
+  assert.equal(order.cinemaName, "Cinema Centro");
+  assert.equal(order.roomName, "Room 1");
+  assert.equal(order.startsAt, "2026-05-04T18:30:00Z");
+  assert.equal(order.startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.equal(order.eventId, "event-a");
+  assert.equal(order.expiresAt, "2026-05-04T18:40:00Z");
+  assert.deepEqual(order.seats, RESERVATION_BODY.seats);
+
+  // An unpaid order has no charge: neither a number nor a text for one.
+  assert.equal(order.amountCents, null);
+  assert.equal(order.amountDisplay, null);
+  assert.deepEqual(order.ticketIds, []);
+});
+
+test("a paid order's read carries the money taken and the tickets issued", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      ...RESERVATION_BODY,
+      status: "paid",
+      amountCents: 1998,
+      amountDisplay: "19.98",
+      ticketIds: ["ticket-1", "ticket-2"],
+    }),
+  );
+
+  const order = unwrap(await makeClient(recorder).getReservation("reservation-a"));
+
+  assert.equal(order.status, "paid");
+  assert.equal(order.amountCents, 1998);
+  assert.equal(order.amountDisplay, "19.98", "the API's text is printed, not re-formatted");
+  assert.deepEqual(order.ticketIds, ["ticket-1", "ticket-2"]);
+});
+
+test("getReservation escapes the id, and a blank one never reaches the network", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, RESERVATION_BODY));
+  const client = makeClient(recorder);
+
+  await client.getReservation("reservation a/b");
+  assert.equal(
+    recorder.calls[0].url,
+    `${BASE_URL}/api/v1/reservations/reservation%20a%2Fb`,
+  );
+
+  const blank = unwrapError(await client.getReservation("   "));
+  assert.equal(blank.code, "invalid_input");
+  assert.equal(recorder.calls.length, 1, "no request is sent for an empty id");
+});
+
+test("a read without the screening, the deadline or the status is refused", async () => {
+  for (const [field, expected] of [
+    ["status", /status/],
+    ["expiresAt", /expiresAt/],
+    ["filmTitle", /film title/],
+    ["cinemaName", /cinema name/],
+    ["roomName", /room name/],
+    ["startsAtLocal", /startsAtLocal/],
+  ] as const) {
+    const recorder = recordingFetch(() => {
+      const body: Record<string, unknown> = { ...RESERVATION_BODY };
+      delete body[field];
+      return jsonResponse(200, body);
+    });
+
+    const problem = unwrapError(
+      await makeClient(recorder).getReservation("reservation-a"),
+    );
+
+    assert.equal(problem.code, "unexpected_response", field);
+    assert.equal(problem.status, 200);
+    assert.match(problem.detail, expected, `${field} cannot be assumed`);
+  }
+});
+
+test("an amount is answered with its text, and a seat or ticket list as a list", async () => {
+  // Money without the text the API renders is half an answer: the page would have to
+  // format money itself, which is the rule the catalogue and the ticket already avoid.
+  const noText = recordingFetch(() =>
+    jsonResponse(200, { ...RESERVATION_BODY, amountCents: 1998, amountDisplay: null }),
+  );
+  const halfAmount = unwrapError(
+    await makeClient(noText).getReservation("reservation-a"),
+  );
+  assert.equal(halfAmount.code, "unexpected_response");
+  assert.match(halfAmount.detail, /amount/i);
+
+  for (const field of ["seats", "ticketIds"] as const) {
+    const recorder = recordingFetch(() => {
+      const body: Record<string, unknown> = { ...RESERVATION_BODY };
+      body[field] = "not a list";
+      return jsonResponse(200, body);
+    });
+    const problem = unwrapError(
+      await makeClient(recorder).getReservation("reservation-a"),
+    );
+    assert.equal(problem.code, "unexpected_response", field);
+  }
+
+  // A seat the read cannot name would have to be dropped, and an order shown holding
+  // fewer seats than it does is worse than a read the page refuses.
+  const namelessSeat = recordingFetch(() =>
+    jsonResponse(200, {
+      ...RESERVATION_BODY,
+      seats: [{ rowLabel: "A", seatNumber: "1" }],
+    }),
+  );
+  const seatProblem = unwrapError(
+    await makeClient(namelessSeat).getReservation("reservation-a"),
+  );
+  assert.equal(seatProblem.code, "unexpected_response");
+  assert.match(seatProblem.detail, /event seat id/);
+});
+
+test("an unknown order is a 404 and an unreachable read is retryable", async () => {
+  const missing = recordingFetch(() =>
+    jsonResponse(404, {
+      type: "https://cinema.local/problems/not-found",
+      title: "Not found",
+      status: 404,
+      code: "not_found",
+      detail: "the requested reservation does not exist",
+    }),
+  );
+  const notFound = unwrapError(
+    await makeClient(missing).getReservation("nope"),
+  );
+  assert.equal(notFound.status, 404);
+  assert.equal(notFound.code, "not_found");
+
+  const unavailable = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the reservation is temporarily unavailable; retry the request",
+    }),
+  );
+  const temporary = unwrapError(
+    await makeClient(unavailable).getReservation("reservation-a"),
+  );
+  assert.equal(temporary.status, 503);
+  assert.equal(temporary.code, "service_unavailable");
+  assert.notEqual(temporary.code, notFound.code, "404 is not 503");
+});

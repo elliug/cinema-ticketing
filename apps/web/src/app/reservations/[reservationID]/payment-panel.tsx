@@ -1,48 +1,80 @@
 "use client";
 
-// Payment panel for the guest confirmation page (M3 · T7 · S1, S3).
+// The payment panel of the checkout (M3 · T7, M3.5 · T6 · S3, S6, S8).
 //
-// This is the only stateful part of the page. It owns one payment attempt at a
-// time and the answer it produced, and it renders every outcome as its own,
-// actionable thing rather than a generic error:
+// This is the only stateful part of the page. It owns one payment attempt at a time, the
+// answer it produced, and the clock the hold window is measured against — and it renders
+// every outcome as its own actionable state rather than a generic error:
 //
-//   - **approved** — the tickets the API issued, each linking to its ticket page
-//     and to its PDF;
-//   - **declined** — the provider refused this attempt. The seats are still held
-//     until the window closes, and because a declined attempt is *recorded*, the
-//     retry must not reuse its key: the stored key is discarded and the next
-//     attempt mints a new one (lib/payment-key.ts);
-//   - **`409 payment_in_flight`** — another attempt on this reservation is open.
-//     Only the key that opened it can settle it, so the retry keeps the stored
-//     key and says so;
-//   - **`409 hold_expired` / `409 already_paid` / `409 reservation_not_payable`**
-//     — nothing can be paid on this reservation, and the way back to the event's
-//     seats is offered;
-//   - a temporary provider or transport failure — retryable, with the same key.
+//   - **approved** — the tickets the answer issued, each one linking to its ticket page
+//     and to its PDF, with no claim that a ticket admits its holder (that is the
+//     scanner's answer, not this page's);
+//   - **declined** — the provider refused this attempt. The seats are still held until
+//     the window closes, and because a declined attempt is *recorded*, the retry must not
+//     reuse its key: the stored key is discarded and the next attempt mints a new one;
+//   - **`409 payment_in_flight`** — another attempt on this order is open. Only the key
+//     that opened it can settle it, so the retry keeps the stored key and says so;
+//   - **`409 already_paid`** — not an error: the tickets belong to the order, so the page
+//     reads it and shows them instead of printing a refusal over a purchase;
+//   - **`409 hold_expired`** — the seats were released; the seat map is offered again and
+//     nothing is re-held behind the buyer's back;
+//   - **`409 amount_mismatch`**, **`409 reservation_not_payable`**, **`400 not_sellable`**,
+//     **`404 not_found`** — four different refusals, four different next steps;
+//   - **the `503`s and a transport failure** — retryable with the same key.
 //
-// Where the key lives is the whole point: it is minted once per reservation and
-// kept in `sessionStorage` under the reservation id, so a page reload resumes the
-// attempt instead of being told, correctly, that a payment is under way. The
-// storage rules live in lib/payment-key.ts and are tested without a DOM; this
-// component only passes `window.sessionStorage` to them.
-import { useCallback, useState } from "react";
+// Everything that decides what those words are lives in lib/payment-key.ts: the outcome
+// rule, the key disposition it implies and the amount rule are tested without a browser,
+// and this component only applies them. Two decisions are load-bearing here:
+//
+//   - **the key is per order, kept in `sessionStorage`** (`ensurePaymentKey`), so a reload
+//     resumes the open attempt instead of being refused with `payment_in_flight`; an
+//     answer that settles the attempt discards it;
+//   - **the countdown is the server's deadline** (`describeHoldWindow`), and it ends in an
+//     explicit expired state with the Pay control gone — never a button that quietly
+//     stops working, and never a silent re-hold.
+//
+// Accessibility: every action is a shadcn `Button` (focus ring included) or a link with
+// the shell's visible `:focus-visible` outline, and the surface has exactly **one** polite
+// live region, which announces the result once. The clock is deliberately outside it: a
+// region that announced every second would make the page unusable.
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import type {
   PaymentResponse,
-  PublicProblem,
   PublicPayment,
+  PublicProblem,
+  PublicReservation,
+  ReservationResponse,
 } from "@/lib/public-api";
 import { newIdempotencyKey, ticketPDFUrl } from "@/lib/public-api";
-import type { PaymentKeyStorage } from "@/lib/payment-key";
+import type { PaymentKeyStorage, PaymentOutcomeView } from "@/lib/payment-key";
 import {
+  describeHoldWindow,
+  describeOrderAmount,
+  describePaymentFailure,
+  describePaymentOutcome,
   discardPaymentKey,
   ensurePaymentKey,
-  paymentKeyDisposition,
 } from "@/lib/payment-key";
+import { COUNTDOWN_TICK_MS, formatCountdown } from "@/lib/seat-selection";
 
 export interface PaymentPanelProps {
-  reservationId: string;
-  /** The event this order belongs to, when the page was reached from its seats. */
-  eventId: string;
+  /** The order as the page read it: status, deadline, seats, money taken, tickets. */
+  reservation: PublicReservation;
+  /**
+   * The instant the page was rendered on the server.
+   *
+   * It seeds the clock so the first client render matches the HTML that was sent, and
+   * the effect immediately replaces it with the browser's own reading. Passing it is what
+   * keeps the countdown honest without a hydration mismatch.
+   */
+  renderedAt: number;
   /** Normalized public API base URL, used to build the ticket links. */
   apiBaseUrl: string;
   /** Server action: POST /reservations/{id}/payment with this attempt's key. */
@@ -50,20 +82,27 @@ export interface PaymentPanelProps {
     reservationId: string;
     idempotencyKey: string;
   }) => Promise<PaymentResponse>;
+  /** Server action: read the order again, so `already_paid` can show its tickets. */
+  loadReservation: (reservationId: string) => Promise<ReservationResponse>;
 }
 
 /** One attempt's rendered state. */
 type PaymentView =
   | { kind: "idle" }
   | { kind: "pending" }
-  | { kind: "answered"; payment: PublicPayment }
-  | { kind: "failed"; problem: PublicProblem };
+  | { kind: "answer"; payment: PublicPayment; outcome: PaymentOutcomeView }
+  | { kind: "problem"; problem: PublicProblem; outcome: PaymentOutcomeView }
+  | {
+      kind: "settled";
+      reservation: PublicReservation;
+      outcome: PaymentOutcomeView;
+    };
 
 /**
  * The tab's payment-key storage, or `null` in an environment without one.
  *
- * `sessionStorage` is read lazily, inside the click handler, because the panel is
- * server-rendered first and `window` does not exist there.
+ * `sessionStorage` is read inside the click handler, because the panel is server-rendered
+ * first and `window` does not exist there.
  */
 function keyStorage(): PaymentKeyStorage | null {
   try {
@@ -74,303 +113,386 @@ function keyStorage(): PaymentKeyStorage | null {
   }
 }
 
-/** Renders minor units as `19.98`, with no currency: v1 stores none. */
-function formatMinorUnits(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const absolute = Math.abs(Math.trunc(cents));
-  return `${sign}${Math.floor(absolute / 100)}.${String(absolute % 100).padStart(2, "0")}`;
-}
-
 export function PaymentPanel({
-  reservationId,
-  eventId,
+  reservation,
+  renderedAt,
   apiBaseUrl,
   payReservation,
+  loadReservation,
 }: PaymentPanelProps) {
+  const router = useRouter();
   const [view, setView] = useState<PaymentView>({ kind: "idle" });
+  // Seeded with the server's instant, then advanced by the effect below: the first
+  // render is the HTML that was streamed, and every later one uses the browser's clock.
+  const [nowMs, setNowMs] = useState(() => renderedAt);
+
+  // The order whose status, deadline and seats the panel is about. After `already_paid`
+  // the order itself is the answer, so the panel switches to the one it just read.
+  const order = view.kind === "settled" ? view.reservation : reservation;
+  const window = useMemo(() => describeHoldWindow(order, nowMs), [order, nowMs]);
+  const amount = useMemo(
+    () =>
+      describeOrderAmount(
+        order,
+        view.kind === "answer" ? view.payment : null,
+      ),
+    [order, view],
+  );
+
+  // The clock is the only timer in the surface: it re-reads the wall clock while the
+  // window is live, and stops once the server deadline has passed. No value is ever
+  // subtracted from a client-side guess — the deadline is the server's.
+  useEffect(() => {
+    if (window.kind !== "counting") {
+      return;
+    }
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), COUNTDOWN_TICK_MS);
+    return () => clearInterval(timer);
+  }, [window.kind]);
 
   const handlePay = useCallback(async () => {
     setView({ kind: "pending" });
 
     const storage = keyStorage();
-    // The key is taken from the tab when it already has one, so a reload resumes
-    // the open attempt instead of starting a second one the schema would refuse.
+    // The key is taken from the tab when it already has one, so a reload resumes the
+    // open attempt instead of starting a second one the schema would refuse.
     const idempotencyKey =
       storage === null
         ? newIdempotencyKey()
-        : ensurePaymentKey(storage, reservationId, newIdempotencyKey);
+        : ensurePaymentKey(storage, order.reservationId, newIdempotencyKey);
 
-    const response = await payReservation({ reservationId, idempotencyKey });
+    const response = await payReservation({
+      reservationId: order.reservationId,
+      idempotencyKey,
+    });
+
+    // One rule decides what the key does next, and it is the M3 one: a settled attempt
+    // frees the order of its key, an open one keeps it because only it can finish the
+    // payment.
+    const settleKey = (outcome: PaymentOutcomeView) => {
+      if (storage !== null && outcome.keyDisposition === "discard") {
+        discardPaymentKey(storage, order.reservationId);
+      }
+    };
 
     if (response.ok) {
-      // A settled attempt needs no key; a declined one must not reuse it, because
-      // resending it would replay the refusal instead of charging again.
-      if (
-        storage !== null &&
-        paymentKeyDisposition({
-          paymentStatus: response.payment.paymentStatus,
-          problemCode: null,
-        }) === "discard"
-      ) {
-        discardPaymentKey(storage, reservationId);
-      }
-      setView({ kind: "answered", payment: response.payment });
+      const outcome = describePaymentOutcome(response.payment);
+      settleKey(outcome);
+      setView({ kind: "answer", payment: response.payment, outcome });
       return;
     }
 
-    if (
-      storage !== null &&
-      paymentKeyDisposition({
-        paymentStatus: null,
-        problemCode: response.problem.code,
-      }) === "discard"
-    ) {
-      discardPaymentKey(storage, reservationId);
+    const outcome = describePaymentFailure(response.problem);
+    settleKey(outcome);
+
+    if (outcome.kind === "already_paid") {
+      // The refusal names no tickets, and a payment answer is not a ticket: the order is
+      // what carries them, so it is read. A failed read leaves the refusal on screen
+      // rather than turning a purchase into an error.
+      const read = await loadReservation(order.reservationId);
+      if (read.ok) {
+        setView({ kind: "settled", reservation: read.reservation, outcome });
+        // The page's own summary was rendered from the state before this payment; the
+        // order has moved on, so the frame is refreshed from the same read.
+        router.refresh();
+        return;
+      }
     }
-    setView({ kind: "failed", problem: response.problem });
-  }, [payReservation, reservationId]);
+    setView({ kind: "problem", problem: response.problem, outcome });
+  }, [loadReservation, order.reservationId, payReservation, router]);
 
+  const windowNotice = window.notice;
+  // The one announcement of this surface: what just happened, or what the window just
+  // did. It is polite, and it changes once per event instead of once per second.
+  const announcement =
+    view.kind === "pending"
+      ? "Contacting the payment provider…"
+      : view.kind === "settled"
+        ? `${view.outcome.headline}. The order carries the tickets below.`
+        : view.kind === "answer" || view.kind === "problem"
+          ? `${view.outcome.headline}. ${view.outcome.message}`
+          : windowNotice !== null
+            ? windowNotice
+            : "Nothing has been charged for this order yet.";
+
+  const seatsHref =
+    order.eventId === ""
+      ? null
+      : `/events/${encodeURIComponent(order.eventId)}/seats`;
+
+  // A payment is offered while the window allows one and the order holds a seat: an
+  // order with nothing to charge would be refused (`not_sellable`), and a button that
+  // can only fail is not an action. After an outcome, its own action is the one shown.
+  const payable = window.payable && order.seats.length > 0;
+  const showPay = payable && (view.kind === "idle" || view.kind === "pending");
   const pending = view.kind === "pending";
-  const seatsHref = eventId === "" ? null : `/events/${encodeURIComponent(eventId)}/seats`;
 
   return (
-    <section className="card" aria-labelledby="payment">
-      <h2 id="payment">Pay for this order</h2>
-      <p className="meta">
-        Reservation <code>{reservationId}</code>
-      </p>
-      <p className="notice">
-        The amount is calculated by the box office from the event&apos;s price and
-        the seats this reservation holds, so nothing is sent from this page but the
-        attempt&apos;s idempotency key. One attempt is one charge: retrying resumes
-        it rather than paying twice.
-      </p>
+    <Card aria-labelledby="pay-order">
+      <CardHeader>
+        <h2 id="pay-order" className="m-0 text-lg leading-tight font-semibold">
+          Pay for this order
+        </h2>
+        <CardDescription>
+          One attempt is one charge. The box office charges this order — the amount is its
+          number, not one this page computes — and the key kept in this tab is what makes a
+          retry a replay of the same attempt rather than a second payment.
+        </CardDescription>
+      </CardHeader>
 
-      {view.kind === "idle" || pending ? (
-        <div className="actions">
-          <button type="button" onClick={handlePay} disabled={pending}>
-            {pending ? "Paying…" : "Pay"}
-          </button>
-        </div>
-      ) : null}
+      <CardContent className="flex flex-col gap-3">
+        <p className="m-0 text-sm text-muted-foreground">
+          {order.seats.length === 0
+            ? "This order holds no seat."
+            : `${order.seats.length} seat${order.seats.length === 1 ? "" : "s"}: ${order.seats
+                .map(seatLine)
+                .join(", ")}`}
+        </p>
 
-      {/* Every answered or failed state renders its own action, or deliberately
-          none: only the states where another attempt is the right thing to do
-          (a decline, an open attempt, a temporary failure) offer one. */}
+        <p className="m-0 text-sm">
+          {amount.known ? (
+            <>
+              <strong>{amount.amountLabel}</strong> taken.{" "}
+            </>
+          ) : null}
+          <span className="text-muted-foreground">{amount.note}</span>
+        </p>
 
-      <div role="status" aria-live="polite">
-        {view.kind === "idle" ? (
-          <p className="notice">
-            Your seats are held for a limited window. Paying inside that window is
-            what turns the hold into tickets.
-          </p>
+        {window.kind === "counting" ? (
+          <div className="flex flex-col gap-1">
+            <p className="m-0 text-sm text-muted-foreground">Hold window</p>
+            {/* Deliberately not a live region: it changes every second, and a screen
+                reader announcing a clock would make the page unusable. Only the end of
+                the window is announced, once, through the region below. */}
+            <p className="m-0">
+              <strong>{formatCountdown(window.remainingMs)}</strong> left of your hold
+            </p>
+            <p className="m-0 max-w-prose text-sm text-muted-foreground">
+              The window comes from the server, and the seats are released when it ends.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <p className="m-0 text-sm text-muted-foreground">Hold window</p>
+            <p className="m-0">
+              <strong>{window.endLabel ?? "Not running"}</strong>
+            </p>
+          </div>
+        )}
+
+        {/* The one polite live region of this surface. Everything visual below is
+            rendered outside it, so an announcement is one sentence and not a page. */}
+        <p role="status" className="m-0 max-w-prose text-sm font-medium">
+          {announcement}
+        </p>
+
+        {windowNotice === null ? null : (
+          <Alert variant="warning" className="flex flex-col gap-2">
+            <AlertDescription className="flex flex-col gap-2">
+              <p className="m-0">{windowNotice}</p>
+              {seatsHref === null ? null : (
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild size="sm">
+                    <Link href={seatsHref}>Choose the seats again</Link>
+                  </Button>
+                </div>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {showPay ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={handlePay}
+              disabled={pending}
+              aria-busy={pending}
+            >
+              {pending ? "Paying…" : "Pay"}
+            </Button>
+          </div>
         ) : null}
 
-        {pending ? <p className="meta">Contacting the payment provider…</p> : null}
-
-        {view.kind === "answered" ? (
-          <PaymentAnswer
-            payment={view.payment}
+        {view.kind === "answer" || view.kind === "problem" || view.kind === "settled" ? (
+          <Outcome
+            outcome={view.outcome}
+            amount={amount}
+            tickets={
+              view.kind === "settled"
+                ? view.reservation.ticketIds
+                : view.kind === "answer" &&
+                    view.outcome.kind === "approved"
+                  ? view.payment.ticketIds
+                  : []
+            }
             apiBaseUrl={apiBaseUrl}
-            onRetry={handlePay}
-          />
-        ) : null}
-
-        {view.kind === "failed" ? (
-          <PaymentFailure
-            problem={view.problem}
             seatsHref={seatsHref}
+            canRetry={view.outcome.retryable && payable}
             onRetry={handlePay}
           />
         ) : null}
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   );
 }
 
-function PaymentAnswer({
-  payment,
+/**
+ * One outcome, with the action it calls for.
+ *
+ * The block is not a live region: the sentence above already announced it, and a second
+ * region would say everything twice. Colour reinforces the state; the headline is the
+ * state.
+ */
+function Outcome({
+  outcome,
+  amount,
+  tickets,
   apiBaseUrl,
+  seatsHref,
+  canRetry,
   onRetry,
 }: {
-  payment: PublicPayment;
+  outcome: PaymentOutcomeView;
+  amount: { known: boolean; amountLabel: string | null };
+  tickets: readonly string[];
   apiBaseUrl: string;
+  seatsHref: string | null;
+  canRetry: boolean;
   onRetry: () => void;
 }) {
-  if (payment.paymentStatus === "declined") {
-    return (
-      <section className="problems feedback error" aria-labelledby="payment-declined">
-        <h2 id="payment-declined">The payment was refused</h2>
-        <p>
-          The provider declined this attempt for{" "}
-          <strong>{formatMinorUnits(payment.amountCents)}</strong>, so no money was
-          taken and no ticket was issued.
-        </p>
-        <p>
-          Your seats are still held: the reservation stays valid until its hold
-          window closes, and the box office has not released the seats.
-        </p>
-        <p className="notice">
-          A refused attempt is finished for good, so trying again starts a{" "}
-          <strong>new</strong> payment attempt with a new key rather than replaying
-          this refusal.
-        </p>
-        <div className="actions">
-          <button type="button" onClick={onRetry}>
-            Try the payment again
-          </button>
-        </div>
-      </section>
-    );
-  }
-
   return (
-    <section className="feedback" aria-labelledby="payment-approved">
-      <h2 id="payment-approved">Payment approved</h2>
-      <p>
-        <strong>{formatMinorUnits(payment.amountCents)}</strong> was taken for this
-        order. Your tickets:
-      </p>
-      {payment.ticketIds.length === 0 ? (
-        <p className="notice">
-          The payment was approved but the answer carried no ticket. Do not pay
-          again: reload this page once, and contact the box office if it stays
-          empty.
-        </p>
-      ) : (
-        <ul className="list">
-          {payment.ticketIds.map((ticketId) => (
-            <li key={ticketId}>
-              <a href={`/tickets/${encodeURIComponent(ticketId)}`}>
-                Open ticket <code>{ticketId}</code>
-              </a>{" "}
-              ·{" "}
-              <a href={ticketPDFUrl(apiBaseUrl, ticketId)}>Download PDF</a>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="notice">
-        Keep these links: nothing lists a guest&apos;s tickets, so the id of a
-        ticket is how it is opened again.
-      </p>
-    </section>
+    <Alert
+      variant={alertVariant(outcome)}
+      aria-labelledby="payment-outcome"
+      className="flex flex-col gap-2"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 id="payment-outcome" className="m-0 text-base font-semibold">
+          {outcome.headline}
+        </h3>
+        {outcome.kind === "approved" ? <Badge variant="success">Approved</Badge> : null}
+        {outcome.kind === "declined" ? <Badge variant="warning">Declined</Badge> : null}
+      </div>
+      <AlertDescription className="flex flex-col gap-2">
+        <p className="m-0">{outcome.message}</p>
+        {outcome.kind === "approved" && amount.known ? (
+          <p className="m-0">
+            <strong>{amount.amountLabel}</strong> was taken for this order.
+          </p>
+        ) : null}
+        {tickets.length > 0 ? (
+          <IssuedTickets ticketIds={tickets} apiBaseUrl={apiBaseUrl} />
+        ) : null}
+        {outcome.kind === "approved" && tickets.length === 0 ? (
+          <p className="m-0">
+            The payment was approved but the answer carried no ticket. Do not pay again:
+            reload this page, which reads the order and shows the tickets it holds, and
+            contact the box office if it stays empty.
+          </p>
+        ) : null}
+        <p className="m-0">{outcome.nextStep}</p>
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          {canRetry ? (
+            <Button type="button" size="sm" onClick={onRetry}>
+              {retryLabel(outcome.kind)}
+            </Button>
+          ) : null}
+          {seatsHref !== null && outcome.offersSeatMap ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={seatsHref}>Choose the seats again</Link>
+            </Button>
+          ) : null}
+          {!canRetry && !outcome.offersSeatMap ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href="/events">Back to the catalogue</Link>
+            </Button>
+          ) : null}
+        </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 
-function PaymentFailure({
-  problem,
-  seatsHref,
-  onRetry,
+/**
+ * The tickets of one order: the link that opens each one and the PDF that records it.
+ *
+ * Shared by the panel (an answer that just issued them) and by the page (a reload of a
+ * paid order, whose tickets come from the order read), so both surfaces print the same
+ * words about the same thing. Each link is a plain anchor with the shell's visible focus
+ * outline, and the PDF is a link target rather than something this page fetches.
+ */
+export function IssuedTickets({
+  ticketIds,
+  apiBaseUrl,
 }: {
-  problem: PublicProblem;
-  seatsHref: string | null;
-  onRetry: () => void;
+  ticketIds: readonly string[];
+  apiBaseUrl: string;
 }) {
-  const seatsLink =
-    seatsHref === null ? null : (
-      <a href={seatsHref}>Back to the event&apos;s seats</a>
-    );
+  return (
+    <ul role="list" className="m-0 flex list-none flex-col gap-2 p-0">
+      {ticketIds.map((ticketId) => (
+        <li key={ticketId} className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <Link
+            href={`/tickets/${encodeURIComponent(ticketId)}`}
+            className="rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+          >
+            Open ticket <code>{ticketId}</code>
+          </Link>
+          <a
+            href={ticketPDFUrl(apiBaseUrl, ticketId)}
+            className="rounded-sm text-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+          >
+            Download the PDF
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
-  switch (problem.code) {
-    case "payment_in_flight":
-      return (
-        <section className="problems feedback" aria-labelledby="payment-in-flight">
-          <h2 id="payment-in-flight">A payment is already being processed</h2>
-          <p>
-            This reservation already has a payment attempt in progress, and only
-            the request that started it can settle it. This page is holding that
-            key, so retrying it continues the same attempt.
-          </p>
-          <div className="actions">
-            <button type="button" onClick={onRetry}>
-              Continue the same payment
-            </button>
-          </div>
-        </section>
-      );
-
-    case "hold_expired":
-      return (
-        <section className="problems feedback error" aria-labelledby="payment-expired">
-          <h2 id="payment-expired">The hold window closed</h2>
-          <p>
-            The seats were held for a limited window and that window ended before
-            the payment completed, so the reservation can no longer be paid and the
-            seats were released.
-          </p>
-          <p className="notice">
-            {seatsLink === null
-              ? "Choose the seats again from the event page."
-              : seatsLink}
-          </p>
-        </section>
-      );
-
-    case "already_paid":
-      return (
-        <section className="problems feedback" aria-labelledby="payment-already-paid">
-          <h2 id="payment-already-paid">This order is already paid</h2>
-          <p>
-            The reservation already carries a captured payment, so nothing more can
-            be charged. The tickets were issued when it was captured.
-          </p>
-          <p className="notice">
-            This page cannot list them again: a guest&apos;s tickets are reached by
-            the links the paying session was given. Nothing lists tickets by
-            reservation.
-          </p>
-        </section>
-      );
-
-    case "reservation_not_payable":
-    case "not_sellable":
-      return (
-        <section className="problems feedback error" aria-labelledby="payment-not-payable">
-          <h2 id="payment-not-payable">This reservation cannot be paid</h2>
-          <p>
-            {problem.code === "not_sellable"
-              ? "The event has no price or the reservation holds no seat, so there is nothing to charge."
-              : "The reservation is not awaiting payment, so this page cannot charge it."}
-          </p>
-          <p className="notice">{seatsLink ?? "Start again from the event page."}</p>
-        </section>
-      );
-
-    case "not_found":
-      return (
-        <section className="problems feedback error" aria-labelledby="payment-not-found">
-          <h2 id="payment-not-found">This reservation does not exist</h2>
-          <p>
-            The reservation id in this address is unknown to the box office, so
-            there is nothing to pay.
-          </p>
-          <p className="notice">{seatsLink ?? "Start again from the event page."}</p>
-        </section>
-      );
-
+/** The `Alert` tone for one outcome; the words inside it carry the state. */
+function alertVariant(outcome: PaymentOutcomeView) {
+  switch (outcome.tone) {
+    case "success":
+      return "success" as const;
+    case "info":
+      return "info" as const;
+    case "warning":
+      return "warning" as const;
     default:
-      // A temporary failure (provider, storage, network). The key is kept, which is
-      // what the API's own refusal asks for: only the key of an open attempt can
-      // settle it.
-      return (
-        <section className="problems feedback error" aria-labelledby="payment-failed">
-          <h2 id="payment-failed">The payment could not be completed</h2>
-          <p>
-            <code>{problem.code}</code> · HTTP {problem.status}
-          </p>
-          <p>{problem.detail}</p>
-          <div className="actions">
-            <button type="button" onClick={onRetry}>
-              Retry the payment
-            </button>
-          </div>
-          <p className="notice">
-            This retries the same payment attempt with the same key, so it can never
-            charge twice. If your seats were released in the meantime, the answer
-            will say so.
-          </p>
-        </section>
-      );
+      return "destructive" as const;
   }
+}
+
+/**
+ * What the retry button says, per state.
+ *
+ * A decline starts a new attempt, an open payment continues the one that is already
+ * running, and a temporary failure resends the same attempt — three different things, so
+ * three different labels rather than one "try again" that hides which happened.
+ */
+function retryLabel(kind: PaymentOutcomeView["kind"]): string {
+  switch (kind) {
+    case "declined":
+      return "Try the payment again";
+    case "payment_in_flight":
+      return "Continue the same payment";
+    case "temporary":
+      return "Retry the payment";
+    default:
+      return "Try again";
+  }
+}
+
+/** `Row A seat 3`; the values painted at the door, never a reconstructed label. */
+function seatLine(seat: PublicReservation["seats"][number]): string {
+  const row = seat.rowLabel.trim();
+  const number = seat.seatNumber.trim();
+  if (row !== "" && number !== "") {
+    return `Row ${row} seat ${number}`;
+  }
+  return `Seat ${seat.eventSeatId}`;
 }
