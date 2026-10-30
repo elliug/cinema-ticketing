@@ -130,3 +130,48 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   `priceCents: 1250` and `priceDisplay: "12.50"`. Still missing for the administration
   screen: `POST /events` cannot set a price in the same request, the list returns identifiers
   without film or room names, and there is no administrative `GET /films`.
+- L8 — T4 built the catalogue screen over T1's `GET /events`, the first page whose data a
+  stranger can read without an identifier. **The parser is the contract**: `listEvents()` refuses
+  what it cannot print — an entry without a film, cinema or room name, without `startsAtLocal`,
+  without `priceDisplay`, or without its `seatCount`/`availableSeats` pair fails the whole read as
+  `unexpected_response`, naming the field. One unreadable entry refuses the catalogue rather than
+  being dropped or shown as "0 of 0 seats available", the same choice the API makes for a venue
+  zone it cannot present. **Nothing on the screen is recomputed**: the venue's hour is printed
+  verbatim in a `<time>` whose machine value is the UTC instant, the price is `priceDisplay` with
+  no currency invented, and the array is rendered in the order served, unsorted. Four honest
+  states, none of them invented data: a slow catalogue streams a real region (an `h2`, a
+  `role="status"` sentence and decorative skeletons); an unreadable one prints the code, the HTTP
+  status and the API's detail and says that an empty list would mean something different; an
+  empty one says no screening is on sale and shows no placeholder row; the fourth is the list.
+  Availability is words as well as digits — "12 of 40 seats available", "0 of 24 seats available —
+  sold out" — with a `Sold out` badge whose word is the state and a link whose text changes with
+  it ("See the seat map for X" rather than "Choose seats for X"), so greyscale loses nothing.
+  Navigation follows L5's rule at last: "Now showing" gained its `href` and lost the "not built
+  yet" badge. **One finding was not T4's to fix and was fixed anyway in the same commit**: the
+  hand-written rules of `globals.css` were unlayered while Tailwind's utilities live in
+  `@layer utilities`, and an unlayered rule always wins — so `text-muted-foreground` on a
+  paragraph and a smaller `CardTitle` were silently inert, and a primary-button link would have
+  painted accent on accent. The legacy block now sits in `@layer base`, which is where it belongs
+  until each screen migrates and it is deleted. Evidence: 5 tests for the read, `pnpm check` green
+  with 183 tests, and a real render of the populated catalogue against a stub API and of the
+  failing one against the live API.
+- L9 — T5a closed the gap T5 would otherwise have hit: the seat page a buyer reaches from the
+  catalogue knew nothing about the screening it was selling. `GET /api/v1/events/{eventID}`
+  answers one screening from the `catalog` read model, mounted inside the same wiring decision as
+  `GET /events`, so a deployment without the read schema advertises neither. **The entry shape is
+  the list's own, not a second one**: one `screeningQuery` projection wrapped by a filter for the
+  list and by an identifier predicate for the single read, one `scanScreening`, one
+  `screeningDocument` — so availability, the venue's local hour and the price text are produced
+  once, and the checkout finally has an amount to multiply (price × seats). **`catalog.Screening`
+  gained two fields and the list answers both**, the one contract change of this slice: the pinned
+  key set grew from ten to twelve by `status` (`cinema.events.status` verbatim) and `onSale` (the
+  list's membership predicate, written once as a column of the projection: `status = 'on_sale' AND
+  starts_at > now()`, the database clock the hold window already uses, so no client compares a
+  clock of its own to know whether a seat can still be bought). **A screening that exists but is
+  not offered answers**: a stale link is a `200` with its status and `onSale: false` — cancelled,
+  still a draft, or simply already started — never a `404` that would claim it never existed; only
+  an identifier that names nothing is `404`, and an unreadable store or an unusable venue zone is
+  `503`, never a partially filled screening. Read-only: the existing availability read was not
+  touched. Evidence: handler rules over fakes, a gated SQL suite over a throwaway database
+  (migrated 0001–0006 and dropped) where the single read equals the list entry field for field,
+  and a real API run whose three responses behave as described.
