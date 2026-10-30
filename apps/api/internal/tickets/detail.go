@@ -192,15 +192,23 @@ func (d TicketDetail) InvalidReason() string {
 }
 
 // OrderAmountText renders the order's charged amount for display, without a
-// currency: two decimals over the minor units, since v1 stores no currency and
-// inventing one here would be a guess the renderer cannot undo. A renderer that
-// knows the deployment's currency (an open decision of the architecture baseline)
-// prefixes it; this package never does.
+// currency, using [FormatMoney].
 //
 // It renders the money taken for the whole reservation, so it is printed as the
 // order total, not as the price of this one seat.
-func (d TicketDetail) OrderAmountText() string {
-	cents := d.OrderAmountCents
+func (d TicketDetail) OrderAmountText() string { return FormatMoney(d.OrderAmountCents) }
+
+// FormatMoney renders an amount in minor units for display, without a currency: two
+// decimals over the minor units, since v1 stores no currency and inventing one here
+// would be a guess the renderer cannot undo. A renderer that knows the deployment's
+// currency (an open decision of the architecture baseline) prefixes it; this package
+// never does.
+//
+// It is exported because it is the one spelling of money in the system: the ticket
+// detail (the order amount) and the public catalogue (a screening's price) both print
+// what it returns, so two surfaces can never show the same charge in two shapes. A
+// negative amount keeps its sign rather than losing it to the division.
+func FormatMoney(cents int64) string {
 	sign := ""
 	if cents < 0 {
 		sign = "-"

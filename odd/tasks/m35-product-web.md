@@ -69,3 +69,13 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   labelled in the interface and stated here rather than implied to be authentication. Real
   accounts (users, password hashing, sessions, `tickets.user_id`, ownership checks) are a
   backend milestone, not a UI task.
+- L4 — T1 extends L3's consequence to the new read and writes it down where the code
+  lives: the demonstration session authenticates nobody (S2), so `GET /reservations/{id}`
+  is **not** protected either — the reservation identifier is the capability, exactly like
+  a ticket id. The projection is therefore limited to what the confirmation screen shows
+  (status, deadline, the money actually taken, its seats and its tickets): there is no
+  buyer identity to leak, and no payment-attempt internals (attempt, provider, reference,
+  idempotency key, fingerprint, outcome) are exposed. Recorded in
+  `apps/api/internal/catalog/doc.go`, not merely implied. The catalogue's availability is
+  defined there too, as the seat map's definition — neither sold nor held by a live hold,
+  decided by the database clock — so the catalogue and the seat page cannot disagree.

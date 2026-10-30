@@ -3,15 +3,18 @@
 // pays a held reservation, the M3 ticket detail route that the confirmation page
 // and the PDF both read, the M3 ticket QR image route that renders that signed code as
 // an SVG the ticket page shows, the M3 ticket PDF download route that answers a
-// short-lived pre-signed redirect, and the M3 ticket verification route a door
-// scanner calls with a presented signed code.
+// short-lived pre-signed redirect, the M3 ticket verification route a door
+// scanner calls with a presented signed code, and the M3.5 reads the web needs: the
+// public catalogue of screenings (GET /events) and the confirmation's read of one
+// order (GET /reservations/{reservationId}).
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
 // the ticket and scanning that ticket at the door has no administrative token; see
-// httpserver.Server.WithPublic. The ticket routes are public for a further reason the
-// tickets package documents: in v1 the ticket identifier is the capability, because
-// guest checkout has no account that could prove who owns a ticket.
+// httpserver.Server.WithPublic. The ticket and reservation routes are public for a
+// further reason the tickets and catalog packages document: in v1 the identifier is the
+// capability, because guest checkout has no account that could prove who owns a ticket
+// or an order, and the M3.5 demonstration session authenticates nobody.
 package publicapi
 
 import (
@@ -34,16 +37,19 @@ type HoldService interface {
 
 // Handler serves the public reservation routes.
 type Handler struct {
-	svc        HoldService
-	payments   PaymentService
-	tickets    TicketService
-	ticketPDFs TicketPDFService
+	svc          HoldService
+	payments     PaymentService
+	tickets      TicketService
+	ticketPDFs   TicketPDFService
+	catalog      CatalogService
+	reservations ReservationService
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
-// PDF and ticket verification routes are attached separately, by WithPayments,
-// WithTickets and WithTicketPDFs, so a deployment without the checkout schema or
-// without object storage mounts none of them.
+// PDF, ticket verification, catalogue and reservation read routes are attached
+// separately, by WithPayments, WithTickets, WithTicketPDFs, WithCatalog and
+// WithReservations, so a deployment without the checkout schema or without object
+// storage mounts none of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -52,6 +58,18 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /reservations/holds", h.createHold)
 	mux.HandleFunc("GET /events/{eventID}/seats", h.listEventSeats)
+	// The catalogue is what makes the seat page reachable without an event id, so it is
+	// mounted with the seat read it feeds. Both come from one read model — the catalogue
+	// of screenings and the confirmation's read of one order — which is why one wiring
+	// decision mounts them together.
+	if h.catalog != nil {
+		mux.HandleFunc(eventsRoute, h.listEvents)
+	}
+	if h.reservations != nil {
+		// GET on the reservation subtree, next to the POST that creates a hold there: the
+		// buyer who reloads the confirmation has an identifier and no way to ask again.
+		mux.HandleFunc(reservationReadRoute, h.getReservation)
+	}
 	if h.payments != nil {
 		mux.HandleFunc(paymentRoute, h.createPayment)
 	}
