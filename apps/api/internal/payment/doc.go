@@ -14,14 +14,25 @@
 // stores it with the outcome, so a retried or replayed payment addresses exactly
 // one charge at the provider no matter how often it is sent.
 //
-// # Determinism
+// # Determinism and declines
 //
-// The simulated outcome is deterministic for a given input, never random, so tests
-// can select it: DefaultDeclineRemainder describes the rule (an amount whose two
-// least significant minor units are 13 is declined, every other amount is
-// approved). NewSimulatedWithLedger lets a test choose another sentinel. A declined
-// charge is a Result with OutcomeDeclined and a nil error, because the provider
-// worked and the money was refused.
+// The simulated outcome is deterministic for a given input, never random. The
+// provider the checkout is wired with, NewSimulated, **never declines**: it
+// approves every amount, because a decline is a *test scenario* and never an
+// amount that happens to look like one. An amount whose two least significant
+// minor units are 13 is a real 12,13 EUR ticket, not a refusal.
+//
+// A decline is produced only by constructing the adapter with the rule a test
+// wants: NewSimulatedWithDeclineRule(sentinel, ledger) declines an amount whose two
+// least significant minor units equal the sentinel (DefaultDeclineRemainder is the
+// conventional 13) and approves every other amount. There is deliberately no field
+// on Request that asks for a decline: a real provider replaces this adapter and
+// must not inherit simulator knobs, so the outcome of a charge is decided by the
+// adapter that answers, never by the caller.
+//
+// A declined charge is a Result with OutcomeDeclined and a nil error, because the
+// provider worked and the money was refused. The checkout reports it as a
+// successful request whose body says the payment was declined.
 //
 // # Replay
 //

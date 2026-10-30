@@ -24,8 +24,10 @@ assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migra
 assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migrations/0004_idempotency.down.sql' env MIGRATION_VERSION=0004_idempotency MIGRATION_DIRECTION=down
 assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migrations/0005_checkout.up.sql' env MIGRATION_VERSION=0005_checkout
 assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migrations/0005_checkout.down.sql' env MIGRATION_VERSION=0005_checkout MIGRATION_DIRECTION=down
+assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migrations/0006_one_open_payment_attempt.up.sql' env MIGRATION_VERSION=0006_one_open_payment_attempt
+assert_output '-X -v ON_ERROR_STOP=1 -h db -p 5432 -U cinema -d cinema -f /migrations/0006_one_open_payment_attempt.down.sql' env MIGRATION_VERSION=0006_one_open_payment_attempt MIGRATION_DIRECTION=down
 set +e
 output=$(run env MIGRATION_VERSION=../../other 2>&1); status=$?
 set -e
-[ "$status" -eq 2 ] && [ "$output" = 'MIGRATION_VERSION must be 0001_init, 0002_venue_layout, 0003_reservation, 0004_idempotency or 0005_checkout' ] || { printf 'invalid version was not rejected: %s (%s)\n' "$output" "$status" >&2; exit 1; }
+[ "$status" -eq 2 ] && [ "$output" = 'MIGRATION_VERSION must be 0001_init, 0002_venue_layout, 0003_reservation, 0004_idempotency, 0005_checkout or 0006_one_open_payment_attempt' ] || { printf 'invalid version was not rejected: %s (%s)\n' "$output" "$status" >&2; exit 1; }
 printf 'migration apply contract passed\n'

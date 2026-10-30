@@ -1,9 +1,10 @@
 // Package publicapi exposes the customer facing reservation HTTP surface: the
-// M2 hold creation endpoint and the event seat availability read.
+// M2 hold creation endpoint, the event seat availability read, and the M3 checkout
+// route that pays a held reservation.
 //
 // Routes here are public application routes. They are mounted outside the
-// administrative guard, because a customer selecting seats has no
-// administrative token; see httpserver.Server.WithPublic.
+// administrative guard, because a customer selecting seats and paying for them has
+// no administrative token; see httpserver.Server.WithPublic.
 package publicapi
 
 import (
@@ -26,10 +27,13 @@ type HoldService interface {
 
 // Handler serves the public reservation routes.
 type Handler struct {
-	svc HoldService
+	svc      HoldService
+	payments PaymentService
 }
 
-// New builds a Handler over the given service.
+// New builds a Handler over the given service. The checkout route is attached
+// separately, by WithPayments, so a deployment without the checkout schema mounts
+// no payment route.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -38,6 +42,9 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /reservations/holds", h.createHold)
 	mux.HandleFunc("GET /events/{eventID}/seats", h.listEventSeats)
+	if h.payments != nil {
+		mux.HandleFunc(paymentRoute, h.createPayment)
+	}
 	return mux
 }
 
