@@ -151,6 +151,30 @@ Four guards make the impossible cases impossible, and each one is a database con
 
 The replay key is scoped to its reservation: `UNIQUE (reservation_id, idempotency_key)`, so **T3 must look the attempt up by reservation *and* key** — a key another buyer used can never answer for this reservation, and `request_fingerprint` stored next to it makes a reused key with a different payload detectable instead of silently answered. `tickets_reservation` and `payment_attempts_reservation` are plain indexes for the confirmation read, and `outbox_unpublished` on `(created_at) WHERE published_at IS NULL` is the relay's working set.
 
+**Applying `0006` to a database that already ran the checkout.** `CREATE UNIQUE INDEX`
+refuses to build over data that violates it, so a database that carries two open attempts
+for one reservation cannot take this version. That is exactly the state the pre-`0006`
+checkout could leave behind — a payment whose phase 3 never ran, followed by a retry with a
+different key — so it is worth looking before migrating rather than discovering it halfway
+through a deploy:
+
+```sql
+SELECT reservation_id, count(*)
+FROM cinema.payment_attempts
+WHERE status = 'pending'
+GROUP BY reservation_id
+HAVING count(*) > 1;
+```
+
+Every reservation this returns is money in doubt: a pending attempt means the provider may
+already hold a charge under `payment_attempt:<attempt id>`. Resolve each one **with the
+provider, before the migration**: if that reference was charged, record the verdict on the
+attempt (`captured`, which writes the sale) and close the others; if it was not, the
+attempt can be closed as `failed` or `declined`. Marking every duplicate `failed` without
+asking the provider is faster and deletes the only record that the money may have left. A
+fresh database has no attempts at all, so this concerns only environments that served
+payments before this version existed.
+
 **What the checkout transaction relies on.** The attempt is written before the provider is called, then captured in the same transaction that marks the reservation paid, sells the seats, issues one ticket per seat and writes the outbox row. T3 can therefore rely on the database to refuse a second open attempt, a second capture, a duplicated provider reference, a duplicate ticket and a ticket of another event, and only has to map the failures: `unique_violation` on `payment_attempts_open_per_reservation` is "a payment is already in flight" (refused at any age of the open attempt), on the captured index it is "already paid" (answer from the stored attempt), on the provider pair it is a duplicate callback, on the per-reservation idempotency key it is a replay race that is retried once and then answered from the stored row, and on the ticket seat it is "seat already sold". `check_violation` means an amount that is not positive, a state outside the enumerated values, an incoherent status/outcome pair, or a decided attempt without its reference or verdict. `foreign_key_violation` means an unknown reservation or seat, or a seat of another event. The outbox row is written in the same transaction, so a crashed relay retries delivery and never loses or duplicates the sale; nothing about delivery correctness depends on the relay running.
 
 **What T3 still has to enforce itself**, because the schema cannot:
