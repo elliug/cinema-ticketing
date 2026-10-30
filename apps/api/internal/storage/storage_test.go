@@ -211,6 +211,11 @@ func TestUnconfiguredStoreFailsClosed(t *testing.T) {
 			} else if url != "" {
 				t.Errorf("PresignGet url = %q, want empty", url)
 			}
+			if exists, err := store.Exists(ctx, "m3/ticket.pdf"); !errors.Is(err, storage.ErrNotConfigured) {
+				t.Errorf("Exists error = %v, want ErrNotConfigured", err)
+			} else if exists {
+				t.Error("Exists = true, want false: an unconfigured adapter must never claim an object exists")
+			}
 			if err := store.EnsureBucket(ctx); !errors.Is(err, storage.ErrNotConfigured) {
 				t.Errorf("EnsureBucket error = %v, want ErrNotConfigured", err)
 			}
@@ -236,6 +241,9 @@ func TestInvalidInputIsRejectedBeforeAnyRequest(t *testing.T) {
 	}
 	if _, err := store.PresignGet(ctx, "../escape.pdf", time.Minute); !errors.Is(err, storage.ErrInvalidKey) {
 		t.Fatalf("PresignGet error = %v, want ErrInvalidKey", err)
+	}
+	if _, err := store.Exists(ctx, "../escape.pdf"); !errors.Is(err, storage.ErrInvalidKey) {
+		t.Fatalf("Exists error = %v, want ErrInvalidKey", err)
 	}
 	if err := store.Put(ctx, "m3/ticket.pdf", []byte("x"), ""); !errors.Is(err, storage.ErrInvalidContentType) {
 		t.Fatalf("Put error = %v, want ErrInvalidContentType", err)
@@ -275,6 +283,79 @@ func TestPresignTTLIsBounded(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("ValidatePresignTTL(%v) = %v, want nil", tc.ttl, err)
+			}
+		})
+	}
+}
+
+// TestExistsAsksTheStoreWithoutDownloading pins the one question the PDF archive
+// asks before it renders anything: does this object already exist? A 200 answers
+// yes and a 404 answers no, but every other answer is an error rather than a no —
+// a store that could not be asked must never make the archive believe the artefact
+// is missing and overwrite it with a re-render. The adapter asks with HEAD, so the
+// question never downloads the bytes it is asking about.
+func TestExistsAsksTheStoreWithoutDownloading(t *testing.T) {
+	const key = "tickets/00000000-0000-0000-0000-0000000000e1/00000000-0000-0000-0000-0000000000e2.pdf"
+
+	cases := []struct {
+		name       string
+		status     int
+		wantExists bool
+		wantErr    bool
+	}{
+		{"an existing object answers true", http.StatusOK, true, false},
+		{"a missing object answers false", http.StatusNotFound, false, false},
+		// A 403 is not proof of absence, so it is reported instead of answered.
+		{"an unreadable bucket is an error", http.StatusForbidden, false, true},
+		{"a store failure is an error", http.StatusInternalServerError, false, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var methods []string
+			var paths []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				methods = append(methods, r.Method)
+				paths = append(paths, r.URL.Path)
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			store, err := storage.NewS3(storage.Config{Endpoint: srv.URL, Bucket: "cinema-m3-tickets",
+				Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b"})
+			if err != nil {
+				t.Fatalf("NewS3 returned error: %v", err)
+			}
+
+			exists, err := store.Exists(context.Background(), key)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Exists = (%v, nil), want an error: a store that could not be asked answered %v", exists, tc.status)
+				}
+				if exists {
+					t.Fatal("Exists = true on an error, want false")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Exists returned error: %v", err)
+				}
+				if exists != tc.wantExists {
+					t.Fatalf("Exists = %v, want %v", exists, tc.wantExists)
+				}
+			}
+
+			// The SDK retries a 5xx, so the count is not pinned; what matters is that the
+			// question is asked with HEAD and never with GET, so no bytes are downloaded.
+			if len(methods) == 0 {
+				t.Fatal("no request reached the store, want at least one HEAD")
+			}
+			for _, method := range methods {
+				if method != http.MethodHead {
+					t.Fatalf("requests = %v, want only HEAD: exists must not download the object", methods)
+				}
+			}
+			if want := "/cinema-m3-tickets/" + key; paths[0] != want {
+				t.Fatalf("path = %q, want %q", paths[0], want)
 			}
 		})
 	}
@@ -355,10 +436,25 @@ func TestS3RoundTripAgainstFloci(t *testing.T) {
 	}
 	payload = append(payload, "\n%%EOF\n"...)
 
+	// Exists is the question the PDF archive asks before it renders: a missing key
+	// answers false, and only a stored object answers true.
+	if exists, err := store.Exists(ctx, testObjectKey); err != nil {
+		t.Fatalf("Exists(%q) returned error: %v", testObjectKey, err)
+	} else if exists {
+		t.Fatalf("Exists(%q) = true before the object was put", testObjectKey)
+	}
+
 	if err := store.Put(ctx, testObjectKey, payload, "application/pdf"); err != nil {
 		t.Fatalf("Put(%q) returned error: %v", testObjectKey, err)
 	}
 	t.Logf("Put stored %d bytes at %q", len(payload), testObjectKey)
+
+	if exists, err := store.Exists(ctx, testObjectKey); err != nil {
+		t.Fatalf("Exists(%q) returned error: %v", testObjectKey, err)
+	} else if !exists {
+		t.Fatalf("Exists(%q) = false after the object was put", testObjectKey)
+	}
+	t.Logf("Exists(%q) = true after the put", testObjectKey)
 
 	stored, err := store.Get(ctx, testObjectKey)
 	if err != nil {

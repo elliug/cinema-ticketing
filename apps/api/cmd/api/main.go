@@ -6,7 +6,9 @@
 // M1 adds the local-only administrative venue API, which is mounted only when
 // local administration is explicitly enabled. M2 adds the customer reservation
 // surface with its expiry worker, and M3 adds the checkout route that pays a held
-// reservation and the ticket detail route the confirmation page and the PDF read.
+// reservation, the ticket detail route the confirmation page and the PDF read, the
+// ticket PDF download route and the worker that stores those PDFs in the object
+// bucket.
 package main
 
 import (
@@ -30,8 +32,10 @@ import (
 	"cinema.local/ticketing/apps/api/internal/httpserver"
 	"cinema.local/ticketing/apps/api/internal/log"
 	"cinema.local/ticketing/apps/api/internal/payment"
+	"cinema.local/ticketing/apps/api/internal/pdf"
 	"cinema.local/ticketing/apps/api/internal/publicapi"
 	"cinema.local/ticketing/apps/api/internal/reservation"
+	"cinema.local/ticketing/apps/api/internal/storage"
 	"cinema.local/ticketing/apps/api/internal/tickets"
 	"cinema.local/ticketing/apps/api/internal/venue"
 
@@ -103,6 +107,19 @@ func run() int {
 		}()
 	}
 
+	// The ticket PDF worker belongs to the process in the same way: it stores the
+	// document of every ticket the checkout issued, and it stops with the process so
+	// shutdown never polls a closed pool. A deployment without storage or without the
+	// ticket schema starts none, and the download route generates on demand instead.
+	var pdfWorkerStopped chan struct{}
+	if reservationProcess != nil && reservationProcess.pdfWorker != nil {
+		pdfWorkerStopped = make(chan struct{})
+		go func() {
+			defer close(pdfWorkerStopped)
+			reservationProcess.pdfWorker.Run(ctx)
+		}()
+	}
+
 	logger.Info("starting api", "addr", cfg.Addr, "log_level", cfg.LogLevel)
 	serveErr := srv.Serve(ctx)
 	if serveErr != nil {
@@ -112,13 +129,24 @@ func run() int {
 		stop()
 	}
 
-	if sweepStopped != nil {
-		// Wait for the worker before the deferred Close releases its pools, so
-		// shutdown never sweeps a closed store.
+	// Wait for the workers before the deferred Close releases their pools, so shutdown
+	// never sweeps or stores through a closed store. They share one budget: a process
+	// that is stopping has no time to give each of them the whole timeout.
+	shutdownDeadline := time.Now().Add(cfg.ShutdownTimeout)
+	for _, worker := range []struct {
+		name    string
+		stopped chan struct{}
+	}{
+		{"expiry sweep", sweepStopped},
+		{"ticket PDF worker", pdfWorkerStopped},
+	} {
+		if worker.stopped == nil {
+			continue
+		}
 		select {
-		case <-sweepStopped:
-		case <-time.After(cfg.ShutdownTimeout):
-			logger.Warn("expiry sweep did not stop within the shutdown timeout")
+		case <-worker.stopped:
+		case <-time.After(time.Until(shutdownDeadline)):
+			logger.Warn(worker.name + " did not stop within the shutdown timeout")
 		}
 	}
 
@@ -133,6 +161,17 @@ func run() int {
 // expirySweepTimeout bounds one durable expiry sweep, including its clock read,
 // so a stalled database cannot wedge the worker.
 const expirySweepTimeout = 30 * time.Second
+
+// The ticket PDF worker's cadence and bounds. Five seconds is short enough that the
+// document is normally in the bucket before the buyer opens the confirmation page and
+// long enough that an idle deployment costs one query every five seconds; the batch and
+// the deadline keep one pass bounded, so a backlog is drained across ticks instead of
+// holding the worker in a long loop.
+const (
+	pdfWorkerInterval = 5 * time.Second
+	pdfWorkerBatch    = 20
+	pdfWorkerTimeout  = 30 * time.Second
+)
 
 // expirySweepMaxBatches bounds how many batches one tick may run. The next tick
 // continues from where this one stopped, so a backlog is drained across ticks
@@ -152,14 +191,16 @@ const startupTimeout = 10 * time.Second
 const requiredMigrations = "0003_reservation, 0004_idempotency, 0005_checkout, 0006_one_open_payment_attempt"
 
 // reservationProcess owns what the public reservation surface, the checkout, the
-// ticket detail read and the expiry worker need, so one Close releases every pool
-// on shutdown.
+// ticket detail read, the ticket PDF archive and the expiry worker need, so one Close
+// releases every pool on shutdown.
 type reservationProcess struct {
 	store         *reservation.PostgresStore
 	checkoutStore *checkout.PostgresStore
 	ticketStore   *tickets.PostgresStore
+	outboxStore   *pdf.OutboxStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
+	pdfWorker     *pdf.Worker
 }
 
 // Close releases the pooled connections. It is nil-safe so the process wiring can
@@ -176,6 +217,9 @@ func (p *reservationProcess) Close() {
 	}
 	if p.ticketStore != nil {
 		p.ticketStore.Close()
+	}
+	if p.outboxStore != nil {
+		p.outboxStore.Close()
 	}
 	if p.redis != nil {
 		_ = p.redis.Close()
@@ -380,18 +424,104 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		logger.Info("ticket schema not present; ticket route disabled", "required", "0005_checkout")
 	}
 
-	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).Mux())
+	// The ticket PDF is stored in the object bucket and served through a short-lived
+	// pre-signed URL. The archive is built only when there are tickets to print, and the
+	// download route is mounted only when it exists: a deployment without storage can
+	// neither generate nor serve the document, so it must not advertise a download it
+	// could not honour, while the ticket detail route keeps working.
+	var ticketPDFs publicapi.TicketPDFService
+	var outboxStore *pdf.OutboxStore
+	var pdfWorker *pdf.Worker
+	if ticketPresent {
+		archive, archiveErr := newTicketArchive(cfg, ticketDetails)
+		if archiveErr != nil {
+			// One line, and no route: the error names the setting that is missing or
+			// unusable and never a credential.
+			logger.Info("object storage not configured; ticket PDF route disabled", "error", archiveErr.Error())
+		} else {
+			ticketPDFs = archive
+			// The worker consumes the checkout's outbox row, so it needs that schema on top
+			// of the tickets. Without it the download route stays mounted and generates on
+			// demand, which is exactly the path a buyer needs.
+			if checkoutPresent {
+				outboxStore, pdfWorker, err = newTicketPDFWorker(cfg, archive, logger)
+				if err != nil {
+					ticketStore.Close()
+					if checkoutStore != nil {
+						checkoutStore.Close()
+					}
+					_ = client.Close()
+					store.Close()
+					return nil, fmt.Errorf("configure the ticket PDF worker: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+				}
+			} else {
+				logger.Info("checkout outbox not present; ticket PDF worker disabled", "required", "0005_checkout")
+			}
+		}
+	}
+
+	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).WithTicketPDFs(ticketPDFs).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
-		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent)
+		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent,
+		"ticket_pdfs", ticketPDFs != nil)
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret
 		// and the fact that it is configured is what an operator needs to know.
 		logger.Info("ticket QR codes are signed; verification route mounted",
 			"route", "/api/v1/tickets/verify", "key_bytes", len(cfg.TicketQRKey))
 	}
+	if ticketPDFs != nil {
+		// The bucket is not a secret, the credentials are, so only the bucket is named.
+		logger.Info("ticket PDFs are stored in the object bucket; download route mounted",
+			"route", "/api/v1/tickets/{ticketId}/pdf", "bucket", cfg.S3Bucket,
+			"presign_ttl", cfg.S3PresignTTL, "worker", pdfWorker != nil)
+	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
-		redis: client, sweeper: sweeper}, nil
+		outboxStore: outboxStore, redis: client, sweeper: sweeper, pdfWorker: pdfWorker}, nil
+}
+
+// newTicketArchive builds the artefact archive over the S3 adapter. The adapter
+// validates its configuration without any I/O, so a wrong endpoint, a missing bucket or
+// empty credentials are reported before a buyer could ask for a ticket, and the
+// pre-signed lifetime comes from the configuration (a zero one falls back to the
+// package's documented default).
+func newTicketArchive(cfg config.Config, details tickets.Reader) (*pdf.Archive, error) {
+	objects, err := storage.NewS3(storage.Config{
+		Endpoint:        cfg.S3Endpoint,
+		Bucket:          cfg.S3Bucket,
+		Region:          cfg.S3Region,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		SecretAccessKey: cfg.S3SecretAccessKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pdf.NewArchive(details, objects, cfg.S3PresignTTL)
+}
+
+// newTicketPDFWorker builds the eager producer of the PDFs: the worker over the
+// checkout's outbox. It gets its own startup budget, because the ticket store's
+// remaining deadline must not decide whether the worker starts.
+func newTicketPDFWorker(cfg config.Config, archive *pdf.Archive, logger *slog.Logger) (*pdf.OutboxStore, *pdf.Worker, error) {
+	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancel()
+
+	outbox, err := pdf.NewOutboxStore(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	worker, err := pdf.NewWorker(outbox, archive, pdf.WorkerConfig{
+		Interval: pdfWorkerInterval,
+		Batch:    pdfWorkerBatch,
+		Timeout:  pdfWorkerTimeout,
+		Logger:   logger,
+	})
+	if err != nil {
+		outbox.Close()
+		return nil, nil, err
+	}
+	return outbox, worker, nil
 }
 
 // mountAdmin wires the administrative venue API behind the local-development

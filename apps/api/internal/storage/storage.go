@@ -3,9 +3,11 @@
 // The PDF is written once, when a payment is confirmed, and read back only
 // through a short-lived pre-signed URL, so the stored bytes are the immutable
 // artefact that matches what was sold. The boundary is one small interface,
-// Store, with Put, Get and PresignGet: a real object store replaces only the
-// adapter behind it, exactly as a real payment provider replaces the payment
-// adapter (design S8).
+// Store, with Put, Get, Exists and PresignGet: a real object store replaces only
+// the adapter behind it, exactly as a real payment provider replaces the payment
+// adapter (design S8). Exists is part of it because "is this artefact already
+// there?" is the one question an immutable object needs asked before it is
+// written, and it is asked without downloading the bytes.
 //
 // # Scope
 //
@@ -35,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -86,6 +89,12 @@ type Store interface {
 	Put(ctx context.Context, key string, data []byte, contentType string) error
 	// Get returns the stored bytes for key.
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Exists reports whether an object is already stored under key. It asks with
+	// HEAD, so the question never downloads the bytes it asks about. An
+	// unanswerable question is an error, never a false: a caller that would write
+	// when the object is missing must not be told "missing" by a store it could
+	// not reach.
+	Exists(ctx context.Context, key string) (bool, error)
 	// PresignGet returns a URL that downloads key without credentials and stops
 	// working after ttl.
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
@@ -215,6 +224,38 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("storage: read %q: %w", key, err)
 	}
 	return data, nil
+}
+
+// Exists reports whether an object is already stored under key.
+//
+// It is the one question an immutable artefact needs before it is written: the PDF
+// of a ticket is rendered once, so the archive asks whether the object is already
+// there instead of guessing from a failed Get (a Get downloads the bytes it asks
+// about, and a transport failure would be indistinguishable from absence).
+//
+// The answers are deliberately narrow. A 404 is the only "no": a bucket this
+// adapter cannot read, a rejected credential or an unreachable endpoint is an
+// error, because a caller that treats an error as "missing" would overwrite an
+// artefact it should have served.
+func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
+	if err := s.usable(); err != nil {
+		return false, err
+	}
+	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
+
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil {
+		return true, nil
+	}
+	if isMissingObject(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("storage: head %q: %w", key, err)
 }
 
 // PresignGet returns a pre-signed download URL for key that expires after ttl.
@@ -398,6 +439,32 @@ func validBucketName(name string) bool {
 	// A name without a letter is an address such as 192.168.0.1, which S3
 	// refuses because it would collide with a host name.
 	return !addressLike
+}
+
+// isMissingObject reports the head failures that mean the object is not there.
+//
+// S3 models no error shape for HEAD, so the answer is read structurally instead of
+// by message: the modelled NotFound type, the HTTP status a smithy response error
+// carries, and the two error codes S3 and its emulators use for an absent key.
+// Every other failure stays an error, which is what keeps a permission problem from
+// being mistaken for an absent artefact.
+func isMissingObject(err error) bool {
+	var notFound *types.NotFound
+	if errors.As(err, &notFound) {
+		return true
+	}
+	var status interface{ HTTPStatusCode() int }
+	if errors.As(err, &status) && status.HTTPStatusCode() == http.StatusNotFound {
+		return true
+	}
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) {
+		switch coded.ErrorCode() {
+		case "NotFound", "NoSuchKey":
+			return true
+		}
+	}
+	return false
 }
 
 // isBucketAlreadyUsable reports the create failures that mean the bucket is

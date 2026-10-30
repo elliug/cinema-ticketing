@@ -657,3 +657,171 @@ func TestMountReservationRequiresAUsableTicketQRKey(t *testing.T) {
 		})
 	}
 }
+
+// ticketPDFRouted reports whether the PDF download route is mounted, i.e. whether a
+// download request reaches a handler instead of the mux's 404. The probe needs no
+// database: a mounted route answers 503 (nothing could be read) rather than 404.
+func ticketPDFRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/tickets/00000000-0000-0000-0000-00000000c0f1/pdf", nil))
+	return w.Code != http.StatusNotFound
+}
+
+// withObjectStorage adds the local object-storage configuration the mount tests use.
+// NewS3 performs no I/O, so the endpoint is never contacted: the mount decision is what
+// is under test, not the bucket.
+func withObjectStorage(cfg config.Config) config.Config {
+	cfg.S3Endpoint = "http://127.0.0.1:1"
+	cfg.S3Bucket = "cinema-m3-tickets"
+	cfg.S3Region = "us-east-1"
+	cfg.S3AccessKeyID = "floci"
+	cfg.S3SecretAccessKey = "floci"
+	cfg.S3PresignTTL = time.Minute
+	return cfg
+}
+
+// T6 (S3, S5): with the ticket schema present and object storage configured, the
+// download route is mounted at /api/v1 and the eager worker is wired next to it, so the
+// confirmation page has a download to link to and the PDF is produced after the sale.
+func TestMountReservationMountsTheTicketPDFRoute(t *testing.T) {
+	cfg := withObjectStorage(config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	})
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if proc.outboxStore == nil {
+		t.Fatal("mountReservation wired no outbox store, so no PDF is produced after a sale")
+	}
+	if proc.pdfWorker == nil {
+		t.Fatal("mountReservation wired no PDF worker next to the download route")
+	}
+	if !ticketPDFRouted(srv) {
+		t.Fatal("the ticket PDF route was not mounted although its ticket schema and storage are present")
+	}
+	if !ticketRouted(srv) || !paymentRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("mounting the PDF route dropped a route next to it")
+	}
+	if adminRouted(srv) {
+		t.Fatal("mounting the PDF route exposed the administrative subtree")
+	}
+}
+
+// T6 (S3, S5): a deployment without object storage cannot generate or serve the
+// artefact, so it advertises no download; the ticket detail route keeps working and the
+// refusal is one informative line rather than an error per request.
+func TestMountReservationSkipsTheTicketPDFRouteWithoutStorage(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+
+	if proc.outboxStore != nil || proc.pdfWorker != nil {
+		t.Fatal("a deployment without storage wired the PDF worker")
+	}
+	if ticketPDFRouted(srv) {
+		t.Fatal("the PDF route was mounted without object storage")
+	}
+	if !ticketRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("the ticket detail and hold routes disappeared because storage is missing")
+	}
+	if !strings.Contains(logged.String(), "object storage not configured") {
+		t.Fatalf("log = %q, want the one informative line about missing object storage", logged.String())
+	}
+	// Nothing of the storage configuration is echoed: the secret is a secret even when it
+	// is the reason the route is missing.
+	if strings.Contains(logged.String(), "floci") {
+		t.Fatalf("log = %q, want no storage credential in it", logged.String())
+	}
+}
+
+// T6 (S3, S5): the eager worker consumes the checkout's outbox, so it is wired only
+// when that schema exists. A database with the ticket tables but without the checkout
+// outbox keeps the download route — the lazy path generates the PDF on demand — and
+// starts no worker that could only fail every tick.
+func TestMountReservationSkipsThePDFWorkerWithoutTheCheckoutSchema(t *testing.T) {
+	cfg := withObjectStorage(config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	})
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutAbsentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if proc.pdfWorker != nil || proc.outboxStore != nil {
+		t.Fatal("a database without the checkout outbox started a PDF worker")
+	}
+	if !ticketPDFRouted(srv) {
+		t.Fatal("the download route must stay mounted: it renders on demand without the worker")
+	}
+}
+
+// T6 (S3, S5): a deployment whose database carries no tickets has nothing to print, so
+// it mounts no download and starts no worker.
+func TestMountReservationSkipsTheTicketPDFRouteWithoutTheTicketSchema(t *testing.T) {
+	cfg := withObjectStorage(config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	})
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketAbsentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+
+	if proc.pdfWorker != nil || proc.outboxStore != nil {
+		t.Fatal("a database without tickets started a PDF worker")
+	}
+	if ticketPDFRouted(srv) {
+		t.Fatal("the PDF route was mounted without the ticket schema")
+	}
+	if !reservationRouted(srv) || !paymentRouted(srv) {
+		t.Fatal("the reservation and payment routes disappeared because the ticket schema is missing")
+	}
+}
