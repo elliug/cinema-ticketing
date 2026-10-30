@@ -122,8 +122,10 @@ type reservationBody struct {
 	ReservationID string                `json:"reservationId"`
 	Status        string                `json:"status"`
 	ExpiresAt     string                `json:"expiresAt"`
-	AmountCents   *int64                `json:"amountCents"`
-	AmountDisplay *string               `json:"amountDisplay"`
+	AmountCents    *int64              `json:"amountCents"`
+	AmountDisplay  *string             `json:"amountDisplay"`
+	AmountDueCents   *int64            `json:"amountDueCents"`
+	AmountDueDisplay *string           `json:"amountDueDisplay"`
 	Seats         []reservationSeatBody `json:"seats"`
 	TicketIDs     []string              `json:"ticketIds"`
 	EventID       string                `json:"eventId"`
@@ -184,7 +186,8 @@ func TestReservationRouteServesTheConfirmationState(t *testing.T) {
 	// read is a capability URL, and payment internals are not part of what the
 	// confirmation shows.
 	if got := objectKeys(t, raw); !equalKeys(got, []string{
-		"amountCents", "amountDisplay", "cinemaName", "eventId", "expiresAt", "filmTitle",
+		"amountCents", "amountDisplay", "amountDueCents", "amountDueDisplay", "cinemaName",
+		"eventId", "expiresAt", "filmTitle",
 		"reservationId", "roomName", "seats", "startsAt", "startsAtLocal", "status", "ticketIds",
 	}) {
 		t.Fatalf("reservation keys = %v, want the documented confirmation fields", got)
@@ -202,8 +205,10 @@ func TestReservationRouteServesTheConfirmationState(t *testing.T) {
 // zero charge invented from a missing one. The amount stays null, not 0 and not a
 // price multiplied by the seats.
 func TestReservationRouteKeepsAnUnpaidAmountNull(t *testing.T) {
+	due := int64(2500)
 	unpaid := catalog.ReservationDetail{
-		ID:         "00000000-0000-0000-0000-00000000f2c1",
+		ID:             "00000000-0000-0000-0000-00000000f2c1",
+		AmountDueCents: &due,
 		Status:     "held",
 		ExpiresAt:  reservationFixtureExpiry,
 		EventID:    "00000000-0000-0000-0000-00000000f2e1",

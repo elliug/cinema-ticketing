@@ -1,8 +1,9 @@
-// Package catalog owns the two read models the public web needs and did not have: the
-// catalogue of screenings a buyer can buy a seat for, and the confirmation's read of
-// one reservation.
+// Package catalog owns the read models the public web needs and did not have: the
+// catalogue of screenings a buyer can buy a seat for, the read of one of those
+// screenings that the seat page arrives with, and the confirmation's read of one
+// reservation.
 //
-// # Why these two reads exist
+// # Why these reads exist
 //
 // Until this package, the customer surface could only be addressed by an identifier
 // somebody already had: the seat map needs an event id, the ticket needs a ticket id.
@@ -11,17 +12,31 @@
 // The reservation read is the other half: without it, reloading the confirmation page
 // loses the state the buyer just produced with a hold or a payment.
 //
-// Both reads are projections. Nothing here writes: the hold window, the price, the
+// The single screening read is the join between those two: the seat page is reached from
+// a catalogue row, and everything the buyer was just shown — the film, the cinema, the
+// room, the venue's hour, the price of one seat and how many are free — has to survive
+// the navigation, or the checkout has no amount to multiply. It answers the same
+// projection as the list, from the same statement, with one difference in scope: it
+// answers a screening that exists even when the catalogue no longer offers it.
+//
+// All three reads are projections. Nothing here writes: the hold window, the price, the
 // sale and the tickets are decided by the modules that own them, and this package only
 // reads what they stored. A question that could only be answered by changing a write
 // path is not answered here.
 //
 // # What decides each number
 //
-//   - Whether a screening belongs in the catalogue is decided by PostgreSQL, not by Go:
-//     `status = 'on_sale'` and `starts_at > now()`. Holds are governed by that same
-//     database clock, so a screening the catalogue offers and a screening that accepts a
-//     hold can never disagree about which side of "now" they are on.
+//   - Whether a screening is offered is decided by PostgreSQL, not by Go: `status =
+//     'on_sale'` and `starts_at > now()`. Holds are governed by that same database clock,
+//     so a screening the catalogue offers and a screening that accepts a hold can never
+//     disagree about which side of "now" they are on. That predicate is written once, as a
+//     column of the shared screening projection: the list filters on it and the single
+//     screening read answers it, so the two cannot drift apart and no client has to
+//     compare a clock of its own to know whether a seat can still be bought.
+//   - A screening that exists but is not offered is still answered by the single read,
+//     with its stored `status` verbatim and `onSale: false`. A buyer holding a stale link
+//     is told the screening is no longer on sale rather than that it never existed, and
+//     is told why: cancelled, still a draft, or simply already started.
 //   - The seats available are the same thing the seat map means: a seat that is neither
 //     sold nor held by a live hold. "Live" is decided by the same predicate the seat read
 //     uses, so an expired hold nobody has swept yet already counts as free — the

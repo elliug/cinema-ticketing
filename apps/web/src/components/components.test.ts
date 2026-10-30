@@ -125,6 +125,24 @@ test("the navigation marks the current page for assistive technology", () => {
   );
 });
 
+test("every navigation entry that has a screen points at it, and none is left as text", () => {
+  const source = sourceOf("site-header");
+
+  // L5's rule: an entry is plain text with a "not built yet" badge until its screen
+  // exists, and the slice that builds that screen changes the href and nothing else.
+  // T7 built `/tickets`, which was the last entry still waiting for its route.
+  assert.match(
+    source,
+    /\{ label: "My tickets", href: "\/tickets" \}/,
+    'site-header.tsx must point "My tickets" at the /tickets screen T7 built',
+  );
+  assert.equal(
+    source.includes("href: null"),
+    false,
+    "no primary navigation entry may be left without an href while its route is served",
+  );
+});
+
 test("only the header is a client component, because only the header has state", () => {
   const clientModules = COMPONENT_MODULES.filter((moduleName) =>
     sourceOf(moduleName).trimStart().startsWith('"use client"'),
