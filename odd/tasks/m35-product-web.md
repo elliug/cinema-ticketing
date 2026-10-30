@@ -46,6 +46,8 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   — commit
 - T3 — S1, S2, S8 — Web shell: design tokens, layout, navigation, and the demo-session
   banner — commit
+- T3b — S1, S2, S8 — Adopt Tailwind + shadcn/ui as the component base, superseding the
+  styling half of T3 — commit
 - T4 — S3, S5 — Public catalogue screen over the new endpoint — commit
 - T5 — S3, S6 — Accessible seat map component with the real layout — commit
 - T6 — S3, S6 — Checkout flow: selection → hold → payment states → result — commit
@@ -79,3 +81,52 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   `apps/api/internal/catalog/doc.go`, not merely implied. The catalogue's availability is
   defined there too, as the seat map's definition — neither sold nor held by a live hold,
   decided by the database clock — so the catalogue and the seat page cannot disagree.
+- L5 — T3 built the shell the rest of the milestone sits in. **Absence is navigable, not a
+  dead link**: the catalogue and "my tickets" entries are plain text with a "not built yet"
+  badge, so no entry of the primary navigation points at a route this build does not serve
+  (S8); T4 and T7 change each entry's `href` and nothing else. **The demonstration session
+  is one module and one sentence**: `DEMO_SESSION_LABEL` — "Demonstration session: it grants
+  no access, and nothing here checks who you are." — rendered in the header, the footer, the
+  home page and the document metadata from that same constant, with two fixed demo people
+  (Ana, Luis) stored per browser under `cinema.demo-session`; the module authenticates
+  nothing and no page sends it to the API (extends L3). **No M3 page file was edited**: the
+  seat, confirmation and ticket pages inherit header and footer through the root layout, and
+  the only change they see is the shared container width. Evidence: 13 tests for the session
+  module (default, switching, clearing, per-browser isolation, a throwing storage, and the
+  label's content with the words "sign in", "log in", "account", "secure", "protect" and
+  "authenticat" refused), 7 structural guards, and `pnpm check` green with 175 tests.
+- L6 — T3b adopted Tailwind and shadcn/ui at the human's request, as its own slice, and the
+  cost was stated before starting: the ten hand-written components of T3 are superseded.
+  What survives is everything that was not cosmetic — the root layout, the demonstration
+  session and its single sentence, the navigation with `aria-current`, the honest home page
+  and the accessibility decisions. Three workers failed on this task without writing a
+  single file (the first two likely on shadcn's interactive CLI, which needs a TTY; the third
+  on the same step), so it was finished inline, and only the dependency installation from the
+  second attempt was reused. **The shadcn vocabulary is aliased onto the existing tokens**
+  with `@theme inline`, so one palette still drives the application and dark mode reaches
+  every new component without a second copy. **Preflight is deliberately not imported**: it
+  resets margins, headings and form controls, and the seat, confirmation and ticket screens
+  still rely on the hand-written rules; importing it now would have changed their appearance
+  — a behaviour change disguised as modernisation. It lands, together with the deletion of
+  the legacy rules, when the last of those screens migrates to utilities in T5–T7. Twelve
+  primitives live in `components/ui/` and are imported by path, the shadcn convention, so the
+  semantic barrel cannot shadow them; three new structural guards pin that `ui/` never
+  imports from `components/`, that no primitive carries a literal colour, and which
+  primitives declare a client boundary and which must stay server components.
+- L7 — T2 gave administration the price it could not set: `GET /admin/events`,
+  `GET /admin/events/{id}` and `PATCH /admin/events/{id}`, all behind the existing loopback
+  plus bearer guard. **A missing field is not a free screening**: the body is decoded as a
+  field map, so `{}` is refused with `priceCents: must be provided` while an explicit `0` is
+  accepted and stored — a semantics distinction that a struct with a zero value would have
+  erased. The write is one guarded statement, `UPDATE … WHERE id = $1 … RETURNING`, so an
+  unknown event updates no row and answers `404` instead of claiming a success the database
+  never produced, and `SET` names only `price_cents`, leaving the room, film, layout, start
+  and status untouched. Documented where it matters: the price is per seat, an order's amount
+  is price × seats, and a stored attempt and an issued ticket keep the money actually taken.
+  Evidence: handler rules over fakes for every refusal (missing, negative, int4 overflow,
+  non-integer, malformed identifier, unknown event, malformed and oversized body), a gated
+  SQL suite proving the write, the explicit zero, the refusal without side effects and the
+  untouched columns, and a real API run whose `PATCH` answered the stored event with
+  `priceCents: 1250` and `priceDisplay: "12.50"`. Still missing for the administration
+  screen: `POST /events` cannot set a price in the same request, the list returns identifiers
+  without film or room names, and there is no administrative `GET /films`.
