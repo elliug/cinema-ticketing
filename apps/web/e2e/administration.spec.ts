@@ -106,11 +106,16 @@ test.describe("administration", () => {
     await expect(entry, "the price the administration set").toContainText("12.50");
     await expect(entry).toContainText("On sale");
 
-    // The navigation's own claim, on the screen its entry links to. The primary
-    // navigation links "Administration" to the venue screen, so that is where it marks
-    // itself current; `/admin/schedule` is not under that href and the navigation claims
-    // nothing there, which is why this gate asserts it here and not above.
+    // The navigation's own claim. "Administration" links to the venue screen, and it is
+    // the administration on every screen of the section: the entry declares the `/admin`
+    // prefix, so the schedule and the layouts screens carry it too. Before that rule
+    // existed only `/admin/venues` was marked, and the other two had no current entry at
+    // all — which the previous run of this gate recorded rather than fixed.
     await visit(page, "/admin/venues");
+    await expectActiveNav(page, "Administration");
+    await visit(page, "/admin/schedule");
+    await expectActiveNav(page, "Administration");
+    await visit(page, "/admin/layouts");
     await expectActiveNav(page, "Administration");
 
     expectNoProblems(problems);

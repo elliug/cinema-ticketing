@@ -120,9 +120,87 @@ test("the navigation marks the current page for assistive technology", () => {
   );
   assert.match(
     source,
-    /isCurrentPage\(pathname, item\.href\)/,
+    /isCurrentEntry\(pathname, item\)/,
     "aria-current is decided by the pathname, not hard-coded per entry",
   );
+});
+
+// `aria-current` on a section (M3.5 · T9b · S3, S8)
+//
+// The rule itself is a pure function in site-header.tsx, and this file cannot import a
+// `.tsx` module (no DOM test runner, no JSX loader), so the rule is pinned here as text
+// and proven in a browser by the gate: while on `/admin/schedule`, the Administration
+// entry is current. What is pinned is the shape that makes that true — a prefix declared
+// by exactly one entry, and a rule that matches a prefix as well as an href.
+
+test("the Administration entry owns its whole section, and only it declares a prefix", () => {
+  const source = sourceOf("site-header");
+
+  assert.ok(
+    /\{ label: "Administration", href: "\/admin\/venues", prefix: "\/admin" \}/.test(
+      source,
+    ),
+    "the Administration entry must declare the /admin prefix, because it links to one child of that section",
+  );
+  assert.equal(
+    source.match(/\bprefix: /g)?.length,
+    1,
+    "only the Administration entry may widen its rule: a prefix on every entry would make several entries current at once",
+  );
+});
+
+test("a declared prefix marks the entry current for every page under it", () => {
+  const source = sourceOf("site-header");
+
+  // The same rule every entry already used — exact, or a segment below — applied to the
+  // prefix as well as to the href, so `/admin/schedule` and `/admin/layouts` are the
+  // administration while `/administrator` is not.
+  assert.ok(
+    /function isCurrentPath\(pathname: string, base: string\): boolean \{/.test(source),
+    "site-header.tsx must decide currency with one rule over a path base",
+  );
+  assert.ok(
+    /isCurrentPath\(pathname, item\.href\)\s*\|[\s\S]{0,120}item\.prefix !== undefined[\s\S]{0,60}isCurrentPath\(pathname, item\.prefix\)/.test(
+      source,
+    ),
+    "the current entry is its own href or, when it declares one, its prefix",
+  );
+  assert.ok(
+    /pathname\.startsWith\(`\$\{base}\/`\)/.test(source),
+    "a base is current for the pages below it, not for a sibling that merely starts with the same letters",
+  );
+});
+
+test("both ticket surfaces call the PDF what the route delivers", () => {
+  const library = readFileSync(
+    new URL("../lib/issued-tickets.ts", import.meta.url),
+    "utf8",
+  );
+
+  // One exported sentence, because only one of them can be true: the download route
+  // declares `Content-Disposition: attachment`, so both screens promise a download and
+  // neither calls it something else (S8).
+  assert.equal(
+    library.includes('export const TICKET_PDF_LINK_LABEL = "Download the ticket PDF";'),
+    true,
+    "lib/issued-tickets.ts must export the one sentence both ticket surfaces print",
+  );
+  for (const screen of [
+    new URL("../app/tickets/[ticketID]/ticket-view.tsx", import.meta.url),
+    new URL("../app/reservations/[reservationID]/payment-panel.tsx", import.meta.url),
+  ]) {
+    const source = readFileSync(screen, "utf8");
+    assert.equal(
+      source.includes("TICKET_PDF_LINK_LABEL"),
+      true,
+      `${screen.pathname} must print the exported sentence rather than its own`,
+    );
+    assert.equal(
+      source.includes("Download the ticket PDF"),
+      false,
+      `${screen.pathname} must not carry a copy of the sentence: a copy is a promise that can drift`,
+    );
+  }
 });
 
 test("every navigation entry that has a screen points at it, and none is left as text", () => {

@@ -61,8 +61,8 @@ type ObjectStore interface {
 	// downloading it. An unanswerable question is an error, never a false.
 	Exists(ctx context.Context, key string) (bool, error)
 	// PresignGet returns a URL that downloads key without credentials until ttl
-	// elapses.
-	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// elapses, declaring what opts declares about the delivery.
+	PresignGet(ctx context.Context, key string, ttl time.Duration, opts storage.PresignOptions) (string, error)
 }
 
 // Archive stores and serves the ticket PDFs. The zero value is unusable: a caller
@@ -209,6 +209,12 @@ func (a *Archive) EnsureIssued(ctx context.Context, eventID, ticketID string) (s
 // artefact is missing is generated here, so the download never depends on the eager
 // worker having run.
 //
+// The URL **declares the download**: [TicketAttachmentDisposition] is signed into it, so
+// the object store answers `Content-Disposition: attachment` with a filename derived from
+// the ticket and every browser saves the document instead of deciding, from the media
+// type alone, whether to render it in a viewer. A link whose delivery a browser chooses
+// is a link a screen cannot honestly call a download.
+//
 // The URL is a credential. It is returned to the caller and never logged, never
 // written into an error and never echoed in a problem detail.
 func (a *Archive) DownloadURL(ctx context.Context, ticketID string) (string, error) {
@@ -223,12 +229,28 @@ func (a *Archive) DownloadURL(ctx context.Context, ticketID string) (string, err
 	if err != nil {
 		return "", err
 	}
-	url, err := a.objects.PresignGet(ctx, key, a.ttl)
+	url, err := a.objects.PresignGet(ctx, key, a.ttl, storage.PresignOptions{
+		ContentDisposition: TicketAttachmentDisposition(ticketID),
+	})
 	if err != nil {
 		// The adapter's error names the key and the reason, never a signed URL.
 		return "", fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return url, nil
+}
+
+// TicketAttachmentDisposition is the Content-Disposition the ticket download declares:
+// an attachment named after the ticket, `attachment; filename="ticket-<ticketID>.pdf"`.
+//
+// The name comes from the ticket, not from the object key, because the key is a path in
+// the bucket (`tickets/{eventID}/{ticketID}.pdf`) and a browser would otherwise save the
+// file under the identifier of the event it happens to live in. The value is a quoted
+// string, so a quote or a backslash inside the identifier is escaped rather than allowed
+// to end the header early; control characters cannot reach here, because the object key
+// carrying the same identifier is refused by the storage boundary when it has one.
+func TicketAttachmentDisposition(ticketID string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(ticketID)
+	return `attachment; filename="ticket-` + escaped + `.pdf"`
 }
 
 // write renders the projection and stores it. It is the one place the archive puts

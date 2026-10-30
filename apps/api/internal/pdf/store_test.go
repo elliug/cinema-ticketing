@@ -53,8 +53,9 @@ type putCall struct {
 }
 
 type presignCall struct {
-	key string
-	ttl time.Duration
+	key         string
+	ttl         time.Duration
+	disposition string
 }
 
 func newFakeObjects() *fakeObjects {
@@ -85,11 +86,11 @@ func (f *fakeObjects) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-func (f *fakeObjects) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
+func (f *fakeObjects) PresignGet(_ context.Context, key string, ttl time.Duration, opts storage.PresignOptions) (string, error) {
 	if f.presignErr != nil {
 		return "", f.presignErr
 	}
-	f.presign = append(f.presign, presignCall{key: key, ttl: ttl})
+	f.presign = append(f.presign, presignCall{key: key, ttl: ttl, disposition: opts.ContentDisposition})
 	return f.presigned, nil
 }
 
@@ -368,6 +369,76 @@ func TestDownloadURLAnswersAShortLivedSignedURL(t *testing.T) {
 	}
 }
 
+// TestDownloadURLDeclaresThePDFAsAnAttachment pins what the download *declares*, not
+// what a browser happens to do with it: the URL is signed with an attachment and a
+// filename derived from the ticket, so a browser with a PDF viewer downloads the
+// document instead of rendering it, and both surfaces can honestly call the link a
+// download.
+func TestDownloadURLDeclaresThePDFAsAnAttachment(t *testing.T) {
+	archive, objects, _ := archiveFixture(t, time.Minute)
+	detail := fixtureDetail()
+
+	if _, err := archive.DownloadURL(t.Context(), detail.TicketID); err != nil {
+		t.Fatalf("DownloadURL returned error: %v", err)
+	}
+	if len(objects.presign) != 1 {
+		t.Fatalf("DownloadURL signed %d URLs, want one", len(objects.presign))
+	}
+	want := `attachment; filename="ticket-` + detail.TicketID + `.pdf"`
+	if got := objects.presign[0].disposition; got != want {
+		t.Fatalf("the signed Content-Disposition = %q, want %q", got, want)
+	}
+	// The declaration is one the boundary will sign: a value it would refuse would make
+	// every download a 503 instead of a document.
+	if err := storage.ValidateContentDisposition(objects.presign[0].disposition); err != nil {
+		t.Fatalf("the declared Content-Disposition is not signable: %v", err)
+	}
+}
+
+// TestDownloadURLKeepsTheDeclarationIntactForAnyIdentifier pins that the filename is
+// quoted rather than concatenated: an identifier carrying a quote cannot end the quoted
+// filename early. A backslash cannot reach the signature at all — the object key carries
+// the same identifier and the storage boundary refuses it — so this is the one character
+// that has to be escaped here.
+func TestDownloadURLKeepsTheDeclarationIntactForAnyIdentifier(t *testing.T) {
+	cases := []struct {
+		name     string
+		ticketID string
+		want     string
+	}{
+		{
+			name:     "a plain identifier is used as it is",
+			ticketID: "0d1f",
+			want:     `attachment; filename="ticket-0d1f.pdf"`,
+		},
+		{
+			name:     "a quote cannot end the quoted filename",
+			ticketID: `0d"1f`,
+			want:     `attachment; filename="ticket-0d\"1f.pdf"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			archive, objects, _ := archiveFixture(t, time.Minute)
+			// The projection reader answers the identifier it was asked for, so the
+			// archive signs a URL for exactly the value under test.
+			if _, err := archive.DownloadURL(t.Context(), tc.ticketID); err != nil {
+				t.Fatalf("DownloadURL returned error: %v", err)
+			}
+			if len(objects.presign) != 1 {
+				t.Fatalf("DownloadURL signed %d URLs, want one", len(objects.presign))
+			}
+			if got := objects.presign[0].disposition; got != tc.want {
+				t.Fatalf("the signed Content-Disposition = %q, want %q", got, tc.want)
+			}
+			if err := storage.ValidateContentDisposition(objects.presign[0].disposition); err != nil {
+				t.Fatalf("the declared Content-Disposition is not signable: %v", err)
+			}
+		})
+	}
+}
+
 // TestDownloadURLDoesNotRewriteAnExistingArtefact pins immutability through the
 // serving path: a download of an artefact that is already stored signs a URL and
 // writes nothing.
@@ -607,6 +678,12 @@ func TestArchiveRoundTripAgainstFloci(t *testing.T) {
 	if contentType := response.Header.Get("Content-Type"); !strings.Contains(contentType, "pdf") {
 		t.Fatalf("pre-signed download content type = %q, want a PDF", contentType)
 	}
+	// The download declares itself an attachment, so a browser with a PDF viewer saves
+	// the ticket instead of rendering it, and the saved file is named after the ticket.
+	wantDisposition := `attachment; filename="ticket-` + detail.TicketID + `.pdf"`
+	if disposition := response.Header.Get("Content-Disposition"); disposition != wantDisposition {
+		t.Fatalf("pre-signed download Content-Disposition = %q, want %q", disposition, wantDisposition)
+	}
 	downloaded, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read the pre-signed download: %v", err)
@@ -617,7 +694,7 @@ func TestArchiveRoundTripAgainstFloci(t *testing.T) {
 	if text := visibleText(t, downloaded); !strings.Contains(text, detail.Event.FilmTitle) {
 		t.Fatalf("the downloaded document does not print the film %q\nprinted text:\n%s", detail.Event.FilmTitle, text)
 	}
-	t.Logf("pre-signed download returned 200 with %d identical PDF bytes", len(downloaded))
+	t.Logf("pre-signed download returned 200 with %d identical PDF bytes and Content-Disposition %q", len(downloaded), wantDisposition)
 
 	// Immutability against the real bucket: a projection that has moved on since must not
 	// rewrite the artefact it already stored.

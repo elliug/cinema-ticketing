@@ -206,7 +206,7 @@ func TestUnconfiguredStoreFailsClosed(t *testing.T) {
 			} else if data != nil {
 				t.Errorf("Get data = %q, want nil", data)
 			}
-			if url, err := store.PresignGet(ctx, "m3/ticket.pdf", time.Minute); !errors.Is(err, storage.ErrNotConfigured) {
+			if url, err := store.PresignGet(ctx, "m3/ticket.pdf", time.Minute, storage.PresignOptions{}); !errors.Is(err, storage.ErrNotConfigured) {
 				t.Errorf("PresignGet error = %v, want ErrNotConfigured", err)
 			} else if url != "" {
 				t.Errorf("PresignGet url = %q, want empty", url)
@@ -239,8 +239,13 @@ func TestInvalidInputIsRejectedBeforeAnyRequest(t *testing.T) {
 	if _, err := store.Get(ctx, ""); !errors.Is(err, storage.ErrInvalidKey) {
 		t.Fatalf("Get error = %v, want ErrInvalidKey", err)
 	}
-	if _, err := store.PresignGet(ctx, "../escape.pdf", time.Minute); !errors.Is(err, storage.ErrInvalidKey) {
+	if _, err := store.PresignGet(ctx, "../escape.pdf", time.Minute, storage.PresignOptions{}); !errors.Is(err, storage.ErrInvalidKey) {
 		t.Fatalf("PresignGet error = %v, want ErrInvalidKey", err)
+	}
+	// A declaration the store would not honour is refused here, before anything is
+	// signed: a URL carrying half a header is worse than a URL carrying none.
+	if _, err := store.PresignGet(ctx, "m3/ticket.pdf", time.Minute, storage.PresignOptions{ContentDisposition: "double click"}); !errors.Is(err, storage.ErrInvalidContentDisposition) {
+		t.Fatalf("PresignGet error = %v, want ErrInvalidContentDisposition", err)
 	}
 	if _, err := store.Exists(ctx, "../escape.pdf"); !errors.Is(err, storage.ErrInvalidKey) {
 		t.Fatalf("Exists error = %v, want ErrInvalidKey", err)
@@ -285,6 +290,93 @@ func TestPresignTTLIsBounded(t *testing.T) {
 				t.Fatalf("ValidatePresignTTL(%v) = %v, want nil", tc.ttl, err)
 			}
 		})
+	}
+}
+
+// TestValidateContentDisposition pins the declaration a pre-signed URL may carry: the
+// two disposition types a browser understands, and nothing that would end the header
+// early or split it in two.
+func TestValidateContentDisposition(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"the ticket attachment is accepted", `attachment; filename="ticket-0d1f.pdf"`, false},
+		{"attachment alone is accepted", "attachment", false},
+		{"inline is accepted", "inline", false},
+		{"inline with a filename is accepted", `inline; filename="ticket-0d1f.pdf"`, false},
+		{"case does not matter to a header", `Attachment; filename="ticket-0d1f.pdf"`, false},
+		{"an empty declaration is refused", "", true},
+		{"whitespace is refused", "   ", true},
+		{"a type a browser does not know is refused", "download", true},
+		{"a split header is refused", "attachment\r\nX-Injected: 1", true},
+		{"a control character is refused", "attachment; filename=\"ticket-\x00.pdf\"", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := storage.ValidateContentDisposition(tc.value)
+			if tc.wantErr {
+				if !errors.Is(err, storage.ErrInvalidContentDisposition) {
+					t.Fatalf("ValidateContentDisposition(%q) = %v, want ErrInvalidContentDisposition", tc.value, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateContentDisposition(%q) = %v, want nil", tc.value, err)
+			}
+		})
+	}
+}
+
+// TestPresignGetSignsTheDeclaredContentDisposition pins the one thing the ticket PDF
+// route needs from the boundary: a way to *declare* how the download is meant to be
+// handled, signed into the URL so the object store answers it instead of leaving the
+// decision to whichever browser follows the link. No bucket is needed — a pre-signed
+// URL is computed locally, never requested — which is why this lives in the unit suite
+// and the header it produces is proven by the gated round trip below.
+func TestPresignGetSignsTheDeclaredContentDisposition(t *testing.T) {
+	store, err := storage.NewS3(validConfig())
+	if err != nil {
+		t.Fatalf("NewS3 returned error: %v", err)
+	}
+	ctx := context.Background()
+	const (
+		key      = "tickets/9f3c/0d1f.pdf"
+		declared = `attachment; filename="ticket-0d1f.pdf"`
+	)
+
+	signed, err := store.PresignGet(ctx, key, time.Minute, storage.PresignOptions{ContentDisposition: declared})
+	if err != nil {
+		t.Fatalf("PresignGet returned error: %v", err)
+	}
+	parsed, err := url.Parse(signed)
+	if err != nil {
+		t.Fatalf("the pre-signed URL does not parse: %v", err)
+	}
+	if got := parsed.Query().Get("response-content-disposition"); got != declared {
+		t.Fatalf("response-content-disposition = %q, want %q", got, declared)
+	}
+	if parsed.Query().Get("X-Amz-Signature") == "" {
+		t.Fatal("the declared download carries no signature, so any reader could rewrite it")
+	}
+	if got := parsed.Query().Get("X-Amz-Expires"); got != "60" {
+		t.Fatalf("X-Amz-Expires = %q, want 60", got)
+	}
+
+	// Nothing is declared when the caller declares nothing: this is the behaviour every
+	// other caller of the boundary keeps.
+	plain, err := store.PresignGet(ctx, key, time.Minute, storage.PresignOptions{})
+	if err != nil {
+		t.Fatalf("PresignGet returned error: %v", err)
+	}
+	plainParsed, err := url.Parse(plain)
+	if err != nil {
+		t.Fatalf("the pre-signed URL does not parse: %v", err)
+	}
+	if plainParsed.Query().Has("response-content-disposition") {
+		t.Fatalf("the URL declares %q without being asked to", plainParsed.Query().Get("response-content-disposition"))
 	}
 }
 
@@ -468,7 +560,8 @@ func TestS3RoundTripAgainstFloci(t *testing.T) {
 	// A two second lifetime is long enough for the first download and short
 	// enough to watch it stop working.
 	const ttl = 2 * time.Second
-	presigned, err := store.PresignGet(ctx, testObjectKey, ttl)
+	const declared = `attachment; filename="ticket-selftest.pdf"`
+	presigned, err := store.PresignGet(ctx, testObjectKey, ttl, storage.PresignOptions{ContentDisposition: declared})
 	if err != nil {
 		t.Fatalf("PresignGet(%q) returned error: %v", testObjectKey, err)
 	}
@@ -488,33 +581,42 @@ func TestS3RoundTripAgainstFloci(t *testing.T) {
 	if parsed.Query().Get("X-Amz-Signature") == "" {
 		t.Fatal("pre-signed URL carries no X-Amz-Signature")
 	}
+	if got := parsed.Query().Get("response-content-disposition"); got != declared {
+		t.Fatalf("response-content-disposition = %q, want %q", got, declared)
+	}
 	t.Logf("presigned %s%s with a %s lifetime", parsed.Scheme+"://"+parsed.Host, parsed.Path, ttl)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	issuedAt := time.Now()
-	status, body := download(t, client, presigned)
+	status, headers, body := fetch(t, client, presigned)
 	if status != http.StatusOK {
 		t.Fatalf("pre-signed download status = %d, want 200 (body: %s)", status, tail(body))
 	}
 	if !bytes.Equal(body, payload) {
 		t.Fatalf("pre-signed download returned %d bytes that differ from the %d stored bytes", len(body), len(payload))
 	}
-	t.Logf("pre-signed download returned 200 with %d identical bytes", len(body))
+	// The store answered the declaration that was signed into the URL: this is the
+	// behaviour the browser depends on, and a fake cannot prove it.
+	if got := headers.Get("Content-Disposition"); got != declared {
+		t.Fatalf("the download answered Content-Disposition %q, want %q", got, declared)
+	}
+	t.Logf("pre-signed download returned 200 with %d identical bytes and Content-Disposition %q", len(body), declared)
 
 	// Wait out the lifetime; a pre-signed URL must stop working on its own.
 	deadline := issuedAt.Add(ttl + time.Second)
 	if wait := time.Until(deadline); wait > 0 {
 		time.Sleep(wait)
 	}
-	status, body = download(t, client, presigned)
+	status, _, body = fetch(t, client, presigned)
 	if status == http.StatusOK {
 		t.Fatalf("pre-signed download still returned 200 after its %s lifetime: %s", ttl, tail(body))
 	}
 	t.Logf("pre-signed download returned %d after the lifetime elapsed (body: %s)", status, tail(body))
 }
 
-// download performs one plain HTTP GET and returns the status and the body.
-func download(t *testing.T, client *http.Client, url string) (int, []byte) {
+// fetch performs one plain HTTP GET and returns the status, the headers the store
+// answered with and the body.
+func fetch(t *testing.T, client *http.Client, url string) (int, http.Header, []byte) {
 	t.Helper()
 	resp, err := client.Get(url)
 	if err != nil {
@@ -525,7 +627,7 @@ func download(t *testing.T, client *http.Client, url string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("read the pre-signed download: %v", err)
 	}
-	return resp.StatusCode, body
+	return resp.StatusCode, resp.Header, body
 }
 
 // tail keeps a failure message readable for a large body.

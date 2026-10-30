@@ -173,8 +173,9 @@ export async function expectOneH1(page: Page): Promise<void> {
  * The primary navigation marks this entry as the current page.
  *
  * `SITE_NAV` claims a current entry for the catalogue and for "My tickets", and for the
- * administration entry on the screen it links to. The gate asserts it exactly where the
- * navigation claims it; a page the navigation does not claim is not asserted to.
+ * administration on every screen of its section: that entry declares the `/admin` prefix
+ * as well as the venue href it links to. The gate asserts it exactly where the navigation
+ * claims it; a page the navigation does not claim is not asserted to.
  */
 export async function expectActiveNav(page: Page, label: string): Promise<void> {
   const primary = page.getByRole("navigation", { name: "Primary" });

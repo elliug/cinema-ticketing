@@ -49,6 +49,7 @@ import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/
 import { Skeleton } from "@/components/ui/skeleton";
 import type { KeptTicketRow, KeptTickets, TicketCheck, ValidityView } from "@/lib/issued-tickets";
 import {
+  TICKET_PDF_LINK_LABEL,
   describeKeptTicket,
   describeTicketValidity,
   forgetIssuedTicket,
@@ -189,10 +190,12 @@ export function TicketView({ ticket, checked, qrImageUrl, pdfUrl }: TicketViewPr
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           {/* A plain anchor, not a JS download: the browser follows the API's
-              short-lived redirect and this page never handles the bytes. */}
+              short-lived redirect, and the URL it lands on declares
+              `Content-Disposition: attachment`, so the file is saved rather than
+              rendered. The words are the exported sentence both surfaces print. */}
           <Button asChild variant="outline" className="self-start">
             <a href={pdfUrl} rel="noreferrer">
-              Open the ticket PDF
+              {TICKET_PDF_LINK_LABEL}
             </a>
           </Button>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">

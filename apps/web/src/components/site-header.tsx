@@ -21,7 +21,8 @@
 //
 //   - the header is a `header` element with a `nav` landmark named "Primary";
 //   - the active link carries `aria-current="page"` and a solid underline, so the
-//     current page is visible and announced;
+//     current page is visible and announced — and a section entry (the administration)
+//     is current on every page of its section, not only on the one it links to;
 //   - a route this milestone has not built is plain text with a "not built yet"
 //     badge, never a link that 404s (S8);
 //   - the switcher's `select` is named by a visible label that includes the active
@@ -54,24 +55,57 @@ export interface SiteNavItem {
    * a "not built yet" badge rather than a link to a 404 (S8).
    */
   href: string | null;
+  /**
+   * The section prefix that makes this entry current, when it is wider than its href.
+   *
+   * An entry links to one *screen*, but a section of the product is several screens. The
+   * administration links to its venue screen and is the administration on the venue, the
+   * schedule and the layouts screens alike; without this field those two pages carry no
+   * current entry at all, which the browser gate found. Only the entry that owns a wide
+   * section declares one: a prefix on every entry would mark several entries current at
+   * once, which is worse than marking none.
+   */
+  prefix?: string;
 }
 
 /** The primary navigation, in the order the product presents itself. */
 export const SITE_NAV: readonly SiteNavItem[] = [
   { label: "Now showing", href: "/events" },
   { label: "My tickets", href: "/tickets" },
-  { label: "Administration", href: "/admin/venues" },
+  { label: "Administration", href: "/admin/venues", prefix: "/admin" },
 ];
 
 /** What a navigation entry that has no screen yet says instead of linking. */
 export const SITE_NAV_PENDING_LABEL = "not built yet";
 
-/** Whether this path is the entry's page (or one of its children). */
-function isCurrentPage(pathname: string, href: string): boolean {
-  if (href === "/") {
+/**
+ * Whether this path is the entry's page (or one of its children).
+ *
+ * `base` is a path, so a page below it is one of its children and a path that merely
+ * starts with the same letters (`/administrator` against `/admin`) is not.
+ */
+function isCurrentPath(pathname: string, base: string): boolean {
+  if (base === "/") {
     return pathname === "/";
   }
-  return pathname === href || pathname.startsWith(`${href}/`);
+  return pathname === base || pathname.startsWith(`${base}/`);
+}
+
+/**
+ * Whether the navigation marks this entry as the page the visitor is on.
+ *
+ * The entry's own href decides, and — only for an entry that declares one — its wider
+ * section prefix, from the same rule. Exported because the rule is the whole behaviour of
+ * `aria-current` and the only part of the header a test could reason about.
+ */
+export function isCurrentEntry(pathname: string, item: SiteNavItem): boolean {
+  if (item.href === null) {
+    return false;
+  }
+  return (
+    isCurrentPath(pathname, item.href) ||
+    (item.prefix !== undefined && isCurrentPath(pathname, item.prefix))
+  );
 }
 
 export function SiteHeader() {
@@ -101,7 +135,7 @@ export function SiteHeader() {
                     className="site-nav__link"
                     href={item.href}
                     aria-current={
-                      isCurrentPage(pathname, item.href) ? "page" : undefined
+                      isCurrentEntry(pathname, item) ? "page" : undefined
                     }
                   >
                     {item.label}

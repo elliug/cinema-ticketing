@@ -81,7 +81,7 @@ test.describe("purchase", () => {
     ).toBe(true);
 
     // The PDF: a real download, named after the ticket, with a real document inside.
-    const pdfLink = page.getByRole("link", { name: "Open the ticket PDF" });
+    const pdfLink = page.getByRole("link", { name: "Download the ticket PDF" });
     const [download] = await Promise.all([
       page.waitForEvent("download"),
       pdfLink.click(),
@@ -95,6 +95,33 @@ test.describe("purchase", () => {
     expect(downloaded.size, "the downloaded document is not empty").toBeGreaterThan(1000);
     const bytes = await readFile(path as string);
     expect(bytes.subarray(0, 5).toString("latin1"), "the document header").toBe("%PDF-");
+
+    // The attachment is *declared*, not decided by the browser. Chromium downloads the
+    // document whether or not the route says so — a headless browser has no PDF viewer —
+    // so the download event above cannot tell a declared attachment from one the browser
+    // chose on its own. Following the same route with an HTTP request and reading what
+    // the object store answered is what proves the link's own words: `Content-Disposition:
+    // attachment`, with the file named after the ticket.
+    const delivered = await page.request.get(
+      `${API_BASE_URL}/api/v1/tickets/${ticketId}/pdf`,
+    );
+    expect(delivered.status(), "the PDF route, followed to the object store").toBe(200);
+    const headers = delivered.headers();
+    expect(headers["content-type"], "the delivered media type").toContain(
+      "application/pdf",
+    );
+    const disposition = headers["content-disposition"] ?? "";
+    expect(disposition, "the delivered disposition declares an attachment").toContain(
+      "attachment",
+    );
+    expect(
+      disposition,
+      "the delivered filename is the ticket's own",
+    ).toContain(`filename="ticket-${ticketId}.pdf"`);
+    expect(
+      (await delivered.body()).subarray(0, 5).toString("latin1"),
+      "the declared download delivered the document itself",
+    ).toBe("%PDF-");
 
     await expectOneH1(page);
     expectNoProblems(problems);
