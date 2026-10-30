@@ -345,3 +345,49 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   4.27 kB, and a real render of the three screens against a stub API — one `h1` per screen, no
   legacy class in the markup, and a passed-but-`on_sale` screening labelled *Start passed*. Not
   covered: the click path in a browser, which is T9's gate.
+- L16 — T9 built the browser gate, and the milestone's exit criterion is a real browser rather than
+  a promise. **One stack, one browser, seven scenarios.** `make verify-m35` starts the three compose
+  services, creates `cinema_m35_verify_<pid>`, migrates it with the project's own runner to 0006,
+  seeds it with `bootstrap seed-dev`, ensures its own bucket, builds the web application **once** and
+  serves that build (never `next dev`, so the gate and a developer's server cannot collide over
+  `.next`), starts the API on a free port with `API_ENV=development`, `API_LOCAL_ADMIN=true` and a
+  run-scoped token, starts the web against it on another free port, and drives Chromium. Every phase
+  says what it waits for instead of sleeping, the database name is refused unless it is
+  `cinema_m35_verify_<pid>`, and the trap stops both processes, drops the database, flushes the run's
+  own Redis logical database and empties then deletes its bucket on every exit path; a failing run
+  copies Playwright's trace and screenshot outside the repository. Chromium is the only browser (S7).
+  **What the browser proved.** The administration creates a film, schedules it in the seeded room
+  against the room's published layout version (both chosen from selects), sets `12.50` and
+  `on_sale`; a submit that changes nothing is refused locally with `nothing to change: provide
+  priceCents or status`, `12.505` is refused with `priceCents: must have at most two decimal places`
+  and marks that input `aria-invalid`, and neither refusal changes the served price or status. The
+  catalogue then answers `200` and prints the screening at `2031-05-04T20:30:00+02:00` — the venue's
+  hour for the `18:30` UTC the form was given — and `12.50`. The purchase is keyboard-only from the
+  seat map on: Tab reaches the roving seat, Space takes A1, Right and Space take A2, the hold and the
+  payment are sent with Enter, the Pay button's focus ring is asserted visible before the press, and
+  the order carries `2 seats: Row A seat 1, Row A seat 2` for `25.00`. The ticket says "This ticket
+  is valid", its entry code is the API's own `/api/v1/tickets/{id}/qr.svg` fetched by the browser
+  (200, `image/svg+xml`, decoded), and its PDF link produces a `download` event whose suggested
+  filename ends in `.pdf` and whose bytes start with `%PDF-`. The list keeps what the tab opened
+  across a reload; a record the box office does not know is one forgettable row and forgetting the
+  last one returns the screen to "This tab has kept no ticket"; a new context says it kept nothing; a
+  context whose `sessionStorage` throws says "This browser will not show what it kept" and never
+  draws an empty list; `/tickets/<random uuid>` says "The box office does not know this ticket";
+  every screen renders exactly one `h1`; and no console error, page exception or hydration warning
+  appeared in any scenario. Evidence: 7 tests green in 9.7s against the throwaway stack (run twice,
+  once by the writer and once by the orchestrator), `pnpm check` green with 312 tests,
+  `go test ./apps/api/...` unchanged and `make verify-m3` still green.
+  **Two findings the earlier verification could not produce, both recorded rather than fixed here.**
+  (1) The PDF route answers a `302` to a pre-signed object stored as `application/pdf` with no
+  `Content-Disposition`, so whether a click downloads or renders is the browser's decision: headless
+  Chromium downloads it, and the ticket screen's "Open the ticket PDF" is the wording that matches —
+  while the checkout panel's "Download the PDF" promises an attachment the route never declares.
+  (2) The primary navigation marks `aria-current="page"` on `/events`, `/tickets` and `/admin/venues`
+  only, because the "Administration" entry links to `/admin/venues`, so `/admin/schedule` and
+  `/admin/layouts` carry no current entry. The gate asserts the attribute where the navigation
+  claims it and no application code was changed for either finding. The gate's own closing line says
+  what it cannot prove: nothing about Firefox or WebKit, no real payment provider or storage
+  credentials, no accessibility audit beyond the keyboard path, the focus ring, the heading count and
+  `aria-current`, and no mobile viewport beyond the rules the seat map applies. CI: the `m35-browser`
+  job installs `--with-deps chromium`, bootstraps the stack and runs `make verify-m35` as its own
+  job, like `m3-checkout`.
