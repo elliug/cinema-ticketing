@@ -37,6 +37,24 @@ trap cleanup EXIT INT TERM
 
 cd "$root"
 
+# The expected chain is derived from the migration directory, never from a literal
+# list: every NNNN_name.up.sql the runner can see has to be recorded in
+# platform.schema_migrations, otherwise the chain and the database disagree. A new
+# migration therefore cannot leave this test asserting yesterday's chain.
+#
+# The glob sorts by filename, which is version order because the numeric prefix is
+# zero-padded, and it is the same order scripts/migrations/apply_all.sh applies.
+expected_versions=""
+expected_count=0
+for file in db/migrations/*.up.sql; do
+  [ -e "$file" ] || fail "no *.up.sql migration found in db/migrations"
+  name="$(basename "$file" .up.sql)"
+  expected_versions="${expected_versions:+$expected_versions,}$name"
+  expected_count=$((expected_count + 1))
+done
+[ "$expected_count" -gt 0 ] || fail "the expected migration chain is empty"
+log "expected migration chain: $expected_versions ($expected_count versions)"
+
 # apply_all runs inside the postgres image, where psql and the migration files
 # mounted read-only are available; DB_NAME points it at the throwaway database.
 apply_all() { $compose --profile tools run --rm -e DB_NAME="$db" migrate-all; }
@@ -58,10 +76,9 @@ log "first run: applying the whole chain to an empty database"
 first="$(apply_all 2>&1)" || { printf '%s\n' "$first"; fail "the first run failed"; }
 printf '%s\n' "$first"
 
-expected='0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
-[ "$(versions)" = "$expected" ] || fail "expected versions $expected, got $(versions)"
-[ "$(record_count)" = 4 ] || fail "expected 4 recorded migrations, got $(record_count)"
-case "$first" in *"applied 4 migration(s), 4 recorded"*) ;; *) fail "the first run did not report 4 applied migrations" ;; esac
+[ "$(versions)" = "$expected_versions" ] || fail "expected versions $expected_versions, got $(versions)"
+[ "$(record_count)" = "$expected_count" ] || fail "expected $expected_count recorded migrations, got $(record_count)"
+case "$first" in *"applied $expected_count migration(s), $expected_count recorded"*) ;; *) fail "the first run did not report $expected_count applied migrations" ;; esac
 
 before_versions="$(versions)"
 before_records="$(record_count)"
@@ -71,10 +88,10 @@ log "second run: nothing is missing, so nothing is applied"
 second="$(apply_all 2>&1)" || { printf '%s\n' "$second"; fail "the second run failed"; }
 printf '%s\n' "$second"
 
-case "$second" in *"applied 0 migration(s), 4 recorded"*) ;; *) fail "the second run did not report 0 applied migrations" ;; esac
+case "$second" in *"applied 0 migration(s), $expected_count recorded"*) ;; *) fail "the second run did not report 0 applied migrations" ;; esac
 [ "$(versions)" = "$before_versions" ] || fail "the second run changed the recorded versions"
 [ "$(record_count)" = "$before_records" ] || fail "the second run changed the record count"
 [ "$(applied_at)" = "$before_applied_at" ] \
   || fail "the second run rewrote a recorded migration, so it ran one again"
 
-log "migrate-all applied $before_records migrations once and changed nothing on the second run"
+log "migrate-all applied $before_records migrations once and changed nothing on the second run, so a database already at $expected_versions stays a no-op"

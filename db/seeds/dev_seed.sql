@@ -17,14 +17,21 @@
 --
 -- The file is development-only. `make seed-dev` refuses to run unless
 -- API_ENV=development is explicitly set, and the guard below repeats that rule so
--- applying the file with psql directly cannot seed a database by accident. There
--- is deliberately no price here: the per-event price column arrives with the
--- checkout schema (T2) and is not invented before it exists.
+-- applying the file with psql directly cannot seed a database by accident.
+--
+-- Prices arrive with the checkout schema (T2) and are repaired on every run: see
+-- the price statements at the end of the file.
+--
+-- The whole file runs in one transaction, so a seed that fails part-way (for
+-- example against a database whose migrations have not reached 0005_checkout)
+-- leaves nothing behind instead of half of the demo data.
 
 \if :{?api_env}
 \else
   \set api_env ''
 \endif
+
+BEGIN;
 
 SET cinema.seed_env = :'api_env';
 
@@ -102,3 +109,26 @@ VALUES
    'c0000000-0000-4000-8000-000000000032', 'c0000000-0000-4000-8000-000000000003',
    timestamptz '2030-01-15 21:30:00+01', 'on_sale')
 ON CONFLICT DO NOTHING;
+
+-- The simulated provider declines an amount whose two last minor units are 13, so
+-- the prices are chosen to keep every order payable. Each session has four seats,
+-- and the amount is price x seats, so the reachable amounts are:
+--
+--   12.50 EUR: 1250, 2500, 3750, 5000  (ends in 50 or 00)
+--   11.50 EUR: 1150, 2300, 3450, 4600  (ends in 50 or 00)
+--
+-- No seat count of these two events can produce a ...13 amount, so the demo can
+-- always complete a checkout.
+UPDATE cinema.events SET price_cents = prices.price_cents
+FROM (VALUES
+  ('c0000000-0000-4000-8000-000000000041'::uuid, 1250),
+  ('c0000000-0000-4000-8000-000000000042'::uuid, 1150)
+) AS prices(id, price_cents)
+WHERE cinema.events.id = prices.id
+  -- ON CONFLICT DO NOTHING above never rewrites an existing row, so the price of an
+  -- event seeded before this column existed (or before a price change) has to be
+  -- repaired here. Skipping rows that already match keeps a second run a true
+  -- no-op instead of a no-change update.
+  AND cinema.events.price_cents IS DISTINCT FROM prices.price_cents;
+
+COMMIT;

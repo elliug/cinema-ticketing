@@ -1,6 +1,6 @@
 # Database foundation
 
-M0 establishes the `platform` PostgreSQL schema and migration metadata. The M1 migration adds preliminary cinema, room, layout, film, event, and event-seat tables. The M2 migrations add durable reservation holds with per-seat exclusivity and expiry, plus durable idempotency records for hold creation.
+M0 establishes the `platform` PostgreSQL schema and migration metadata. The M1 migration adds preliminary cinema, room, layout, film, event, and event-seat tables. The M2 migrations add durable reservation holds with per-seat exclusivity and expiry, plus durable idempotency records for hold creation. The M3 `0005_checkout` migration adds the price per event, the durable payment attempt, the sold ticket and the transactional outbox.
 
 ## Migration files
 
@@ -10,8 +10,9 @@ Every `NNNN_name.up.sql` file has a matching `NNNN_name.down.sql` file. Apply mi
 - `0002_venue_layout` creates the `cinema` schema and depends on `0001_init`.
 - `0003_reservation` adds the reservation hold tables and depends on `0002_venue_layout`.
 - `0004_idempotency` adds the idempotency records for hold creation and depends on `0003_reservation`, because a record references the hold it produced.
+- `0005_checkout` adds `cinema.events.price_cents`, `cinema.payment_attempts`, `cinema.tickets` and `cinema.outbox`, and depends on `0003_reservation` for the reservation a payment and a ticket belong to.
 
-Rollback of `0002_venue_layout` removes **all M1 data** in that schema. Do not run it on a database containing data you need to keep. Rollback of `0003_reservation` removes only the M2 hold objects and keeps every M1 table and row. Rollback of `0004_idempotency` removes only the idempotency records, so roll it back *before* `0003_reservation`; the record's foreign key to `cinema.reservations` otherwise blocks that drop.
+Rollback of `0002_venue_layout` removes **all M1 data** in that schema. Do not run it on a database containing data you need to keep. Rollback of `0003_reservation` removes only the M2 hold objects and keeps every M1 table and row. Rollback of `0004_idempotency` removes only the idempotency records, so roll it back *before* `0003_reservation`; the record's foreign key to `cinema.reservations` otherwise blocks that drop. Rollback of `0005_checkout` removes the whole checkout schema — the `cinema.tickets` and `cinema.payment_attempts` tables, `cinema.outbox`, the event price column — and restores the narrower 0003 reservation status constraint, while keeping every M0, M1, M2 and 0004 object. It refuses to run at all while a reservation is `paid` or a payment attempt is `captured`, because dropping those rows would delete the record of money already taken, and it has to run *before* `0003_reservation`, which its foreign keys otherwise block.
 
 ## Reservation holds (M2)
 
@@ -124,6 +125,47 @@ Why this is safe and restart-safe:
 - **`cancelled` is never touched**, because only `held` and `payment_pending` rows are selected and the status is re-checked in the update.
 - **The deadline is a parameter**, so the sweep compares against the value the caller passes instead of `now()`. That is what makes the expiry behaviour reproducible in tests. The caller therefore owes the sweep a deadline taken from the database clock: passing a value ahead of it would expire live holds early and write a future-dated `released_at`.
 
+## Checkout: price, payment attempts, tickets and outbox (M3)
+
+The reservation is the order, so there is no separate orders table: the row that holds the seats is also the row that is paid, and its seats become tickets. `0005_checkout` adds four things.
+
+- `cinema.events.price_cents` — v1 sells **one price per event**, stored in minor units as `integer NOT NULL DEFAULT 0 CHECK (price_cents >= 0)`. The order amount is `price_cents × seats`. A zero price is storable because a free event is a product question, not a schema one: the checkout (the simulated provider needs a positive amount) decides whether zero can be sold.
+- `cinema.payment_attempts` — the durable replay record of one payment attempt: `reservation_id` (foreign key to `cinema.reservations`), `provider`, `provider_reference`, `amount_cents` (`> 0`), `outcome` (`approved`, `declined`), `status` (`pending`, `captured`, `declined`, `failed`), the client `idempotency_key` and `request_fingerprint`, plus `created_at` and `updated_at`.
+- `cinema.tickets` — one row per sold seat: `reservation_id`, `event_id`, `event_seat_id` (foreign key to `cinema.event_seats`), `status` (`issued`, `void`) and `issued_at`. Redeeming a ticket (`used`) is an M4 cashier decision, not part of v1.
+- `cinema.outbox` — `topic`, `payload` (`jsonb`), `created_at` and nullable `published_at`, written in the checkout transaction and published afterwards by a relay.
+
+**The reservation status gains `paid`.** The 0003 constraint only described the hold lifecycle, so `0005_checkout` replaces `reservations_status_check` under the same name with `held`, `payment_pending`, `paid`, `expired`, `cancelled`. `paid` is what the capture transaction writes, and it is deliberately outside the M2 sweep's candidate set (`status IN ('held','payment_pending')` in `apps/api/internal/reservation/expiry.go`), so **a reservation whose payment was captured can never be expired and have its seats released**. The rollback restores the narrower 0003 constraint, which is why it requires that no reservation is left `paid`.
+
+**A payment attempt can exist before the provider answers.** `provider_reference` and `outcome` are nullable, because the row is inserted before the call: that pre-call row is the crash window the table exists to close. Two constraints make the nullability safe:
+
+- `payment_attempts_decided_check` — a verdict always comes with the provider object that produced it, and a `captured` or `declined` attempt must carry **both** a `provider_reference` and an `outcome`. `pending` and `failed` rows may carry nothing, which is the state of a call that has not answered yet.
+- `payment_attempts_status_outcome_check` — the stored state and the verdict cannot disagree: `captured` carries `approved`, `declined` carries `declined`, and a `pending` row carries no verdict requirement.
+
+Three guards make the impossible cases impossible, and each one is a database constraint rather than a service check, because two concurrent checkouts must be decided by one of them losing:
+
+1. **A reservation is paid at most once.** The partial unique index `payment_attempts_captured_per_reservation` on `(reservation_id) WHERE status = 'captured'` allows one captured attempt per reservation. Declined and failed attempts are history, not payments, so they are outside the predicate.
+2. **A provider reference is charged once.** The partial unique index `payment_attempts_provider_reference` on `(provider, provider_reference) WHERE provider_reference IS NOT NULL` means a retried provider callback cannot insert the same provider object twice, while two pending rows that have no reference yet do not collide.
+3. **A seat is sold once, in its own event.** `UNIQUE (event_seat_id)` on `cinema.tickets` means one seat can never carry two tickets, and both of the ticket's references carry `event_id` — `(reservation_id, event_id)` to `cinema.reservations` and `(event_seat_id, event_id)` to `cinema.event_seats`, the same composite-key pattern `cinema.reservation_seats` uses — so a ticket can never join a reservation to a seat of **another** event.
+
+The replay key is scoped to its reservation: `UNIQUE (reservation_id, idempotency_key)`, so **T3 must look the attempt up by reservation *and* key** — a key another buyer used can never answer for this reservation, and `request_fingerprint` stored next to it makes a reused key with a different payload detectable instead of silently answered. `tickets_reservation` and `payment_attempts_reservation` are plain indexes for the confirmation read, and `outbox_unpublished` on `(created_at) WHERE published_at IS NULL` is the relay's working set.
+
+**What the checkout transaction relies on.** The attempt is written before the provider is called, then captured in the same transaction that marks the reservation paid, sells the seats, issues one ticket per seat and writes the outbox row. T3 can therefore rely on the database to refuse a second capture, a duplicated provider reference, a duplicate ticket and a ticket of another event, and only has to map the failures: `unique_violation` on the captured index is "already paid" (answer from the stored attempt), on the provider pair it is a duplicate callback, on the per-reservation idempotency key it is a replay (same fingerprint) or a reused key (different fingerprint), and on the ticket seat it is "seat already sold". `check_violation` means an amount that is not positive, a state outside the enumerated values, an incoherent status/outcome pair, or a decided attempt without its reference or verdict. `foreign_key_violation` means an unknown reservation or seat, or a seat of another event. The outbox row is written in the same transaction, so a crashed relay retries delivery and never loses or duplicates the sale; nothing about delivery correctness depends on the relay running.
+
+**What T3 still has to enforce itself**, because the schema cannot:
+
+- **The amount is `price × seats`.** The database only knows the amount is positive; the checkout computes it from the event price and the number of tickets it issues and must not trust a client-supplied amount.
+- **The provider reference is trimmed before it is stored.** The check rejects a blank reference, but normalisation is the adapter's job.
+- **The seats are the ones the reservation holds.** The composite key proves the ticket's reservation and seat are in the same event; it does not prove that this reservation held that seat. T3 must issue tickets from the reservation's own `cinema.reservation_seats`.
+- **Tickets are linked to the capture only by the transaction.** Nothing in the schema ties a ticket row to a captured attempt; atomicity plus "one captured attempt per reservation" is the guarantee, so the ticket and the capture must be written in the same transaction.
+
+**Deliberately not enforced in v1** (explicit follow-ups, not oversights):
+
+- A voided ticket does not free its seat. `status = 'void'` keeps the seat's `UNIQUE` row, so re-selling it needs a policy (and M4 decides it).
+- The outbox has no deduplication key. A relay that publishes and then crashes before marking the row published delivers the notification twice, which consumers must tolerate.
+- There is no currency column: `amount_cents` and `price_cents` are minor units of one currency for v1.
+
+`tests/migrations/m3_checkout.sql` pins every one of these rules: a second captured attempt for one reservation, a duplicated `(provider, provider_reference)`, a second ticket for one event seat, a ticket of another event, a negative price, a non-positive amount, a decided attempt without its reference or verdict, and a captured/declined attempt whose verdict disagrees with its state are all refused and persist nothing; a pending attempt without a reference or an outcome, two such pending attempts, the same idempotency key on two reservations and a ticket for the reservation's own seat are accepted; a `paid` reservation is markable and is never an expiry candidate; and an outbox row is inserted and stays unpublished.
+
 ## Commands
 
 Start PostgreSQL and Redis:
@@ -165,7 +207,16 @@ MIGRATION_VERSION=0004_idempotency MIGRATION_DIRECTION=down docker compose --pro
 MIGRATION_VERSION=0003_reservation MIGRATION_DIRECTION=down docker compose --profile tools run --rm migrate
 ```
 
-Verify the M0, M1 and M2 up/down/up lifecycles and schema assertions against an isolated temporary database:
+To apply or roll back the M3 checkout schema:
+
+```sh
+MIGRATION_VERSION=0005_checkout docker compose --profile tools run --rm migrate
+MIGRATION_VERSION=0005_checkout MIGRATION_DIRECTION=down docker compose --profile tools run --rm migrate
+```
+
+The development seed sets a price for both seeded sessions (`12.50` EUR and `11.50` EUR), chosen so that `price × seats` never ends in the `13` minor units the simulated provider declines, and it repairs the price of an already seeded event on every run.
+
+Verify the M0, M1, M2 and M3 checkout up/down/up lifecycles and schema assertions against an isolated temporary database:
 
 ```sh
 docker compose --profile tools run --rm migration-verify
