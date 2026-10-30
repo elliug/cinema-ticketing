@@ -175,3 +175,34 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   touched. Evidence: handler rules over fakes, a gated SQL suite over a throwaway database
   (migrated 0001–0006 and dropped) where the single read equals the list entry field for field,
   and a real API run whose three responses behave as described.
+- L10 — T5 gave the seat screen the screening it belongs to and a keyboard. The page now reads two
+  things — `GET /api/v1/events/{eventID}`, which answers `status` and `onSale` from the same
+  projection as the catalogue, and the seat map — and renders six states that stay apart: loading;
+  the screening does not exist (404, no retry offered); the screening could not be read (503,
+  network, 5xx: retryable, never an empty page); not on sale (the context is kept and the reason is
+  derived from `status` — cancelled, still a draft, already started, or a status this page does not
+  interpret and prints verbatim); the map could not be read (the same retry state, because on sale
+  with an unreadable map is not an empty room); and the map. A screening that exists but is not on
+  sale is neither a 404 nor a dead seat map, and `availableSeats` decides nothing: it is a count
+  from a different moment, the seat read is the map, and when the two disagree the page prints the
+  map's numbers and says which count it was read with. **Selection is only offered for what the API
+  reports as available**: `sold`, `unavailable` and any state this milestone does not interpret are
+  inert, a live `held` flag beats a state that says available, and a snapshot with no state at all
+  keeps the older flag-only rule. **The map is usable without a mouse**: every seat is a button
+  named after itself ("Row A seat 3, available"), arrows walk rows and seats, Home and End stay
+  inside a row, Space and Enter toggle, one roving `tabIndex` makes the map a single tab stop, and
+  one polite live region announces the count, the running amount and the reason a seat refused a
+  toggle. Each state is words as well as tone — the cell prints its own state word, the border style
+  differs per state, and the legend walks one exported list — so the map survives greyscale. A
+  200-seat room stays navigable through fixed 44px cells in one horizontally scrolling region that
+  is focusable and named, so rows scroll together and no seat shrinks below a touch target at
+  360px. The amount is `priceCents × seats` at the screening's own price and says it is a summary:
+  the order the API creates is what gets paid, and that is T6's. The keyboard, sale-state, failure
+  and money rules are pure functions in `lib/seat-selection.ts` with 39 new tests beside the 40 that
+  were already there, and the single read is a parser rule with 5 client tests: a missing `onSale`
+  or `status` is refused rather than defaulted, so no page ever compares a clock of its own to
+  decide whether a seat can be bought. **The screen left the legacy stylesheet and `globals.css`
+  lost nothing** — every rule it stopped using is still the only styling of the ticket,
+  confirmation or administration screens, the inventory now sits in the file itself, and the
+  preflight stays deferred exactly as L6 recorded. Evidence: `pnpm check` green with 223 tests,
+  clean lint and typecheck, and a build whose seat route is 8.03 kB.
