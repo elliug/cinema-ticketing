@@ -1,21 +1,36 @@
 "use client";
 
-// Hold form: the running total, the countdown and every outcome of an attempt.
+// The selection summary: the running amount, the countdown and every outcome of a hold.
 //
-// Presentation only. The running total, the countdown text and the failure
-// wording all come from lib/seat-selection.ts, so what this component prints is
-// exactly what the tested pure module decided. Two rules are structural:
+// Presentation only. The count, the labels and the amount come from
+// lib/seat-selection.ts (`selectionSummary`, `priceSummary`), and the countdown and the
+// failure wording come from the same module, so what this component prints is exactly
+// what the tested rules decided. Three rules are structural:
 //
-//   - the countdown text and its expired state come from the `countdown` prop,
-//     which the panel derives from the server's `expiresAt`, never from a
-//     client-side guess;
+//   - the amount is a summary, and the sentence that says so travels with it: the order
+//     the API creates is what gets paid, and nothing here may read as a promise about
+//     the charge (S8);
+//   - the countdown text comes from the `countdown` prop, which the panel derives from
+//     the server's `expiresAt`, never from a client-side guess. It is deliberately not
+//     a live region: it changes every second, and a screen reader announcing a clock
+//     would make the page unusable. Only the expiry is announced, once;
 //   - a failure is rendered from its classification: a taken seat asks for new
-//     availability and names the lost seats, an expired window says the window
-//     closed, and a temporary outage invites a retry.
-import type { HoldAttempt, HoldCountdown, SelectionSummary } from "@/lib/seat-selection";
+//     availability and names the lost seats, an expired window says the window closed,
+//     and a temporary outage invites a retry.
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader } from "@/components/ui/card";
+import type {
+  HoldAttempt,
+  HoldCountdown,
+  PriceSummary,
+  SelectionSummary,
+} from "@/lib/seat-selection";
 
 export interface HoldFormProps {
   summary: SelectionSummary;
+  /** The same seats priced at the screening's price per seat. */
+  priced: PriceSummary;
   countdown: HoldCountdown | null;
   attempt: HoldAttempt;
   /** Seats this attempt lost, already named by the pure module. */
@@ -27,6 +42,7 @@ export interface HoldFormProps {
 
 export function HoldForm({
   summary,
+  priced,
   countdown,
   attempt,
   lostLabels,
@@ -38,76 +54,120 @@ export function HoldForm({
   const failure = attempt.failure;
 
   return (
-    <section className="card" aria-labelledby="hold-form">
-      <h2 id="hold-form">Your selection</h2>
+    <Card aria-labelledby="hold-form" className="flex flex-col gap-3 p-5">
+      <CardHeader className="p-0">
+        {/* An `h2`: the page's outline is the film (h1), then the screening, the map,
+            the selection and the way to payment. */}
+        <h2 id="hold-form" className="m-0 text-lg leading-tight font-semibold">
+          Your selection
+        </h2>
+      </CardHeader>
 
-      <p className="meta" aria-live="polite">
-        <strong>{summary.totalLabel}</strong>
-        {summary.labels.length > 0 ? ` · ${summary.labels.join(", ")}` : ""}
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="m-0 text-base font-medium">{summary.totalLabel}</p>
+        {summary.labels.length > 0 ? (
+          <p className="m-0 text-sm text-muted-foreground">
+            {summary.labels.join(", ")}
+          </p>
+        ) : null}
+        <p className="m-0 text-sm">
+          {priced.lineLabel}
+          {priced.count > 0 ? (
+            <strong className="ml-1">{priced.amountLabel}</strong>
+          ) : null}
+        </p>
+        <p className="m-0 max-w-prose text-xs text-muted-foreground">
+          {priced.note}
+        </p>
+        {priced.limitNote === null ? null : (
+          <p className="m-0 max-w-prose text-sm font-medium text-[var(--color-warning-fg)]">
+            {priced.limitNote}
+          </p>
+        )}
+      </div>
 
-      <div className="actions">
-        <button type="button" onClick={onReset} disabled={summary.count === 0}>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onReset}
+          disabled={summary.count === 0}
+        >
           Clear selection
-        </button>
-        <button type="button" onClick={onSubmit} disabled={!canSubmit}>
+        </Button>
+        <Button type="button" onClick={onSubmit} disabled={!canSubmit}>
           {attempt.status === "submitting" ? "Holding seats…" : "Hold these seats"}
-        </button>
+        </Button>
       </div>
 
       {attempt.status === "idle" ? (
-        <p className="notice">
-          Selecting seats does not reserve them. A hold is only yours once the
-          server answers, and it is released automatically when its window ends.
+        <p className="m-0 max-w-prose text-sm text-muted-foreground">
+          Selecting seats does not reserve them. A hold is only yours once the server
+          answers, and it is released automatically when its window ends.
         </p>
       ) : null}
 
-      {countdown !== null ? (
-        <div className="feedback" role="status" aria-live="polite">
-          <p className="meta">Hold window</p>
-          <p>
+      {countdown === null ? null : (
+        <div className="flex flex-col gap-1">
+          <p className="m-0 text-sm text-muted-foreground">Hold window</p>
+          <p className="m-0">
             <strong>{countdown.displayLabel}</strong>
-            {countdown.expired ? "" : ` left of your hold`}
+            {countdown.expired ? "" : " left of your hold"}
           </p>
-          {countdown.notice !== null ? (
-            <p className="notice">{countdown.notice}</p>
-          ) : null}
           {expired ? (
-            <div className="actions">
-              <button type="button" onClick={onReset}>
+            // Mounted only when the window closes, so it is announced once instead of
+            // every time the clock ticks.
+            <p role="status" className="m-0 max-w-prose text-sm">
+              {countdown.notice}
+            </p>
+          ) : (
+            <p className="m-0 max-w-prose text-sm text-muted-foreground">
+              The window comes from the server. When it ends, the seats are released.
+            </p>
+          )}
+          {expired ? (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={onReset}>
                 Select seats again
-              </button>
+              </Button>
             </div>
           ) : null}
         </div>
+      )}
+
+      {attempt.status === "held" && attempt.hold !== null && !expired ? (
+        <Alert variant="success" role="status">
+          <AlertDescription>
+            Seats held. Reservation <code>{attempt.hold.id}</code>.
+          </AlertDescription>
+        </Alert>
       ) : null}
 
-      {attempt.status === "held" && attempt.hold !== null ? (
-        <p className="feedback" role="status">
-          Seats held. Reservation <code>{attempt.hold.id}</code>.
-        </p>
-      ) : null}
-
-      {failure !== null ? (
-        <section
-          className={`problems feedback ${failure.tone === "error" ? "error" : ""}`}
+      {failure === null ? null : (
+        <Alert
+          variant={failure.tone === "error" ? "destructive" : "warning"}
           role="alert"
           aria-labelledby="hold-failure"
+          className="flex flex-col gap-1"
         >
-          <h2 id="hold-failure">{failure.headline}</h2>
-          <p>{failure.message}</p>
-          {lostLabels.length > 0 ? (
-            <p>
-              No longer selected: <code>{lostLabels.join(", ")}</code>
+          <h3 id="hold-failure" className="m-0 text-base font-semibold">
+            {failure.headline}
+          </h3>
+          <AlertDescription className="flex flex-col gap-1">
+            <p className="m-0">{failure.message}</p>
+            {lostLabels.length > 0 ? (
+              <p className="m-0">
+                No longer selected: <code>{lostLabels.join(", ")}</code>
+              </p>
+            ) : null}
+            <p className="m-0">
+              {failure.retryable
+                ? "You can adjust the selection and try again."
+                : "Nothing was reserved for this attempt."}
             </p>
-          ) : null}
-          <p className="notice">
-            {failure.retryable
-              ? "You can adjust the selection and try again."
-              : "Nothing was reserved for this attempt."}
-          </p>
-        </section>
-      ) : null}
-    </section>
+          </AlertDescription>
+        </Alert>
+      )}
+    </Card>
   );
 }

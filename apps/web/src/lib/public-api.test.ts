@@ -812,6 +812,8 @@ const CATALOGUE_BODY = {
   events: [
     {
       id: "event-early",
+      status: "on_sale",
+      onSale: true,
       filmTitle: "The Long Take",
       cinemaName: "Cinema Centro",
       roomName: "Room 1",
@@ -824,6 +826,8 @@ const CATALOGUE_BODY = {
     },
     {
       id: "event-late",
+      status: "on_sale",
+      onSale: true,
       filmTitle: "Second Feature",
       cinemaName: "Cinema Centro",
       roomName: "Room 2",
@@ -958,4 +962,112 @@ test("a body that is not JSON or not the expected shape is unexpected_response",
   );
   assert.equal(noExpiry.code, "unexpected_response");
   assert.match(noExpiry.detail, /expiresAt/);
+});
+
+// ── One screening, read by the page the buyer clicked (M3.5 · T5 · S3, S8) ────
+//
+// The catalogue names screenings; the seat page opens one. It answers with the same
+// entry shape as the catalogue row, plus the two fields that only matter once the
+// buyer is looking at a single screening: the stored status and whether the API
+// still offers it. A screening that exists but is no longer on sale is a 200 that
+// says so, so the page can explain itself instead of showing a dead seat map or
+// claiming the screening never existed.
+
+const SCREENING_BODY = {
+  ...CATALOGUE_BODY.events[0],
+  status: "cancelled",
+  onSale: false,
+};
+
+test("getEvent reads one screening from the same entry shape the catalogue uses", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, SCREENING_BODY));
+
+  const screening = unwrap(await makeClient(recorder).getEvent("event-early"));
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/events/event-early`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+
+  // The sale state is served, never inferred: the page must be able to say why a
+  // screening is not on sale, and must not compare a clock of its own to find out.
+  assert.equal(screening.status, "cancelled");
+  assert.equal(screening.onSale, false);
+  // The venue's own hour travels verbatim, exactly as the catalogue carries it.
+  assert.equal(screening.startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.equal(screening.startsAt, "2026-05-04T18:30:00Z");
+  assert.equal(screening.priceCents, 1250);
+  assert.equal(screening.priceDisplay, "12.50");
+  assert.equal(screening.filmTitle, "The Long Take");
+  assert.equal(screening.cinemaName, "Cinema Centro");
+  assert.equal(screening.roomName, "Room 1");
+});
+
+test("getEvent escapes the event id and keeps an unknown screening a 404", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(404, {
+      type: "https://cinema.local/problems/not-found",
+      title: "Not found",
+      status: 404,
+      code: "not_found",
+      detail: "the requested screening does not exist",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).getEvent("a/b c"));
+
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/events/a%2Fb%20c`);
+  assert.equal(problem.code, "not_found");
+  assert.equal(problem.status, 404);
+  assert.match(problem.detail, /does not exist/);
+});
+
+test("an unavailable screening stays the retryable code the API used", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the screening is temporarily unavailable; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).getEvent("event-early"));
+
+  assert.equal(problem.code, "service_unavailable");
+  assert.equal(problem.status, 503);
+});
+
+test("a screening without its sale state is refused, not guessed", async () => {
+  for (const [field, expected] of [
+    ["onSale", /onSale/],
+    ["status", /status/],
+  ] as const) {
+    const recorder = recordingFetch(() => {
+      const body: Record<string, unknown> = { ...SCREENING_BODY };
+      delete body[field];
+      return jsonResponse(200, body);
+    });
+
+    const problem = unwrapError(await makeClient(recorder).getEvent("event-early"));
+
+    assert.equal(problem.code, "unexpected_response", field);
+    assert.match(problem.detail, expected, `${field} cannot be assumed`);
+  }
+});
+
+test("the catalogue carries the same sale state as the single read", async () => {
+  // One entry shape serves both routes, so the catalogue row and the screening read
+  // cannot drift: a screening is on sale or not in exactly the same words.
+  const recorder = recordingFetch(() => jsonResponse(200, CATALOGUE_BODY));
+
+  const events = unwrap(await makeClient(recorder).listEvents());
+
+  assert.equal(events[0].onSale, true);
+  assert.equal(events[0].status, "on_sale");
+  assert.equal(events[1].availableSeats, 0);
+  assert.equal(events[1].onSale, true, "sold out is still on sale");
 });

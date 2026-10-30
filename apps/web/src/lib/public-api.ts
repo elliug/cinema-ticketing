@@ -15,11 +15,13 @@
 //     idempotency key, no ticket id) before anything leaves the process.
 //
 // It covers the M2 hold surface, the M3 checkout and ticket reads, the M3.5
-// public catalogue a stranger reads before owning any identifier, and the M3
-// ticket verification a page uses to say plainly whether a ticket admits its
-// holder. The two ticket *downloads* are not reads this client makes: they are
-// built as link and image targets by [ticketPDFUrl] and [ticketQRImageUrl], so the
-// browser fetches the bytes and the page never handles them.
+// public catalogue a stranger reads before owning any identifier, the M3.5 read of
+// one screening (so the seat page keeps the film, the venue, the hour and the price
+// the buyer clicked on), and the M3 ticket verification a page uses to say plainly
+// whether a ticket admits its holder. The two ticket *downloads* are not reads this
+// client makes: they are built as link and image targets by [ticketPDFUrl] and
+// [ticketQRImageUrl], so the browser fetches the bytes and the page never handles
+// them.
 //
 // The client depends only on the standard fetch API, so it is usable from a
 // server component, a server action, or a test with an injected fetch.
@@ -213,6 +215,24 @@ export interface PublicVerification {
 export interface PublicScreening {
   /** Event id; the seat page is reached at `/events/{id}/seats`. */
   id: string;
+  /**
+   * The stored status of the screening, carried verbatim: `draft`, `published`,
+   * `on_sale`, `started`, `completed` or `cancelled`.
+   *
+   * It is what a surface prints when it has to explain why a screening is not on
+   * sale, so it is read as served rather than interpreted into a second vocabulary
+   * the API never used.
+   */
+  status: string;
+  /**
+   * Whether the API still offers this screening for sale.
+   *
+   * The decision is the database's (`status = 'on_sale'` and still ahead of its
+   * clock) and is the same predicate that decides membership of the catalogue, so
+   * no surface compares a clock of its own to know whether a seat can be bought.
+   * It is the answer, not a hint: `false` means the page must not offer seats.
+   */
+  onSale: boolean;
   filmTitle: string;
   cinemaName: string;
   roomName: string;
@@ -249,6 +269,16 @@ export interface PublicClient {
    * empty array, never an error.
    */
   listEvents(): Promise<PublicResult<PublicScreening[]>>;
+  /**
+   * One screening, whatever its status, so a buyer who followed a link to a
+   * screening that is no longer offered is told so instead of being answered with a
+   * 404 that would claim it never existed.
+   *
+   * The entry shape is the catalogue's own, projected once by the API, so the
+   * catalogue row and the seat page cannot disagree about the film, the venue, the
+   * hour or the price. Only `not_found` means the screening does not exist.
+   */
+  getEvent(eventId: string): Promise<PublicResult<PublicScreening>>;
   listEventSeats(eventId: string): Promise<PublicResult<PublicEventSeats>>;
   createHold(input: CreateHoldInput): Promise<PublicResult<PublicHold>>;
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
@@ -265,6 +295,11 @@ export interface PublicClient {
  */
 export type AvailabilityResponse =
   | { ok: true; seats: PublicEventSeat[] }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of a screening read. */
+export type ScreeningResponse =
+  | { ok: true; screening: PublicScreening }
   | { ok: false; problem: PublicProblem };
 
 /** The serializable answer of a hold attempt. */
@@ -421,6 +456,25 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseCatalog(result.value);
+    },
+
+    async getEvent(eventId) {
+      const id = eventId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidInput("this page needs an event id") };
+      }
+
+      const result = await send<unknown>(`/events/${encodeURIComponent(id)}`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return result;
+      }
+      // The catalogue and this read answer one entry shape, so they share one
+      // parser: neither can interpret the sale state differently from the other.
+      return parseScreening(result.value);
     },
 
     async listEventSeats(eventId) {
@@ -938,6 +992,30 @@ function parseScreening(value: unknown): PublicResult<PublicScreening> {
     };
   }
 
+  // The sale state is the API's decision, not a client's: `onSale` is the predicate
+  // the database applied, so a missing flag would leave the page with no honest way
+  // to know whether a seat can be bought. It is a boolean or the response is refused —
+  // never a default, because both defaults would be a claim about the sale.
+  const status = servedString(value.status);
+  if (status === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no status, so why it is not on sale cannot be explained`,
+      ),
+    };
+  }
+  if (typeof value.onSale !== "boolean") {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no onSale flag, so whether its seats can be bought is unknown`,
+      ),
+    };
+  }
+
   const filmTitle = servedString(value.filmTitle);
   if (filmTitle === undefined) {
     return {
@@ -1000,6 +1078,8 @@ function parseScreening(value: unknown): PublicResult<PublicScreening> {
     ok: true,
     value: {
       id,
+      status,
+      onSale: value.onSale,
       filmTitle,
       cinemaName,
       roomName,
