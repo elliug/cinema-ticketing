@@ -314,6 +314,11 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 		if detail.Status != "paid" {
 			t.Fatalf("status = %q, want paid", detail.Status)
 		}
+		// Nothing is due once it is paid: the captured amount is the truth, and a quote
+		// beside it would invite a renderer to print two numbers for one order.
+		if detail.AmountDueCents != nil {
+			t.Fatalf("amountDueCents = %d for a paid order, want no quote", *detail.AmountDueCents)
+		}
 		if detail.ExpiresAt.IsZero() {
 			t.Fatal("expiresAt is zero, want the stored hold deadline")
 		}
@@ -385,6 +390,14 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 		}
 		if text, ok := detail.AmountText(); ok || text != "" {
 			t.Fatalf("amount text = %q, %t for an unpaid order, want none", text, ok)
+		}
+		// The quote is what paying costs now: the event's price per seat times the seats
+		// the order still holds. It is not a charge, and the paid case has no quote at all.
+		if detail.AmountDueCents == nil {
+			t.Fatal("amountDueCents is nil for a held order, want the price x held seats")
+		}
+		if text, ok := detail.DueText(); !ok || text == "" {
+			t.Fatalf("due text = %q, %t for a held order, want a quote", text, ok)
 		}
 		if len(detail.Seats) != 1 || detail.Seats[0].EventSeatID != seats[2] {
 			t.Fatalf("seats = %+v, want the seat the hold owns (%d)", detail.Seats, seats[2])

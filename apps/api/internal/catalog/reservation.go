@@ -46,6 +46,16 @@ type ReservationDetail struct {
 	// without a nil check.
 	TicketIDs []string
 
+	// AmountDueCents is what paying this order costs right now, in minor units: the
+	// event's price per seat times the seats the order still holds. It is a **quote, not
+	// a charge** — the price may move between the quote and the capture, and the money
+	// actually taken is what the payment answer reports and what [ReservationDetail.AmountCents]
+	// carries afterwards. A disagreement becomes the checkout's existing amount conflict
+	// rather than a silent different charge.
+	//
+	// It is nil whenever nothing is due: the order is paid (the captured amount is the
+	// truth then), it ended without a payment, or it holds no seats.
+	AmountDueCents *int64
 	// The screening the order is for. A reloaded confirmation has to say *what* is being
 	// bought and *when*, not only how many seats and what they cost: without these, a
 	// buyer returning to an unpaid order sees a countdown attached to nothing.
@@ -84,6 +94,15 @@ type Seat struct {
 // The second result is what makes an unpaid order presentable honestly: a renderer that
 // only had a string would have to print something for "no charge yet", and every choice
 // there ("0.00", "", "-") claims something the system did not do.
+// DueText renders the amount due now, and reports false when nothing is due. Same spelling
+// rule as the rest of the money in this API, and the same reason for the second result.
+func (r ReservationDetail) DueText() (string, bool) {
+	if r.AmountDueCents == nil {
+		return "", false
+	}
+	return tickets.FormatMoney(*r.AmountDueCents), true
+}
+
 func (r ReservationDetail) AmountText() (string, bool) {
 	if r.AmountCents == nil {
 		return "", false

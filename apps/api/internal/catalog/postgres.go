@@ -130,7 +130,10 @@ SELECT r.id::text,
        c.name,
        room.name,
        e.starts_at,
-       c.timezone
+       c.timezone,
+       CASE WHEN r.status IN ('held', 'payment_pending') AND COALESCE(seats.held_seats, 0) > 0
+            THEN e.price_cents * seats.held_seats
+       END AS amount_due_cents
 FROM cinema.reservations r
 JOIN cinema.events e ON e.id = r.event_id
 JOIN cinema.films f ON f.id = e.film_id
@@ -146,7 +149,8 @@ LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object(
            'eventSeatId', rs.event_seat_id,
            'rowLabel', lr.label,
-           'seatNumber', ls.number) ORDER BY lr.position, ls.position, rs.event_seat_id) AS items
+           'seatNumber', ls.number) ORDER BY lr.position, ls.position, rs.event_seat_id) AS items,
+         count(*) AS held_seats
   FROM cinema.reservation_seats rs
   JOIN cinema.event_seats es ON es.id = rs.event_seat_id
   JOIN cinema.layout_seats ls ON ls.id = es.layout_seat_id
@@ -356,6 +360,7 @@ func (s *PostgresStore) Reservation(ctx context.Context, reservationID string) (
 		&detail.RoomName,
 		&detail.StartsAt,
 		&detail.Timezone,
+		&detail.AmountDueCents,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReservationDetail{}, fmt.Errorf("%w: %s", ErrNotFound, reservationID)

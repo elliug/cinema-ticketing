@@ -64,7 +64,13 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 	var (
 		amountCents   *int64
 		amountDisplay *string
+		dueCents      *int64
+		dueDisplay    *string
 	)
+	if text, ok := detail.DueText(); ok {
+		dueCents = detail.AmountDueCents
+		dueDisplay = &text
+	}
 	if text, ok := detail.AmountText(); ok {
 		amountCents = detail.AmountCents
 		amountDisplay = &text
@@ -109,6 +115,10 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 		// as one seat's price.
 		"amountCents":   amountCents,
 		"amountDisplay": amountDisplay,
+		// What paying costs right now, and null whenever nothing is due. It is a quote:
+		// the charge is whatever the payment answer reports.
+		"amountDueCents":   dueCents,
+		"amountDueDisplay": dueDisplay,
 		"seats":         seats,
 		"ticketIds":     ticketIDs,
 		// The screening, so a reloaded confirmation says what is being bought and when.
