@@ -97,8 +97,13 @@ export interface LayoutVersionRow {
 /**
  * Builds the cinema payload from form text.
  *
- * The rules mirror the backend: a non-empty name and timezone of at most 120
- * characters, and an optional address of at most 120 characters.
+ * The rules mirror the backend's *shape*: a non-empty name and timezone of at most 120
+ * characters, and an optional address of at most 120 characters. The timezone has one
+ * further rule that is deliberately **not** mirrored here: it must resolve as an IANA
+ * name, and the API is the only side that can decide that. Go answers from its own copy of
+ * the zone database, while JavaScript would have to answer from `Intl`, and the two
+ * disagree at the edges — so the field carries a placeholder and the server refuses what it
+ * cannot render, instead of this side keeping a second, approximate opinion.
  */
 export function cinemaInput(
   values: CinemaFormValues,

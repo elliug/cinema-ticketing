@@ -25,6 +25,13 @@ import (
 	"syscall"
 	"time"
 
+	// The venue timezone is an IANA name, and the ticket detail renders a screening's
+	// local start with time.LoadLocation. Embedding the zone database makes that render
+	// independent of the host: a container or a minimal image without tzdata would
+	// otherwise refuse every venue whose zone it cannot load, and refuse to print the
+	// ticket of any venue it already accepted.
+	_ "time/tzdata"
+
 	"github.com/redis/go-redis/v9"
 
 	"cinema.local/ticketing/apps/api/internal/adminapi"
