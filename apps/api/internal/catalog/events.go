@@ -1,6 +1,7 @@
-// The catalogue read model: one screening a buyer can buy a seat for, with everything
-// the catalogue screen shows. Nothing in this file knows about HTTP or JSON: a
-// transport translates these fields and adds no facts of its own.
+// The catalogue read model: one screening with everything the catalogue screen and the
+// seat page show — the venue, the price and how many seats are free right now — and
+// whether the catalogue still offers it. Nothing in this file knows about HTTP or JSON:
+// a transport translates these fields and adds no facts of its own.
 
 package catalog
 
@@ -12,37 +13,45 @@ import (
 	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
-// The failures a [Reader] reports. A reservation that cannot be named is not found; a
-// read that could not be completed is unavailable. There is deliberately no third case:
-// an "empty reservation" answer would let a confirmation page render an order with no
-// seats as if it were real.
+// The failures a [Reader] reports. A screening or a reservation that cannot be named is
+// not found; a read that could not be completed is unavailable. There is deliberately no
+// third case: an "empty reservation" or a "blank screening" answer would let a page
+// render a record that does not exist as if it did.
 var (
-	// ErrNotFound reports that no reservation carries the requested identifier. An
-	// identifier that cannot even be one answers the same way, so nothing distinguishes
-	// a wrong guess from an identifier that never existed.
-	ErrNotFound = errors.New("catalog: the reservation does not exist")
+	// ErrNotFound reports that no screening or reservation carries the requested
+	// identifier. An identifier that cannot even be one answers the same way, so nothing
+	// distinguishes a wrong guess from an identifier that never existed.
+	ErrNotFound = errors.New("catalog: the requested record does not exist")
 
 	// ErrUnavailable reports that a read could not be completed: a transport failure, or
 	// a stored screening whose venue zone cannot be presented. It is retryable for the
-	// caller and never a partial catalogue or an empty reservation.
+	// caller and never a partial catalogue, a partial screening or an empty reservation.
 	ErrUnavailable = errors.New("catalog: the read is unavailable")
 )
 
-// Reader reads the two projections the public web needs. It is the whole contract this
-// package offers: the catalogue route and the confirmation route each read one of these
-// and neither assembles its own answer from parts.
+// Reader reads the projections the public web needs. It is the whole contract this
+// package offers: the catalogue route, the seat page's read of one screening and the
+// confirmation route each read one of these and none assembles its own answer from
+// parts.
 type Reader interface {
 	// Events answers the screenings a buyer can buy right now, in screening order. A
 	// catalogue with nothing to sell is an empty list and not an error.
 	Events(ctx context.Context) ([]Screening, error)
+	// Event answers one screening, whatever its status: a buyer who followed a link to a
+	// screening that is no longer offered needs to be told so, not told it never existed.
+	// It answers the same projection, from the same statement, as the entry [Events]
+	// would have listed for it. An unknown screening, or an identifier no screening could
+	// carry, is ErrNotFound; a read that could not be completed is ErrUnavailable.
+	Event(ctx context.Context, eventID string) (Screening, error)
 	// Reservation answers the confirmation's read of one order. An unknown reservation,
 	// or an identifier no reservation could carry, is ErrNotFound; a read that could not
 	// be completed is ErrUnavailable.
 	Reservation(ctx context.Context, reservationID string) (ReservationDetail, error)
 }
 
-// Screening is one catalogue entry: a screening a buyer can buy a seat for, with the
-// venue, the price and how many seats are free right now.
+// Screening is one catalogue entry: a screening with the venue, the price and how many
+// seats are free right now. The list answers every screening a buyer can buy; the single
+// read answers one screening that exists, whether or not it is still offered.
 //
 // It is a projection and not a second event model: the event, its film, its room, its
 // cinema and its seats belong to the modules that own them, and this is the slice of
@@ -51,6 +60,17 @@ type Screening struct {
 	// ID is the event's identifier (`cinema.events.id`), which is what a seat selection
 	// addresses.
 	ID string
+	// Status is `cinema.events.status` exactly as stored: "draft", "published",
+	// "on_sale", "started", "completed" or "cancelled". It is carried verbatim rather
+	// than interpreted, so a surface can say why a screening is not offered instead of
+	// only that it is not.
+	Status string
+	// OnSale is whether the catalogue offers this screening right now, and it is the same
+	// predicate that decides membership of the list: `status = 'on_sale'` and still ahead
+	// of the database clock. One expression serves both reads, so the single read cannot
+	// disagree with the list about which side of "now" a screening is on, and a client
+	// never has to compare a clock of its own to know whether a seat can be bought.
+	OnSale bool
 	// FilmTitle is the film's title as stored, which is what the buyer recognises.
 	FilmTitle string
 	// CinemaName is the venue's name, so the catalogue can say which building to walk

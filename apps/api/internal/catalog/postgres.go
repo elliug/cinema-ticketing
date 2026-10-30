@@ -1,8 +1,10 @@
-// The PostgreSQL reads of the two projections.
+// The PostgreSQL reads of the projections.
 //
-// One statement answers the whole catalogue and one statement answers the whole
-// reservation, so a buyer never sees an entry assembled from two different instants of
-// the database, and the counts are decided by the same clock that governs holds.
+// One statement answers the whole catalogue, the same statement answers one screening,
+// and one statement answers the whole reservation, so a buyer never sees an entry
+// assembled from two different instants of the database, the seat page never sees a
+// screening the list would disagree with, and the counts are decided by the same clock
+// that governs holds.
 
 package catalog
 
@@ -19,38 +21,41 @@ import (
 )
 
 const (
-	// eventsQuery answers the whole catalogue in one statement. Each column is the
-	// authority for one field, and none is derived from another read:
+	// screeningQuery is the one projection both screening reads answer. The list wraps it
+	// in a filter, the single read in an identifier predicate, and neither adds a column:
+	// there is one definition of what a screening is on the wire, and one definition of
+	// how many of its seats are free.
 	//
-	//   * whether a screening belongs in the catalogue is decided here, in SQL: it must
-	//     be `on_sale` and still ahead of `now()`. That is the database clock the hold
-	//     window is decided by, so a screening the catalogue offers can never be one a
-	//     hold would refuse as already started, and a free seat can never be one a
-	//     screening that already began is still selling.
+	// Each column is the authority for one field, and none is derived from another read:
+	//
+	//   * `on_sale` is the eligibility rule, written once: the screening must be
+	//     `on_sale` and still ahead of `now()`. That is the database clock the hold window
+	//     is decided by, so a screening the catalogue offers can never be one a hold would
+	//     refuse as already started. Because the rule is a column of this projection, the
+	//     list can filter on it (`WHERE screening.on_sale`) and the single read can answer
+	//     it, without the predicate being written twice or drifting apart.
 	//   * the two seat numbers come from the same lateral aggregate, which is why this
-	//     read is one query per catalogue and not one per event or one per seat: the join
-	//     is per event, and PostgreSQL evaluates the aggregate once for the whole result
-	//     set. `seat_count` counts the materialized event seats; `available_seats` counts
-	//     the ones a buyer can select now — state `available` and not owned by a live
-	//     hold. The `NOT EXISTS` predicate is the seat map's own definition of held
-	//     (`released_at IS NULL AND expires_at > now()`), so an expired hold nobody has
-	//     swept yet is already free here, exactly as it is there.
+	//     read is one query per request and not one per event or one per seat: the join is
+	//     per event, and PostgreSQL evaluates the aggregate once for the whole result set.
+	//     `seat_count` counts the materialized event seats; `available_seats` counts the
+	//     ones a buyer can select now — state `available` and not owned by a live hold. The
+	//     `NOT EXISTS` predicate is the seat map's own definition of held (`released_at IS
+	//     NULL AND expires_at > now()`), so an expired hold nobody has swept yet is already
+	//     free here, exactly as it is there.
 	//   * the venue zone travels with the screening because the local presentation is
 	//     computed from it; it is never taken from the process or the browser.
-	//
-	// The order is the contract the catalogue screen renders: screening time ascending,
-	// with the identifier as the tiebreaker so two screenings at the same minute cannot
-	// swap places between two reads.
-	eventsQuery = `
-SELECT e.id::text,
-       f.title,
-       c.name,
-       r.name,
-       e.starts_at,
-       c.timezone,
-       e.price_cents,
-       occupancy.seat_count,
-       occupancy.available_seats
+	screeningQuery = `
+SELECT e.id::text AS id,
+       e.status AS status,
+       (e.status = 'on_sale' AND e.starts_at > now()) AS on_sale,
+       f.title AS film_title,
+       c.name AS cinema_name,
+       r.name AS room_name,
+       e.starts_at AS starts_at,
+       c.timezone AS timezone,
+       e.price_cents AS price_cents,
+       occupancy.seat_count AS seat_count,
+       occupancy.available_seats AS available_seats
 FROM cinema.events e
 JOIN cinema.films f ON f.id = e.film_id
 JOIN cinema.rooms r ON r.id = e.room_id
@@ -70,10 +75,30 @@ JOIN LATERAL (
          ) AS available_seats
   FROM cinema.event_seats es
   WHERE es.event_id = e.id
-) occupancy ON TRUE
-WHERE e.status = 'on_sale'
-  AND e.starts_at > now()
-ORDER BY e.starts_at, e.id`
+) occupancy ON TRUE`
+
+	// eventsQuery answers the whole catalogue: the shared projection, filtered by the
+	// eligibility column it already carries. `screening.*` is the projection's own column
+	// order, so the wire shape and the scan order cannot drift apart.
+	//
+	// The order is the contract the catalogue screen renders: screening time ascending,
+	// with the identifier as the tiebreaker so two screenings at the same minute cannot
+	// swap places between two reads.
+	eventsQuery = `
+SELECT screening.*
+FROM (` + screeningQuery + `
+) screening
+WHERE screening.on_sale
+ORDER BY screening.starts_at, screening.id`
+
+	// eventQuery answers one screening, whatever its status, from the same projection: a
+	// buyer who followed a link to a screening that is no longer offered is told so by the
+	// `status` and `on_sale` columns, not by a 404 that would claim it never existed.
+	eventQuery = `
+SELECT screening.*
+FROM (` + screeningQuery + `
+) screening
+WHERE screening.id = $1`
 
 	// reservationQuery answers the confirmation's read in one statement:
 	//
@@ -135,9 +160,9 @@ LEFT JOIN LATERAL (
 ) tickets ON TRUE
 WHERE r.id = $1`
 
-	// readSchemaQuery is the closed-surface check: the process advertises the two reads
-	// only against a database that carries every table they touch, including the event
-	// price and the seats both aggregations count. A database migrated to 0004 has the
+	// readSchemaQuery is the closed-surface check: the process advertises the reads only
+	// against a database that carries every table they touch, including the event price
+	// and the seats both aggregations count. A database migrated to 0004 has the
 	// venue and reservation tables but no tickets and no payment attempts, so the
 	// confirmation's read could not answer its amount or its tickets there.
 	readSchemaQuery = `
@@ -188,11 +213,11 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-// ReadSchemaPresent reports whether this database carries everything the two reads
-// touch. The process uses it to decide whether the catalogue and confirmation routes
-// belong in this deployment: a database without the checkout schema has no tickets and
-// no captured payment, so the confirmation could answer neither its amount nor its
-// tickets, and advertising the routes would answer 503 for every request.
+// ReadSchemaPresent reports whether this database carries everything the reads touch.
+// The process uses it to decide whether the catalogue, screening and confirmation
+// routes belong in this deployment: a database without the checkout schema has no
+// tickets and no captured payment, so the confirmation could answer neither its amount
+// nor its tickets, and advertising the routes would answer 503 for every request.
 func (s *PostgresStore) ReadSchemaPresent(ctx context.Context) (bool, error) {
 	if s == nil || s.pool == nil {
 		return false, errors.New("catalogue database is not configured")
@@ -221,32 +246,79 @@ func (s *PostgresStore) Events(ctx context.Context) ([]Screening, error) {
 
 	screenings := []Screening{}
 	for rows.Next() {
-		var (
-			screening      Screening
-			seatCount      int64
-			availableSeats int64
-		)
-		if err := rows.Scan(
-			&screening.ID,
-			&screening.FilmTitle,
-			&screening.CinemaName,
-			&screening.RoomName,
-			&screening.StartsAt,
-			&screening.Timezone,
-			&screening.PriceCents,
-			&seatCount,
-			&availableSeats,
-		); err != nil {
+		screening, err := scanScreening(rows)
+		if err != nil {
 			return nil, classifyReadError(err)
 		}
-		screening.SeatCount = int(seatCount)
-		screening.AvailableSeats = int(availableSeats)
 		screenings = append(screenings, screening)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, classifyReadError(err)
 	}
 	return screenings, nil
+}
+
+// Event answers one screening, whatever its status, from the same statement that fills
+// the catalogue: a screening that exists but is no longer offered answers its status and
+// `onSale: false` instead of disappearing.
+//
+// The identifier is validated before it reaches SQL, for the reason the reservation read
+// validates its own: a value that cannot be an event id cannot name a stored screening,
+// so it answers exactly like an identifier that never existed instead of turning a wrong
+// guess into a cast error. A read that could not be completed is [ErrUnavailable], never
+// a screening with missing fields.
+func (s *PostgresStore) Event(ctx context.Context, eventID string) (Screening, error) {
+	var id pgtype.UUID
+	if err := id.Scan(eventID); err != nil || !id.Valid {
+		return Screening{}, fmt.Errorf("%w: %q is not an event identifier", ErrNotFound, eventID)
+	}
+	if s == nil || s.pool == nil {
+		return Screening{}, fmt.Errorf("%w: the catalogue store is not configured", ErrUnavailable)
+	}
+
+	screening, err := scanScreening(s.pool.QueryRow(ctx, eventQuery, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Screening{}, fmt.Errorf("%w: %s", ErrNotFound, eventID)
+	}
+	if err != nil {
+		return Screening{}, classifyReadError(err)
+	}
+	return screening, nil
+}
+
+// rowScanner is what both reads scan through: a pgx row and pgx rows implement it, so the
+// two screening reads share one column order and one decoding.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanScreening decodes one row of the shared screening projection. The order is the
+// projection's own: id, status, on_sale, film, cinema, room, starts_at, timezone,
+// price_cents, seat_count, available_seats.
+func scanScreening(row rowScanner) (Screening, error) {
+	var (
+		screening      Screening
+		seatCount      int64
+		availableSeats int64
+	)
+	if err := row.Scan(
+		&screening.ID,
+		&screening.Status,
+		&screening.OnSale,
+		&screening.FilmTitle,
+		&screening.CinemaName,
+		&screening.RoomName,
+		&screening.StartsAt,
+		&screening.Timezone,
+		&screening.PriceCents,
+		&seatCount,
+		&availableSeats,
+	); err != nil {
+		return Screening{}, err
+	}
+	screening.SeatCount = int(seatCount)
+	screening.AvailableSeats = int(availableSeats)
+	return screening, nil
 }
 
 // Reservation answers the confirmation's read of one order in one query.

@@ -210,6 +210,99 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 		}
 	})
 
+	t.Run("one screening answers the entry the catalogue list shows", func(t *testing.T) {
+		screenings, err := store.Events(ctx)
+		if err != nil {
+			t.Fatalf("Events() = unexpected error %v", err)
+		}
+		var listed catalog.Screening
+		for _, screening := range screenings {
+			if screening.ID == eventOnSale {
+				listed = screening
+			}
+		}
+		if listed.ID != eventOnSale {
+			t.Fatalf("the catalogue list did not answer %s", eventOnSale)
+		}
+
+		single, err := store.Event(ctx, eventOnSale)
+		if err != nil {
+			t.Fatalf("Event() = unexpected error %v", err)
+		}
+		// Every field must be the list's own answer: the two reads share one projection
+		// and one availability aggregate, so a second query, a second formatter or a
+		// second availability rule would show up here as a difference.
+		if single.ID != listed.ID || single.Status != listed.Status || single.OnSale != listed.OnSale ||
+			single.FilmTitle != listed.FilmTitle || single.CinemaName != listed.CinemaName ||
+			single.RoomName != listed.RoomName || !single.StartsAt.Equal(listed.StartsAt) ||
+			single.Timezone != listed.Timezone || single.PriceCents != listed.PriceCents ||
+			single.SeatCount != listed.SeatCount || single.AvailableSeats != listed.AvailableSeats {
+			t.Fatalf("the single read answered %+v, want the catalogue entry %+v", single, listed)
+		}
+		if single.Status != "on_sale" || !single.OnSale {
+			t.Fatalf("status = %q / onSale = %t, want on_sale / true", single.Status, single.OnSale)
+		}
+	})
+
+	t.Run("a screening that is not on sale answers why instead of disappearing", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			eventID string
+			status  string
+			what    string
+		}{
+			{"a draft screening", eventDraft, "draft", "not on sale yet"},
+			{"a cancelled screening", eventCancelled, "cancelled", "cancelled"},
+			// The stored status still says on_sale; the database clock is what closed it,
+			// exactly as it keeps the screening out of the list.
+			{"a screening whose hour has passed", eventPast, "on_sale", "already started"},
+		}
+
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				screening, err := store.Event(ctx, testCase.eventID)
+				if err != nil {
+					t.Fatalf("Event(%s) = unexpected error %v, want a screening that exists (%s)",
+						testCase.eventID, err, testCase.what)
+				}
+				if screening.ID != testCase.eventID {
+					t.Fatalf("event = %q, want %q", screening.ID, testCase.eventID)
+				}
+				if screening.Status != testCase.status {
+					t.Fatalf("status = %q, want the stored %q verbatim", screening.Status, testCase.status)
+				}
+				if screening.OnSale {
+					t.Fatalf("onSale = true for a screening the catalogue does not offer (%s)", testCase.what)
+				}
+				// The rest of the projection is still answered, so a stale link can say what
+				// the screening is instead of only that it is gone.
+				if screening.FilmTitle != "Catalogue Fixture" || screening.CinemaName != "Cine Catalogue" ||
+					screening.RoomName != "Sala Catalogue" || screening.PriceCents != fixturePriceCents ||
+					screening.StartsAt.IsZero() || screening.Timezone != fixtureCinemaTimezone {
+					t.Fatalf("screening = %+v, want the whole entry of a screening that exists", screening)
+				}
+				if screening.SeatCount != 4 || screening.AvailableSeats != 4 {
+					t.Fatalf("seats = %d of %d, want 4 of 4 for a screening nobody bought",
+						screening.AvailableSeats, screening.SeatCount)
+				}
+			})
+		}
+	})
+
+	t.Run("an identifier that names no screening is not found", func(t *testing.T) {
+		if _, err := store.Event(ctx, "00000000-0000-0000-0000-0000000000fe"); !errors.Is(err, catalog.ErrNotFound) {
+			t.Fatalf("Event() of an unknown screening = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("an identifier that cannot be a screening id is not found", func(t *testing.T) {
+		for _, garbage := range []string{"", "not-an-event-id", "1", "' OR 1=1 --"} {
+			if _, err := store.Event(ctx, garbage); !errors.Is(err, catalog.ErrNotFound) {
+				t.Fatalf("Event(%q) = %v, want ErrNotFound without a query", garbage, err)
+			}
+		}
+	})
+
 	t.Run("the reservation read answers the money, the seats and the tickets of the sale", func(t *testing.T) {
 		detail, err := store.Reservation(ctx, paidReservation)
 		if err != nil {

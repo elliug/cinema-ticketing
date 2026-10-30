@@ -8,8 +8,9 @@
 // surface with its expiry worker, and M3 adds the checkout route that pays a held
 // reservation, the ticket detail route the confirmation page and the PDF read, the
 // ticket PDF download route and the worker that stores those PDFs in the object
-// bucket. M3.5 adds the two reads the public web needs: the catalogue of screenings a
-// buyer can buy and the confirmation's read of one reservation.
+// bucket. M3.5 adds the reads the public web needs: the catalogue of screenings a buyer
+// can buy, one screening of that catalogue for the seat page, and the confirmation's read
+// of one reservation.
 package main
 
 import (
@@ -480,13 +481,14 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		}
 	}
 
-	// The catalogue and the confirmation's read are the two things the public web needs
-	// and the API did not have: a stranger needs no event identifier to reach the seat
-	// page, and reloading the confirmation keeps its state. Both read what the modules
+	// The catalogue, the seat page's read of one screening and the confirmation's read are
+	// the three things the public web needs and the API did not have: a stranger needs no
+	// event identifier to reach the seat page, the page keeps the entry it arrived with,
+	// and reloading the confirmation keeps its state. All three read what the modules
 	// above wrote, so they are mounted last and only against a database that carries
-	// every table they touch; one store answers both reads, and one probe decides whether
-	// either is advertised. It gets its own startup budget for the same reason the other
-	// stores do.
+	// every table they touch; one store answers all three reads, and one probe decides
+	// whether any of them is advertised. It gets its own startup budget for the same
+	// reason the other stores do.
 	catalogCtx, cancelCatalog := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancelCatalog()
 	catalogStore, err := catalog.NewPostgresStore(catalogCtx, cfg.DatabaseURL)
@@ -512,9 +514,9 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 
 	// catalogue and reservationReads are nil interfaces unless the schema is present,
-	// which is exactly what keeps each route unmounted. One store satisfies both: the two
-	// reads are one read model, and mounting only one of them would advertise half of what
-	// the web needs.
+	// which is exactly what keeps each route unmounted. One store satisfies all of them:
+	// the reads are one read model, and mounting only some of them would advertise half of
+	// what the web needs.
 	var catalogue publicapi.CatalogService
 	var reservationReads publicapi.ReservationService
 	if readsPresent {
@@ -535,7 +537,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		"ticket_pdfs", ticketPDFs != nil, "catalogue", catalogue != nil)
 	if catalogue != nil {
 		logger.Info("catalogue and reservation read routes mounted",
-			"routes", []string{"/api/v1/events", "/api/v1/reservations/{reservationId}"})
+			"routes", []string{"/api/v1/events", "/api/v1/events/{eventID}", "/api/v1/reservations/{reservationId}"})
 	}
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret

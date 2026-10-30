@@ -899,6 +899,16 @@ func catalogueRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// catalogueScreeningRouted reports whether the single screening read is mounted. It is
+// mounted by the same wiring decision as the catalogue list — one read model, one
+// probe — so this asks the route a buyer arrives at from the list.
+func catalogueScreeningRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/events/00000000-0000-0000-0000-00000000e0f1", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // reservationReadRouted reports whether the confirmation read is mounted, i.e. whether
 // a GET on the reservation subtree reaches the handler instead of a 404.
 func reservationReadRouted(srv *httpserver.Server) bool {
@@ -937,6 +947,9 @@ func TestMountReservationMountsTheCatalogueAndReservationReads(t *testing.T) {
 	}
 	if !catalogueRouted(srv) {
 		t.Fatal("the catalogue route was not mounted although its schema is present")
+	}
+	if !catalogueScreeningRouted(srv) {
+		t.Fatal("the single screening read was not mounted although its schema is present")
 	}
 	if !reservationReadRouted(srv) {
 		t.Fatal("the reservation read was not mounted although its schema is present")
@@ -984,6 +997,9 @@ func TestMountReservationSkipsTheReadsWithoutTheirSchema(t *testing.T) {
 	if catalogueRouted(srv) || reservationReadRouted(srv) {
 		t.Fatal("the catalogue and reservation read routes were mounted without their schema")
 	}
+	if catalogueScreeningRouted(srv) {
+		t.Fatal("the single screening read was mounted without the schema it reads")
+	}
 	if !reservationRouted(srv) || !paymentRouted(srv) || !ticketRouted(srv) {
 		t.Fatal("the rest of the customer surface disappeared because the read schema is missing")
 	}
@@ -1014,6 +1030,9 @@ func TestMountReservationFailsWhenTheReadProbeCannotAnswer(t *testing.T) {
 	}
 	if catalogueRouted(srv) || reservationReadRouted(srv) || ticketRouted(srv) || reservationRouted(srv) {
 		t.Fatal("a surface was mounted although the read schema state is unknown")
+	}
+	if catalogueScreeningRouted(srv) {
+		t.Fatal("the single screening read was mounted although the read schema state is unknown")
 	}
 	for _, leaked := range []string{"s3cr3t-pw", "postgres://"} {
 		if strings.Contains(err.Error(), leaked) {

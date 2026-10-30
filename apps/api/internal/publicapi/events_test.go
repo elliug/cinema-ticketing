@@ -1,11 +1,15 @@
-// Behaviour tests for the public catalogue route: GET /api/v1/events.
+// Behaviour tests for the two public catalogue routes: GET /api/v1/events and the
+// single screening read, GET /api/v1/events/{eventID}, that the seat page (T5)
+// arrives with.
 //
 // They need no database: the test holds a fake catalogue reader and asserts the
-// transport contract the web catalogue screen (T4) depends on — the route is
-// public, every entry is answered with camelCase keys, the seats available are the
-// reader's number and never recomputed, the venue-local hour is served next to the
-// raw instant, an empty catalogue is an empty list and not a 404, and a storage
-// failure is a retryable problem document and never a partial catalogue.
+// transport contract the web catalogue screen (T4) and the seat page (T5) depend on —
+// the routes are public, every entry is answered with camelCase keys, the seats
+// available are the reader's number and never recomputed, the venue-local hour is
+// served next to the raw instant, an empty catalogue is an empty list and not a 404, a
+// single screening answers the same entry the list answers whatever its status, an
+// identifier that names no screening is a 404, and a storage failure is a retryable
+// problem document and never a partial screening.
 package publicapi_test
 
 import (
@@ -34,7 +38,14 @@ type fakeCatalogService struct {
 	screenings []catalog.Screening
 	err        error
 
-	calls int
+	// The single screening read's own configuration, so a test can answer a screening
+	// that is not on sale — which the list can never carry — without inventing a second
+	// reader.
+	single    catalog.Screening
+	singleErr error
+
+	calls    int
+	askedIDs []string
 }
 
 func (f *fakeCatalogService) Events(context.Context) ([]catalog.Screening, error) {
@@ -43,6 +54,14 @@ func (f *fakeCatalogService) Events(context.Context) ([]catalog.Screening, error
 		return nil, f.err
 	}
 	return f.screenings, nil
+}
+
+func (f *fakeCatalogService) Event(_ context.Context, eventID string) (catalog.Screening, error) {
+	f.askedIDs = append(f.askedIDs, eventID)
+	if f.singleErr != nil {
+		return catalog.Screening{}, f.singleErr
+	}
+	return f.single, nil
 }
 
 // mountedCatalogServer wires the public subtree the way cmd/api does: the
@@ -58,7 +77,17 @@ func mountedCatalogServer(t *testing.T, svc publicapi.CatalogService) *httptest.
 
 func getEvents(t *testing.T, ts *httptest.Server) *http.Response {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/events", nil)
+	return getPath(t, ts, "/api/v1/events")
+}
+
+func getEvent(t *testing.T, ts *httptest.Server, eventID string) *http.Response {
+	t.Helper()
+	return getPath(t, ts, "/api/v1/events/"+eventID)
+}
+
+func getPath(t *testing.T, ts *httptest.Server, path string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, ts.URL+path, nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -74,11 +103,14 @@ func getEvents(t *testing.T, ts *httptest.Server) *http.Response {
 var catalogueStartsAt = time.Date(2026, time.May, 4, 18, 30, 0, 0, time.UTC)
 
 // fixtureCatalogue is what the reader answers for the web catalogue: two screenings
-// of the same venue, in the order the reader reports them.
+// of the same venue, in the order the reader reports them. Both are on sale, because
+// that is the only thing the list can contain.
 func fixtureCatalogue() []catalog.Screening {
 	return []catalog.Screening{
 		{
 			ID:             "00000000-0000-0000-0000-00000000f1a1",
+			Status:         "on_sale",
+			OnSale:         true,
 			FilmTitle:      "La película",
 			CinemaName:     "Cine Centro",
 			RoomName:       "Sala 1",
@@ -90,6 +122,8 @@ func fixtureCatalogue() []catalog.Screening {
 		},
 		{
 			ID:             "00000000-0000-0000-0000-00000000f1a2",
+			Status:         "on_sale",
+			OnSale:         true,
 			FilmTitle:      "Otra película",
 			CinemaName:     "Cine Centro",
 			RoomName:       "Sala 2",
@@ -102,9 +136,19 @@ func fixtureCatalogue() []catalog.Screening {
 	}
 }
 
+// catalogueEntryKeys is the pinned key set of one screening on the wire. Both routes
+// answer exactly these fields, because both answer the same read model: the list as
+// entries, the single read as the body itself.
+var catalogueEntryKeys = []string{
+	"availableSeats", "cinemaName", "filmTitle", "id", "onSale", "priceCents",
+	"priceDisplay", "roomName", "seatCount", "startsAt", "startsAtLocal", "status",
+}
+
 // catalogueEntryBody is the wire shape of one catalogue entry the web screen renders.
 type catalogueEntryBody struct {
 	ID             string `json:"id"`
+	Status         string `json:"status"`
+	OnSale         bool   `json:"onSale"`
 	FilmTitle      string `json:"filmTitle"`
 	CinemaName     string `json:"cinemaName"`
 	RoomName       string `json:"roomName"`
@@ -184,11 +228,16 @@ func TestCatalogRouteServesTheCatalogue(t *testing.T) {
 	if len(entries) != len(want) {
 		t.Fatalf("events array = %s, want %d entries", entries, len(want))
 	}
-	if got := objectKeys(t, entries[0]); !equalKeys(got, []string{
-		"availableSeats", "cinemaName", "filmTitle", "id", "priceCents", "priceDisplay",
-		"roomName", "seatCount", "startsAt", "startsAtLocal",
-	}) {
-		t.Fatalf("catalogue entry keys = %v, want the documented screening fields", got)
+	if got := objectKeys(t, entries[0]); !equalKeys(got, catalogueEntryKeys) {
+		t.Fatalf("catalogue entry keys = %v, want the documented screening fields %v", got, catalogueEntryKeys)
+	}
+
+	// S8: the entry says it is on sale, and says so with the screening's own status, so
+	// the seat page arriving from the list can tell an entry that is buyable from one
+	// that only exists.
+	if !body.Events[0].OnSale || body.Events[0].Status != "on_sale" {
+		t.Fatalf("entry 0 answered status %q / onSale %t, want on_sale / true",
+			body.Events[0].Status, body.Events[0].OnSale)
 	}
 }
 
@@ -323,6 +372,178 @@ func TestCatalogRouteAnswersAStorageFailureWith503(t *testing.T) {
 	}
 }
 
+// S5: the seat page a buyer reaches from the catalogue arrives with an event id, not
+// with the entry it clicked, so one screening is readable on its own — with exactly the
+// fields the list answered, produced by the same read and the same formatters.
+func TestEventRouteServesOneScreening(t *testing.T) {
+	want := fixtureCatalogue()[0]
+	reader := &fakeCatalogService{single: want}
+	ts := mountedCatalogServer(t, reader)
+
+	response := getEvent(t, ts, want.ID)
+	if response.StatusCode != http.StatusOK {
+		body := readBody(t, response)
+		t.Fatalf("GET /api/v1/events/%s status = %d, want 200 (body %s)", want.ID, response.StatusCode, body)
+	}
+	if len(reader.askedIDs) != 1 || reader.askedIDs[0] != want.ID {
+		t.Fatalf("the route asked the reader for %v, want exactly [%s]", reader.askedIDs, want.ID)
+	}
+
+	raw := readBody(t, response)
+	var body catalogueEntryBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode screening body %s: %v", raw, err)
+	}
+
+	if body.ID != want.ID || body.FilmTitle != want.FilmTitle || body.CinemaName != want.CinemaName ||
+		body.RoomName != want.RoomName {
+		t.Fatalf("screening = %+v, want the one %+v", body, want)
+	}
+	if body.Status != want.Status || body.OnSale != want.OnSale {
+		t.Fatalf("screening status = %q / onSale %t, want %q / %t",
+			body.Status, body.OnSale, want.Status, want.OnSale)
+	}
+	if body.StartsAt != "2026-05-04T18:30:00Z" {
+		t.Fatalf("startsAt = %q, want the raw instant in UTC", body.StartsAt)
+	}
+	if body.StartsAtLocal != "2026-05-04T20:30:00+02:00" {
+		t.Fatalf("startsAtLocal = %q, want the venue's own 20:30 at +02:00", body.StartsAtLocal)
+	}
+	if body.PriceCents != 1250 || body.PriceDisplay != "12.50" {
+		t.Fatalf("price = %d / %q, want 1250 / 12.50", body.PriceCents, body.PriceDisplay)
+	}
+	if body.SeatCount != 8 || body.AvailableSeats != 3 {
+		t.Fatalf("seats = %d of %d, want the reader's 3 of 8", body.AvailableSeats, body.SeatCount)
+	}
+
+	// The body is the screening itself, and its keys are the entry's keys: a client that
+	// reads one entry of the list renders this response with the same code.
+	if got := objectKeys(t, raw); !equalKeys(got, catalogueEntryKeys) {
+		t.Fatalf("screening keys = %v, want the catalogue entry fields %v", got, catalogueEntryKeys)
+	}
+}
+
+// S5, S8: a screening that exists but is not on sale answers — with its own status and
+// with the clock's verdict — instead of pretending it never existed. A buyer holding a
+// stale link deserves "this screening is no longer on sale", not a 404.
+func TestEventRouteAnswersAScreeningThatIsNotOnSale(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+	}{
+		{"a draft screening", "draft"},
+		{"a cancelled screening", "cancelled"},
+		// The stored status still says on_sale, but the database clock has passed the
+		// start: the two answers are different questions and both are served.
+		{"a screening whose hour has passed", "on_sale"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			screening := fixtureCatalogue()[0]
+			screening.Status = testCase.status
+			screening.OnSale = false
+
+			response := getEvent(t, mountedCatalogServer(t, &fakeCatalogService{single: screening}), screening.ID)
+			if response.StatusCode != http.StatusOK {
+				body := readBody(t, response)
+				t.Fatalf("status = %d, want 200 for a screening that exists (body %s)", response.StatusCode, body)
+			}
+			raw := readBody(t, response)
+			var body catalogueEntryBody
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode screening body %s: %v", raw, err)
+			}
+			if body.Status != testCase.status {
+				t.Fatalf("status = %q, want the stored %q verbatim", body.Status, testCase.status)
+			}
+			if body.OnSale {
+				t.Fatalf("onSale = true for a screening the catalogue does not offer (status %q)", body.Status)
+			}
+			// The rest of the entry is still answered: the page can say what the screening
+			// was, which is the whole point of reading it instead of guessing.
+			if body.FilmTitle == "" || body.CinemaName == "" || body.RoomName == "" ||
+				body.StartsAt == "" || body.StartsAtLocal == "" || body.PriceDisplay == "" {
+				t.Fatalf("a screening that is not on sale answered a partial entry: %+v", body)
+			}
+		})
+	}
+}
+
+// S5: an identifier that names no screening is a 404 in the shared public problem
+// shape, and it never leaks a partially built screening.
+func TestEventRouteAnswersAnUnknownScreeningWith404(t *testing.T) {
+	for _, eventID := range []string{
+		"00000000-0000-0000-0000-0000000000ff",
+		// An identifier that cannot even be an event id answers the same way, so a wrong
+		// guess and a value that never existed are indistinguishable.
+		"not-an-event-id",
+		"1",
+	} {
+		reader := &fakeCatalogService{singleErr: fmt.Errorf("%w: no screening", catalog.ErrNotFound)}
+		response := getEvent(t, mountedCatalogServer(t, reader), eventID)
+		if response.StatusCode != http.StatusNotFound {
+			body := readBody(t, response)
+			t.Fatalf("GET one screening of %q status = %d, want 404 (body %s)", eventID, response.StatusCode, body)
+		}
+		if len(reader.askedIDs) != 1 || reader.askedIDs[0] != eventID {
+			t.Fatalf("the route asked the reader for %v, want [%s]", reader.askedIDs, eventID)
+		}
+		raw := readBody(t, response)
+		var problem problemBody
+		if err := json.Unmarshal(raw, &problem); err != nil {
+			t.Fatalf("decode problem %s: %v", raw, err)
+		}
+		if problem.Code != "not_found" || problem.Status != http.StatusNotFound {
+			t.Fatalf("problem = %+v, want a 404 not_found document", problem)
+		}
+		for _, leaked := range []string{"filmTitle", "priceCents", "availableSeats", "startsAt"} {
+			if strings.Contains(string(raw), leaked) {
+				t.Fatalf("the 404 body carries %q: %s", leaked, raw)
+			}
+		}
+	}
+}
+
+// S5: a read that could not be completed is a retryable 503 — never a screening with
+// missing fields, and never a local hour invented from the machine's zone.
+func TestEventRouteAnswersAStorageFailureWith503(t *testing.T) {
+	unresolvable := fixtureCatalogue()[0]
+	unresolvable.Timezone = "Mars/Olympus"
+
+	cases := []struct {
+		name   string
+		reader *fakeCatalogService
+	}{
+		{"a storage failure", &fakeCatalogService{singleErr: fmt.Errorf("%w: conn closed", catalog.ErrUnavailable)}},
+		{"an unclassified failure", &fakeCatalogService{singleErr: errors.New("unexpected")}},
+		{"a venue timezone that cannot be resolved", &fakeCatalogService{single: unresolvable}},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := getEvent(t, mountedCatalogServer(t, testCase.reader), fixtureCatalogue()[0].ID)
+			if response.StatusCode != http.StatusServiceUnavailable {
+				body := readBody(t, response)
+				t.Fatalf("status = %d, want 503 (body %s)", response.StatusCode, body)
+			}
+			raw := readBody(t, response)
+			var problem problemBody
+			if err := json.Unmarshal(raw, &problem); err != nil {
+				t.Fatalf("decode problem %s: %v", raw, err)
+			}
+			if problem.Code != "service_unavailable" || problem.Status != http.StatusServiceUnavailable {
+				t.Fatalf("problem = %+v, want a 503 service_unavailable document", problem)
+			}
+			for _, leaked := range []string{"filmTitle", "priceCents", "availableSeats", "startsAt"} {
+				if strings.Contains(string(raw), leaked) {
+					t.Fatalf("the 503 body carries %q: %s", leaked, raw)
+				}
+			}
+		})
+	}
+}
+
 // Preserve: a deployment without a catalogue reader mounts no catalogue route, so it
 // advertises nothing it cannot serve, and the routes next to it keep working.
 func TestCatalogRouteIsNotMountedWithoutAReader(t *testing.T) {
@@ -332,6 +553,11 @@ func TestCatalogRouteIsNotMountedWithoutAReader(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("catalogue route status = %d, want 404 without a catalogue reader", response.StatusCode)
+	}
+	single := getEvent(t, ts, "00000000-0000-0000-0000-00000000f1a1")
+	single.Body.Close()
+	if single.StatusCode != http.StatusNotFound {
+		t.Fatalf("single screening route status = %d, want 404 without a catalogue reader", single.StatusCode)
 	}
 
 	// Preserve: the seat read and the hold route are still mounted next to the
