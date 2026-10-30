@@ -57,7 +57,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T1 | S6, S7 | gate: insecure origin + second engine | 1 · `8b2afc0` (#59) |
 | T2 | S8 | the five cheap defects | 2 · `3c26259` (#60) |
 | T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 · `8560cf1` (#61) |
-| T3b | S9 | the schedule form creates on sale in one request | 3b |
+| T3b | S9 | the schedule form creates on sale in one request | 3b · `9bb7647` (#62) |
 | T4 | S10 | `POST /reservations/{id}/cancel` end to end | 4 |
 | T5 | S11 | catalogue pagination and filters | 5 |
 | T6 | S12 | timezone backfill migration | 6 |
@@ -192,3 +192,42 @@ database whose name the tests' own guard rejected — four of them "failed" with
 anything. When I finally ran the full suite with a valid name, the store passed; the defect was
 one layer above it, in the schema. Shortcut verification produced a stronger claim than the
 evidence supported, twice in one day.
+
+### L7 — T3b merged, and the gate proved the thing it could not promise
+
+#62 merged (`9bb7647`), and with it the one claim the PR could not make: the browser gate runs
+with the two scoped form selectors and passes in both engines. The scheduling form now puts a
+screening on sale in one request; the price-and-status form keeps its three refusals by
+exercising them on the screening the create just stored, and gains a real edit so the test
+still proves a write, not only two refusals.
+
+One coverage trade, recorded: the draft create is no longer driven by the browser gate, because
+the same scenario would need a second screening. It stays pinned by unit tests, by the API's
+tests, and by `verify-m1`, which creates a draft over HTTP against an M1-only schema.
+
+### L8 — T4 delivered, and the slice that got away from me
+
+`POST /reservations/{id}/cancel` exists and works: a guarded transition, seats released, the
+read's own answer shape, paid refused `409 already_paid`, twice not an error, lapsed holds
+answered as expired, unknown and malformed ids refused. `ARCHITECTURE.md`'s row stopped claiming
+a route nobody could call.
+
+**It came to 1447 authored lines**, the largest slice of the milestone and roughly three and a
+half times the boundary this document set. Nothing here is padding — five new files, the
+PostgreSQL-gated tests among them, and the commentary this codebase asks for — but a number that
+size is a review problem whatever its cause. The mitigation is the PR body: it is written in
+layers (store transition → service → route and wiring → docs) so a reviewer can stop between
+them. The honest conclusion for the next slices: **splitting the service from the route into two
+sequential PRs is the right shape**, and this one is the counter-example that proves it.
+
+Verified by the parent, not taken on the writer's word: the five PostgreSQL-gated tests had not
+been run at all (no database URL), so I created a throwaway `cinema_m3…` database, brought it to
+`0006` with the project's own runner, and ran them — the release and re-claim, the paid refusal,
+the lapsed hold, the unknown id, and **the two racing cancels three times**. All green, database
+dropped afterwards. That is the second time in this milestone that a writer's unrun gated tests
+were the only untested part of a slice, and the second time they passed once actually run.
+
+**Found, deliberately not fixed:** a cancel can now take a live hold out from under an in-flight
+capture, leaving the capture to fail with the provider having already taken the money. Expiry
+carries the same window today; this change neither widens nor closes it. Recorded as T13 rather
+than absorbed into a slice about cancelling.

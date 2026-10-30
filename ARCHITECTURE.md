@@ -231,7 +231,7 @@ Everything else in these tables is planned. M3 adds the payment and ticket route
 | `POST` | `/reservations/holds` | Atomically hold a complete seat selection. |
 | `GET` | `/reservations/{reservationId}` | Read reservation and expiry state. |
 | `POST` | `/reservations/{reservationId}/payment` | Start/replay payment confirmation. |
-| `POST` | `/reservations/{reservationId}/cancel` | **Planned, not implemented.** Cancel a valid, unpaid hold; today a buyer waits out the `expires_at` the reservation reports. |
+| `POST` | `/reservations/{reservationId}/cancel` | Cancel a valid, unpaid hold: releases its seats and answers the reservation's new state. Cancelling twice answers the same cancelled reservation; a paid one is refused with `409 already_paid`. |
 | `GET` | `/tickets/{ticketId}` | Retrieve ticket presentation data for its owner. |
 | `GET` | `/tickets/{ticketId}/pdf` | Download the stored ticket PDF through a short-lived pre-signed link. |
 | `GET` | `/tickets/{ticketId}/qr.svg` | Render the ticket's signed QR code as an image for the page and the printout. |

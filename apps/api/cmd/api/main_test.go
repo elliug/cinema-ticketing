@@ -918,6 +918,15 @@ func reservationReadRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// cancelRouted reports whether the cancel route is mounted, i.e. whether a POST on the
+// reservation's cancel subtree reaches the handler instead of a 404.
+func cancelRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/api/v1/reservations/00000000-0000-0000-0000-00000000c0f1/cancel", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // T1 (S5): the two reads the public web needs are part of the customer surface, so they
 // are mounted at /api/v1 next to the hold, payment and ticket routes and outside the
 // administrative guard: a stranger has no event id to reach the seat page with and no
@@ -953,6 +962,11 @@ func TestMountReservationMountsTheCatalogueAndReservationReads(t *testing.T) {
 	}
 	if !reservationReadRouted(srv) {
 		t.Fatal("the reservation read was not mounted although its schema is present")
+	}
+	// T4 (S10): cancelling is mounted with the read it answers in the same shape: a cancel
+	// that had nowhere to read the order from could only fail.
+	if !cancelRouted(srv) {
+		t.Fatal("the cancel route was not mounted although its schema is present")
 	}
 	// The routes the customer surface already served are still mounted next to them.
 	if !reservationRouted(srv) || !paymentRouted(srv) || !ticketRouted(srv) {
@@ -996,6 +1010,9 @@ func TestMountReservationSkipsTheReadsWithoutTheirSchema(t *testing.T) {
 	}
 	if catalogueRouted(srv) || reservationReadRouted(srv) {
 		t.Fatal("the catalogue and reservation read routes were mounted without their schema")
+	}
+	if cancelRouted(srv) {
+		t.Fatal("the cancel route was mounted without the read whose shape it answers")
 	}
 	if catalogueScreeningRouted(srv) {
 		t.Fatal("the single screening read was mounted without the schema it reads")

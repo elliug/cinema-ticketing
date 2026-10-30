@@ -7,8 +7,9 @@
 // scanner calls with a presented signed code, and the M3.5 reads the web needs: the
 // public catalogue of screenings (GET /events), one screening of that catalogue
 // (GET /events/{eventID}) so the seat page keeps the film, the venue, the hour and the
-// price it arrived with, and the confirmation's read of one order
-// (GET /reservations/{reservationId}).
+// price it arrived with, the confirmation's read of one order
+// (GET /reservations/{reservationId}), and the cancel route that ends a hold now instead
+// of waiting out its window (POST /reservations/{reservationId}/cancel).
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -45,6 +46,7 @@ type Handler struct {
 	ticketPDFs   TicketPDFService
 	catalog      CatalogService
 	reservations ReservationService
+	cancels      CancellationService
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
@@ -76,6 +78,12 @@ func (h *Handler) Mux() *http.ServeMux {
 		// GET on the reservation subtree, next to the POST that creates a hold there: the
 		// buyer who reloads the confirmation has an identifier and no way to ask again.
 		mux.HandleFunc(reservationReadRoute, h.getReservation)
+		// The cancel route is mounted with the read it answers in the same shape: a cancel
+		// that had nowhere to read the order from could only fail, and a buyer who abandons
+		// a hold would keep waiting out its window. Both halves are required.
+		if h.cancels != nil {
+			mux.HandleFunc(cancelRoute, h.cancelReservation)
+		}
 	}
 	if h.payments != nil {
 		mux.HandleFunc(paymentRoute, h.createPayment)
