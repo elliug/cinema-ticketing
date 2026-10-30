@@ -231,3 +231,16 @@ were the only untested part of a slice, and the second time they passed once act
 capture, leaving the capture to fail with the provider having already taken the money. Expiry
 carries the same window today; this change neither widens nor closes it. Recorded as T13 rather
 than absorbed into a slice about cancelling.
+
+### L9 — the CI stopped lying, and T5 is split before it starts
+
+#64 merged (`3cb6f35`): one CI run per ref, so a superseded push cannot finish red and leave its
+failure on a pull request that is green. Three false alarms in one session were three too many,
+and the eight-line slice cost nine minutes end to end — the cheapest evidence so far that the
+milestone's real problem was never effort but **slice size**.
+
+T5 is split for that reason, before writing any of it: **T5a** is the API (`GET /events` pages and
+filters, and says how to ask for the next page), **T5b** is the catalogue screen that consumes it.
+They are different questions with different failure modes — a cursor that skips a screening versus
+a button that never appears — and a reviewer holding both cannot tell which one is wrong when a
+gate goes red.
