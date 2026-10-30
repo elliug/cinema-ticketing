@@ -10,20 +10,21 @@ import (
 )
 
 type fakeStore struct {
-	layout        venue.Layout
-	layouts       map[string]venue.Layout
-	layoutList    []venue.Layout
-	cinemas       []venue.Cinema
-	rooms         []venue.Room
-	events        []venue.Event
-	films         []venue.Film
-	seats         []venue.EventSeat
-	calls         []string
-	failWith      error
-	lastRowsSet   []venue.Row
-	layoutCreated int
-	lastEventID   string
-	lastUpdate    venue.EventUpdate
+	createdWithPrice *int64
+	layout           venue.Layout
+	layouts          map[string]venue.Layout
+	layoutList       []venue.Layout
+	cinemas          []venue.Cinema
+	rooms            []venue.Room
+	events           []venue.Event
+	films            []venue.Film
+	seats            []venue.EventSeat
+	calls            []string
+	failWith         error
+	lastRowsSet      []venue.Row
+	layoutCreated    int
+	lastEventID      string
+	lastUpdate       venue.EventUpdate
 }
 
 func (f *fakeStore) record(name string) {
@@ -81,8 +82,12 @@ func (f *fakeStore) CreateFilm(_ context.Context, _ venue.Film) error {
 	return f.failWith
 }
 
-func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event) error {
+func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event, priceCents *int64) error {
 	f.record("CreateEvent")
+	// The pointer is the caller's intent, recorded so a test can tell "named no price" from
+	// "named zero": the store writes the column only in the second case, and an M1 schema has
+	// no such column.
+	f.createdWithPrice = priceCents
 	f.events = append(f.events, event)
 	return f.failWith
 }
@@ -432,6 +437,38 @@ func TestCreateEventStoresThePriceAndStatusItWasGiven(t *testing.T) {
 
 // The update path is the one that decides what a legal price and a legal status are, so the
 // create refuses the same values in the same words instead of forming a second opinion.
+// The store writes the price column only when the request named a price, because
+// price_cents arrives with the checkout schema and an M1 database has no such column: a
+// create that never mentions a price has to keep working there. So the service must hand the
+// store the caller's intent, not its own default — "named zero" is a free screening, and
+// "named nothing" is a column that must not appear in the INSERT at all.
+func TestCreateEventTellsTheStoreWhetherAPriceWasNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		price    *int64
+		wantPoin bool
+		wantZero bool
+	}{
+		{"omitted", nil, false, false},
+		{"explicit zero", ptrInt64(0), true, true},
+		{"a price", ptrInt64(1400), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			svc := venue.NewService(store)
+			if _, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now().UTC().Add(time.Hour), tc.price, nil); err != nil {
+				t.Fatalf("CreateEvent() = %v", err)
+			}
+			if got := store.createdWithPrice != nil; got != tc.wantPoin {
+				t.Fatalf("store received price intent = %v, want pointer present = %v", store.createdWithPrice, tc.wantPoin)
+			}
+			if tc.wantZero && store.createdWithPrice != nil && *store.createdWithPrice != 0 {
+				t.Fatalf("store received %d, want the explicit zero", *store.createdWithPrice)
+			}
+		})
+	}
+}
+
 func TestCreateEventRefusesWhatTheUpdateRefuses(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		price  *int64

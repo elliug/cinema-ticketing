@@ -21,7 +21,11 @@ type Store interface {
 	GetLayout(ctx context.Context, layoutID string) (Layout, error)
 	CreateFilm(ctx context.Context, film Film) error
 	ListFilms(ctx context.Context) ([]Film, error)
-	CreateEvent(ctx context.Context, event Event) error
+	// CreateEvent inserts the event. priceCents is the caller's intent, not the
+	// stored value: nil means the request named no price at all, and the store then
+	// omits the column — an M1 schema has no price_cents yet, and a create that never
+	// mentions a price must keep working there.
+	CreateEvent(ctx context.Context, event Event, priceCents *int64) error
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
 	ListEvents(ctx context.Context) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (Event, error)
@@ -226,7 +230,7 @@ func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersion
 	if priceCents != nil {
 		event.PriceCents = *priceCents
 	}
-	if err := s.store.CreateEvent(ctx, event); err != nil {
+	if err := s.store.CreateEvent(ctx, event, priceCents); err != nil {
 		return Event{}, err
 	}
 	return event, nil

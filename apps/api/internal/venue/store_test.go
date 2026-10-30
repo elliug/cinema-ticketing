@@ -556,7 +556,7 @@ func TestEventCreateStoresThePriceAndTheStatusInOneRow(t *testing.T) {
 	if err := store.CreateEvent(ctx, venue.Event{
 		ID: fixtureCreated, RoomID: fixtureRoom, FilmID: fixtureFilm, LayoutVersionID: fixtureLayout,
 		StartsAt: fixtureEarlyAt, Status: venue.EventOnSale, PriceCents: 1400,
-	}); err != nil {
+	}, ptrInt64(1400)); err != nil {
 		t.Fatalf("CreateEvent(on sale at 1400) = unexpected error %v", err)
 	}
 	read, err := store.GetEvent(ctx, fixtureCreated)
@@ -586,7 +586,7 @@ func TestEventCreateStoresThePriceAndTheStatusInOneRow(t *testing.T) {
 	if err := store.CreateEvent(ctx, venue.Event{
 		ID: fixtureCreatedDefault, RoomID: fixtureRoom, FilmID: fixtureFilm, LayoutVersionID: fixtureLayout,
 		StartsAt: fixtureLateAt, Status: venue.EventDraft,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("CreateEvent(no price, no status) = unexpected error %v", err)
 	}
 	readDefault, err := store.GetEvent(ctx, fixtureCreatedDefault)

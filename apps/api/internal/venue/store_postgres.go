@@ -309,16 +309,32 @@ func (s *PostgresStore) ListFilms(ctx context.Context) ([]Film, error) {
 	return films, classifyError(rows.Err())
 }
 
-// CreateEvent inserts the event; the database materializes its seats in the
-// same transaction, so a failure leaves no event and no partial seats. The price and
-// the status are written with the row rather than left to the column defaults, because
-// the create may name them: a screening the administration put on sale in one request is
-// stored on sale, and a create that named neither still stores the default draft at zero.
-func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status, price_cents)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status, event.PriceCents)
+// CreateEvent inserts the event; the database materializes its seats in the same
+// transaction, so a failure leaves no event and no partial seats.
+//
+// The price column is written **only when the request named a price**. That is not a
+// micro-optimisation: `price_cents` arrives with the checkout schema (0005), so an M1
+// database has no such column at all, and a create that mentions no price — the request the
+// M1 gate sends — must keep working there. Writing the column unconditionally turned that
+// request into a 500 ("column price_cents does not exist", SQLSTATE 42703) the moment the
+// create learned about prices.
+const createEventStatement = `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)`
+
+// createEventWithPriceStatement is the same row plus the price, for a request that named
+// one: a zero here is the free screening the column documents, not an omission.
+const createEventWithPriceStatement = `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status, price_cents)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+func (s *PostgresStore) CreateEvent(ctx context.Context, event Event, priceCents *int64) error {
+	var err error
+	if priceCents == nil {
+		_, err = s.pool.Exec(ctx, createEventStatement,
+			event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status)
+	} else {
+		_, err = s.pool.Exec(ctx, createEventWithPriceStatement,
+			event.ID, event.RoomID, event.FilmID, event.LayoutVersionID, event.StartsAt, event.Status, event.PriceCents)
+	}
 	return classifyError(err)
 }
 
