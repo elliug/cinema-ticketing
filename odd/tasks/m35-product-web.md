@@ -206,3 +206,30 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   confirmation or administration screens, the inventory now sits in the file itself, and the
   preflight stays deferred exactly as L6 recorded. Evidence: `pnpm check` green with 223 tests,
   clean lint and typecheck, and a build whose seat route is 8.03 kB.
+- L11 — T6 built the checkout on the order read, and the confirmation page stopped being the one
+  purchase screen that could not survive a reload. **A reload loses nothing and charges nothing**:
+  the page reads `GET /api/v1/reservations/{id}`, whose projection carries the screening (film,
+  cinema, room, the venue's own `startsAtLocal`), the seats, the server deadline, the money actually
+  captured and the ticket ids — so a paid order reloads straight into its tickets, and the
+  `?eventId=` parameter the seat map still sends is no longer how the page knows where to go back
+  to. **The amount is never the page's own**: it prints the payment answer's number after a charge,
+  the read's pair on a reload, and *nothing* before a charge, because the read answers `null` while
+  unpaid and the only other number available would be `priceCents × seats` — a summary of a price
+  that may have moved, which T5 already refused to call a charge. Thirteen outcomes stay thirteen
+  states: `approved` carries the tickets and says a ticket is a record of a sale whose validity is
+  the scanner's answer; `declined` keeps the seats held and discards its key so the retry mints a
+  new one; `payment_in_flight` keeps the key and says only the request that opened the attempt can
+  settle it; `already_paid` is not an error but a read; `hold_expired` offers the seat map and
+  re-holds nothing behind the buyer; the rest each get their own words and next step, with 404 kept
+  distinct from 503. **The window ends out loud**: the countdown comes from the server deadline and,
+  at the deadline, replaces the Pay control with an explicit expired state; a paid order keeps its
+  old deadline and is not expired, and an unreadable deadline fails closed. Every key disposition is
+  *obtained* from the M3 `paymentKeyDisposition` rather than restated, so the new states cannot
+  drift from the rule they answer to, and the panel has exactly one polite live region with the
+  ticking clock deliberately outside it. **The three files left the legacy stylesheet and
+  `globals.css` again lost nothing** — every rule they stopped using is still the only styling of
+  the ticket, administration or home screens, and the inventory now names who is left with each.
+  Evidence: 27 new tests beside the untouched M3 key tests, `pnpm check` green with 250 tests, and a
+  real render of a held, a paid, an already-expired, a missing and an unreachable order against a
+  stub API with no error or hydration warning. Not covered: the click path in a browser, which is
+  T9's gate.
