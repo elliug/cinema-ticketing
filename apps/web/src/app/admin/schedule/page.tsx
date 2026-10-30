@@ -1,9 +1,10 @@
 // /admin/schedule — films, screenings, and the price and status that sell one (M3.5 · T8).
 //
-// The screen exists because a screening created in the administration could not be sold:
-// `POST /admin/events` stores a draft at price 0 and cannot carry either writable field, so
-// sellable is **create then patch** — and this is the screen that performs both requests,
-// the second one being `PATCH /admin/events/{eventId}` with a price, a status, or both.
+// The screen exists because a screening created in the administration has to become
+// sellable without a SQL prompt. `POST /admin/events` carries an optional price and an
+// optional status (M4.1 · T3b · S9), so one submit can put a screening on sale; the same
+// screen also keeps `PATCH /admin/events/{eventId}` for a screening that already exists,
+// which is what changes the price or the status afterwards.
 //
 // What it reads, and why each read is here:
 //
@@ -107,10 +108,11 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
         title="Films and screenings"
         description={
           <>
-            Create a film, schedule it in a room against a published layout version, then set
-            the price and the status that let the catalogue sell it. Works in local
-            development only: the API must run with local administration enabled, and this
-            page needs the same <code>{ADMIN_TOKEN_ENV}</code> token as the API.
+            Create a film, then schedule it in a room against a published layout version with
+            the price and the status that let the catalogue sell it. A screening can also be
+            scheduled as a draft and priced afterwards. Works in local development only: the
+            API must run with local administration enabled, and this page needs the same{" "}
+            <code>{ADMIN_TOKEN_ENV}</code> token as the API.
           </>
         }
       />
@@ -141,8 +143,9 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           <h2 className="m-0 text-lg leading-tight font-semibold">Schedule a screening</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
             Choose the room, then a published layout version of it, then the film from the
-            repertoire. The screening is stored as a draft: its price and status are set in
-            the next step.
+            repertoire. The price and the status are optional here: with both named, this one
+            submit schedules a screening the catalogue already sells; with neither, it is the
+            draft at price 0.00 the form below prices.
           </p>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
@@ -351,8 +354,8 @@ function ScreeningsList({
   if (screenings.length === 0) {
     return (
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        No screening is scheduled yet. One created above appears here as a draft at price
-        0.00 until its price and status are set.
+        No screening is scheduled yet. One created above appears here with the price and the
+        status it was created with — a draft at price 0.00 when the form named neither.
       </p>
     );
   }

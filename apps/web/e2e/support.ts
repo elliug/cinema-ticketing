@@ -2,8 +2,9 @@
 //
 // The three specs drive the same product through the same steps, so the steps live
 // here once: an operator creates a film, schedules a screening against the room's
-// published layout version and puts it on sale; a buyer opens it from the catalogue,
-// chooses seats with the keyboard, pays and lands on the ticket.
+// published layout version with the price and the status that put it on sale in that one
+// submit; a buyer opens it from the catalogue, chooses seats with the keyboard, pays and
+// lands on the ticket.
 //
 // Three rules the helpers keep, because a gate that broke them would be asserting
 // something the product never promised:
@@ -246,13 +247,34 @@ export async function selectByLabelPrefix(
 // ── The administration journey ──────────────────────────────────────────────
 
 /**
+ * The form that schedules a screening.
+ *
+ * Both this form and the one that edits an existing screening ask for a "Price per seat"
+ * and a "Status", because they are the same two questions about the same columns. Scoping
+ * by the form's own accessible name is how the gate — and a screen reader user, whose
+ * focus enters a form with a name — says which of the two it means.
+ */
+export function createScreeningForm(page: Page): Locator {
+  return page.getByRole("form", { name: "Schedule a screening" });
+}
+
+/** The form that edits one existing screening's price and status, whichever is open. */
+export function saleStateForm(page: Page): Locator {
+  return page.getByRole("form", { name: /^Price and status for / });
+}
+
+/**
  * Runs the administration journey the milestone describes, in one page.
  *
- * Create a film, schedule it in the seeded room against the room's published layout
- * version (both chosen from the selects, never pasted), then set the price and the
- * status that make the catalogue sell it. The screening is created as a draft and
- * published by one `PATCH`, which is what "create then publish is two requests" means
- * on this screen.
+ * Create a film, then schedule it in the seeded room against the room's published layout
+ * version (both chosen from the selects, never pasted) **with the price and the status**, so
+ * one `POST` is what puts it on sale (M4.1 · T3b · S9). The create form still accepts
+ * neither, which is the draft path this journey used to take; the helper fills both in
+ * because "one submit sells it" is the claim that has to be driven.
+ *
+ * It then stops on the price-and-status form, opened on the screening the create just
+ * stored. That form is not the create's replacement — it is what edits a screening that
+ * already exists — and the administration spec exercises it immediately afterwards.
  *
  * Returns the event id the screen itself put in the address bar, plus what the venue's
  * clock is expected to print for the start that was scheduled. The helper derives
@@ -317,32 +339,40 @@ export async function createAndPublishScreening(
     .click();
   await page.getByRole("option", { name: SEEDED.layoutLabel }).click();
   await page.getByLabel("Start time (UTC)").fill(STARTS_AT.utcInput);
-  await page.getByRole("button", { name: "Schedule as draft" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Created a draft screening" }),
-    "the screening's confirmation",
-  ).toContainText("It is not for sale yet");
 
-  // The screen opens the new draft's own form, and its address is where the identifier
+  // 4. The price and the status travel in that same create: this one submit is what puts
+  //    the screening on sale, and the confirmation has to say so.
+  const create = createScreeningForm(page);
+  await create.getByLabel("Price per seat").fill(fixture.price);
+  await create.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: fixture.statusLabel }).click();
+  await create.getByRole("button", { name: "Schedule screening" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Created a screening" }),
+    "the screening's confirmation says it is already on sale",
+  ).toContainText(`with price ${fixture.price}, on sale`);
+
+  // The screen opens the new screening's own form, and its address is where the identifier
   // comes from: this helper never builds one.
   await expect(page).toHaveURL(/[?&]eventId=/);
   const eventId = new URL(page.url()).searchParams.get("eventId") ?? "";
   expect(eventId, "the schedule screen named the new screening").not.toBe("");
 
-  // 4. Price and status: the second request, and the one that makes it sellable.
+  // 5. The price-and-status form, opened on what the create stored. It is the form the
+  //    administration spec exercises next, and it opens on the served values — which is why
+  //    "a submit that changes nothing" is a state this screen can actually be in.
   await expect(
     page.getByRole("heading", { name: "Price and status" }),
   ).toBeVisible();
-  await page.getByLabel("Price per seat").fill(fixture.price);
-  await page.getByRole("combobox", { name: "Status" }).click();
-  await page.getByRole("option", { name: fixture.statusLabel }).click();
-  await page.getByRole("button", { name: "Save price and status" }).click();
+  const edit = saleStateForm(page);
   await expect(
-    page.getByRole("status").filter({ hasText: "Saved." }),
-    "the saved price and status",
-  ).toContainText(
-    `The screening now holds ${fixture.price} per seat and its stored status is on_sale.`,
-  );
+    edit.getByLabel("Price per seat"),
+    "the edit form opens on the price the create stored",
+  ).toHaveValue(fixture.price);
+  await expect(
+    edit.getByRole("combobox", { name: "Status" }),
+    "the edit form opens on the status the create stored",
+  ).toContainText(fixture.statusLabel);
 
   return {
     eventId,

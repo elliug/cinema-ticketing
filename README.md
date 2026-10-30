@@ -317,14 +317,14 @@ M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and adm
 | `/events/{id}/seats` | the seat map: the real layout, operable with the keyboard alone, states legible without colour |
 | `/reservations/{id}` | the checkout: pays with a key it keeps per reservation, and answers thirteen outcomes as thirteen states |
 | `/tickets/{id}` · `/tickets` | the ticket and the list of what this browser tab kept |
-| `/admin/venues` · `/admin/layouts` · `/admin/schedule` | cinemas, layouts and screenings — including the price and the status that put a screening on sale |
+| `/admin/venues` · `/admin/layouts` · `/admin/schedule` | cinemas, layouts and screenings — including the price and the status that put a screening on sale, which travel with the scheduling form so one submit schedules a screening the catalogue already sells |
 
 Two things this build is honest about:
 
 - **The session in the header is a demonstration**, not authentication: it grants no access, no page sends it to the API, and the wording is one exported constant so the interface and these lines cannot drift.
 - **"My tickets" is what the tab kept**, because without accounts no route can list a buyer's tickets. Unavailable storage says so rather than showing an empty list.
 
-`make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
+`make verify-m35` proves all of it in a real browser: administration creates a screening already priced and on sale in one request, then edits it through the price-and-status form; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
 
 The gate drives an origin the browser does **not** treat as secure: it serves the web on the machine's primary non-loopback IPv4 address and refuses to fall back to loopback, because loopback is a secure context and a gate pointed at one cannot see anything the browser decides by origin — which is how `crypto.randomUUID` and an absolute ticket link both escaped a green build. A spec asserts `window.isSecureContext === false` and `typeof crypto.randomUUID === "undefined"` inside the browser, so pointing the gate at a secure origin fails with a message naming the reason instead of passing quietly.
 

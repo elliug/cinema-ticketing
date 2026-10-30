@@ -122,6 +122,14 @@ export const EVENT_STATUS_OPTIONS: readonly EventStatusOption[] = [
   },
 ];
 
+/**
+ * The status a screening is stored with when nothing else is named.
+ *
+ * It is the column's own default (`draft`), which is why it is the value the scheduling
+ * form's select opens on and the one the create request does not have to spell.
+ */
+export const DEFAULT_EVENT_STATUS: EventStatus = "draft";
+
 /** The option for one stored status, or undefined when this build does not know it. */
 export function eventStatusOption(status: string): EventStatusOption | undefined {
   const wanted = status.trim().toLowerCase();
@@ -236,6 +244,10 @@ export interface EventFormValues {
   filmId: string;
   layoutVersionId: string;
   startsAt: string;
+  /** The price in major units as typed, or absent when the form names no price. */
+  price?: string;
+  /** One of [EVENT_STATUSES]; absent is the column's default, [DEFAULT_EVENT_STATUS]. */
+  status?: string;
 }
 
 /** What a caller must provide to run these operations. */
@@ -294,6 +306,21 @@ export function filmInput(values: FilmFormValues): AdminResult<CreateFilmInput> 
  *
  * The form asks for a UTC start time because a `datetime-local` value carries no
  * zone; the returned instant is the RFC 3339 form the API expects.
+ *
+ * A price and a status are optional and each one is sent only when the operator actually
+ * named it, which is what keeps two paths alive at once (M4.1 · T3b · S9):
+ *
+ *   - **One submit puts a screening on sale.** A price and a status in the form travel in
+ *     the same `POST /admin/events`, so nobody has to create a draft and then fill a second
+ *     form to sell it.
+ *   - **A form that names neither field is the request this screen always sent.** No price
+ *     and the draft the column already defaults to are not spelled in the body, so the
+ *     create stays a draft at no price and the price-and-status form below is still how a
+ *     screening is priced afterwards.
+ *
+ * Both values are the create's own validation: which minor units a typed price means is
+ * [priceCentsFromText], which statuses exist is [EVENT_STATUSES], and a refusal names the
+ * field the API names for the same column.
  */
 export function eventInput(values: EventFormValues): AdminResult<CreateEventInput> {
   const roomId = values.roomId.trim();
@@ -314,10 +341,31 @@ export function eventInput(values: EventFormValues): AdminResult<CreateEventInpu
     return startsAt;
   }
 
-  return {
-    ok: true,
-    value: { roomId, filmId, layoutVersionId, startsAt: startsAt.value },
+  const input: CreateEventInput = {
+    roomId,
+    filmId,
+    layoutVersionId,
+    startsAt: startsAt.value,
   };
+
+  const price = (values.price ?? "").trim();
+  if (price !== "") {
+    const priceCents = priceCentsFromText(price);
+    if (!priceCents.ok) {
+      return priceCents;
+    }
+    input.priceCents = priceCents.value;
+  }
+
+  const status = (values.status ?? "").trim();
+  if (status !== "" && status !== DEFAULT_EVENT_STATUS) {
+    if (!isEventStatus(status)) {
+      return invalidInput("status", `must be one of ${EVENT_STATUSES.join(", ")}`);
+    }
+    input.status = status;
+  }
+
+  return { ok: true, value: input };
 }
 
 /**
@@ -504,8 +552,8 @@ export function isEventStatus(value: string): value is EventStatus {
  *   - **A field that did not change is not sent.** The API writes only the columns the
  *     request names, so a status-only change leaves the price exactly where it was, and a
  *     form that resent an untouched price could only ever rewrite it with the same value.
- *     This is also what makes *create then publish* two requests: `POST` stores the draft
- *     and one `PATCH` carries the price and the status together.
+ *     It is the same per-field rule `POST /admin/events` applies to the fields it accepts
+ *     too, which is why a create that names neither of them stores a draft at no price.
  *   - **An update that changes nothing is refused**, in the API's own words, instead of
  *     being sent as a request the server would answer `400`.
  *   - **The status is one of the schema's spellings**, so a value the column would refuse
@@ -541,9 +589,9 @@ export function screeningUpdateInput(
 /**
  * Sets a screening's price, its status, or both, and refreshes the schedule on success.
  *
- * This is the second half of create-then-publish: `POST /admin/events` stores a draft with
- * price `0` and cannot carry either field, so publishing a screening is always this write
- * after that create.
+ * A screening can now be created already priced and on sale (M4.1 · T3b · S9), so this is no
+ * longer the only way to publish one: it is what changes a screening that already exists,
+ * including one the create left as a draft at no price.
  */
 export async function updateScreening(
   deps: SchedulingDeps,

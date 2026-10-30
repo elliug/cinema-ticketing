@@ -15,10 +15,12 @@
 //     sent it, under its code and HTTP status. Nothing is reworded and nothing is
 //     summarised, because every `400` already names its field and inventing friendlier copy
 //     is how a screen ends up describing a different problem (S8).
-//   - **Create then publish is two requests, and the screen says so.** `POST /admin/events`
-//     stores a draft at price `0.00` and cannot carry a price or a status, so the create
-//     form says it creates a draft and the sale-state form below it is the second request:
-//     one `PATCH` carrying the price, the status, or both.
+//   - **One submit can put a screening on sale, and the screen says which one it did.**
+//     `POST /admin/events` carries an optional price and an optional status (M4.1 · T3b),
+//     so the create form schedules a screening that is already priced and on sale when the
+//     operator filled those two controls in. Left empty — the price blank, the status on
+//     its default draft — the same form sends a request that names neither, and the
+//     sale-state form below it is still how a screening is priced afterwards.
 //   - **A price that did not change is not sent.** The sale-state form starts from the price
 //     the API served and sends only the fields the operator changed, which is the API's own
 //     per-field rule applied on this side of the wire.
@@ -38,9 +40,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { AdminProblem } from "@/lib/admin-api";
-import type { ScreeningWritable } from "@/lib/scheduling";
+import type { EventStatus, ScreeningWritable } from "@/lib/scheduling";
 import {
   ADMIN_SCHEDULE_PATH,
+  DEFAULT_EVENT_STATUS,
   EVENT_STATUS_OPTIONS,
   eventStatusOption,
   fieldProblem,
@@ -163,13 +166,18 @@ export function FilmForm() {
 }
 
 /**
- * Schedules one screening as a draft.
+ * Schedules one screening, optionally already priced and on sale.
  *
  * The film comes from the repertoire the API lists and the layout version from that room's
  * published versions, so this form never asks an operator to paste an identifier: the two
  * values the write needs are two values the reads already named. A room with no published
  * layout version says so, because a draft version is the API's conflict and a form that
  * offered one would be inviting a refusal.
+ *
+ * The price and the status are the two optional fields `POST /admin/events` grew (M4.1 ·
+ * T3b · S9): filling them in puts a screening on sale in this one submit, while leaving the
+ * price empty and the status on its default draft sends the request this form always sent,
+ * a draft at no price.
  */
 export function EventForm({
   films,
@@ -187,10 +195,13 @@ export function EventForm({
   const [filmId, setFilmId] = useState("");
   const [layoutVersionId, setLayoutVersionId] = useState("");
   const [startsAt, setStartsAt] = useState("");
+  const [price, setPrice] = useState("");
+  const [status, setStatus] = useState<EventStatus>(DEFAULT_EVENT_STATUS);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [pending, startTransition] = useTransition();
 
   const ready = roomId !== "" && films.length > 0 && layouts.length > 0;
+  const chosenStatus = eventStatusOption(status);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -201,6 +212,8 @@ export function EventForm({
         filmId,
         layoutVersionId,
         startsAt,
+        price,
+        status,
       });
       if (!result.ok) {
         setFeedback({
@@ -209,13 +222,22 @@ export function EventForm({
         });
         return;
       }
+      // The confirmation says what the API stored, not what the form hoped for: the status
+      // and the price it answers with are the ones the row now holds.
+      const created = result.value;
+      const createdStatus = eventStatusOption(created.status);
       setFeedback({
         kind: "success",
-        message: `Created a draft screening at ${result.value.startsAt} with price ${result.value.priceDisplay}. It is not for sale yet: the price and status step below is the second request.`,
+        message:
+          created.status === "on_sale"
+            ? `Created a screening at ${created.startsAt} with price ${created.priceDisplay}, on sale: the catalogue lists it while its start is ahead.`
+            : `Created a ${(createdStatus?.label ?? created.status).toLowerCase()} screening at ${created.startsAt} with price ${created.priceDisplay}. Its price and status can still be changed below.`,
       });
       setStartsAt("");
+      setPrice("");
+      setStatus(DEFAULT_EVENT_STATUS);
       // The sale-state form reads its values from the list, so opening the new screening
-      // is what fills it in — with the draft's own price and status.
+      // is what fills it in — with the price and status the create just stored.
       const query = new URLSearchParams({ cinemaId, roomId, eventId: result.value.id });
       router.push(`${ADMIN_SCHEDULE_PATH}?${query.toString()}`);
       router.refresh();
@@ -283,15 +305,55 @@ export function EventForm({
           />
         </div>
 
+        <div className="flex min-w-44 flex-col gap-1.5">
+          <Label htmlFor={ids.price}>Price per seat</Label>
+          <Input
+            id={ids.price}
+            name="price"
+            inputMode="decimal"
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+            disabled={pending}
+            aria-describedby={ids.priceHint}
+          />
+          <p id={ids.priceHint} className="m-0 max-w-prose text-sm text-muted-foreground">
+            As a person writes money: <code>12.50</code>. Left empty, this form names no
+            price and the screening is stored at 0.00, to be priced below.
+          </p>
+        </div>
+
+        <div className="flex min-w-56 flex-col gap-1.5">
+          <Label htmlFor={ids.status}>Status</Label>
+          <Select
+            value={status}
+            onValueChange={(value) => setStatus(value as EventStatus)}
+            disabled={pending}
+          >
+            <SelectTrigger id={ids.status} aria-describedby={ids.statusHint}>
+              <SelectValue placeholder="Choose a status" />
+            </SelectTrigger>
+            <SelectContent>
+              {EVENT_STATUS_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p id={ids.statusHint} className="m-0 max-w-prose text-sm text-muted-foreground">
+            {chosenStatus?.note ?? ""}
+          </p>
+        </div>
+
         <Button type="submit" disabled={pending || !ready}>
-          {pending ? "Scheduling…" : "Schedule as draft"}
+          {pending ? "Scheduling…" : "Schedule screening"}
         </Button>
       </div>
 
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        A new screening is stored as a draft at price 0.00 and is not sold, because the create
-        request cannot carry a price or a status. Setting a price and a status in the next
-        step is what makes it reach the catalogue.
+        One submit: a price and a status of <code>on_sale</code> here put the screening in the
+        catalogue. Leave the price empty and the status as a draft to schedule it as a draft
+        at price 0.00, exactly as before, and set both in the form below when you are ready.
       </p>
 
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -300,7 +362,7 @@ export function EventForm({
 }
 
 /**
- * Sets one screening's price, its status, or both — the second request of the sale flow.
+ * Sets one screening's price, its status, or both — for a screening that already exists.
  *
  * The price field opens on the amount the API served, so "unchanged" is a real possibility:
  * a field the operator did not touch is not sent, and a status-only change therefore leaves
