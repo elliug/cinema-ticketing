@@ -14,11 +14,16 @@
 //   - rejects a request the API would reject anyway (no seats, too many seats, no
 //     idempotency key, no ticket id) before anything leaves the process.
 //
-// It covers the M2 hold surface, the M3 checkout and ticket reads, and the M3
-// ticket verification a page uses to say plainly whether a ticket admits its
-// holder. The two ticket *downloads* are not reads this client makes: they are
-// built as link and image targets by [ticketPDFUrl] and [ticketQRImageUrl], so the
-// browser fetches the bytes and the page never handles them.
+// It covers the M2 hold surface, the M3 checkout and ticket reads, the M3.5
+// public catalogue a stranger reads before owning any identifier, the M3.5 read of
+// one screening (so the seat page keeps the film, the venue, the hour and the price
+// the buyer clicked on), the M3.5 read of one order (so a reloaded confirmation keeps
+// its screening, its seats, its deadline and its tickets without asking the payment
+// route again), and the M3 ticket verification a page uses to say plainly whether a
+// ticket admits its holder. The two ticket *downloads* are not reads this
+// client makes: they are built as link and image targets by [ticketPDFUrl] and
+// [ticketQRImageUrl], so the browser fetches the bytes and the page never handles
+// them.
 //
 // The client depends only on the standard fetch API, so it is usable from a
 // server component, a server action, or a test with an injected fetch.
@@ -141,6 +146,64 @@ export interface PublicPayment {
   ticketIds: string[];
 }
 
+/** One seat of an order, as the order read paints it at the door. */
+export interface PublicOrderSeat {
+  /** Event seat id; the hold request addresses seats by this value. */
+  eventSeatId: number;
+  rowLabel: string;
+  seatNumber: string;
+}
+
+/**
+ * GET /reservations/{reservationId} — one order, as the confirmation page reads it.
+ *
+ * This is what makes the checkout survive a reload. The hold and the payment are
+ * one-shot answers; a browser that refreshes has nothing left to show without this
+ * read, and the page would have to either invent the order or forget it.
+ *
+ * Two fields carry the S8 rules:
+ *
+ *   - `amountCents`/`amountDisplay` are **null together** while nothing has been
+ *     captured. `0` would claim a charge that never happened, and `price × seats`
+ *     would claim one nobody made: the read carries no price at all, so this client
+ *     cannot compute an amount even by accident;
+ *   - `startsAtLocal` is the venue's own presentation of `startsAt`, computed by the
+ *     API, so a reloaded page prints the cinema's clock rather than the browser's.
+ *
+ * The identifier is the capability (the demonstration session authenticates nobody),
+ * so this read is exactly as public as the ticket route and answers no buyer identity
+ * and no payment-attempt internals.
+ */
+export interface PublicReservation {
+  reservationId: string;
+  /**
+   * Stored order status, carried verbatim: `held` while the seats are held,
+   * `payment_pending` while a payment is under way, `paid` once the money was taken,
+   * and `expired` or `cancelled` once it ended without one. A surface prints it
+   * instead of interpreting it into a second vocabulary the API never used.
+   */
+  status: string;
+  /** The durable hold deadline in UTC; the countdown is derived from this value. */
+  expiresAt: string;
+  /** The money actually captured, or null while nothing was captured. */
+  amountCents: number | null;
+  /** The same amount as the API renders it, for example `19.98`; null with the above. */
+  amountDisplay: string | null;
+  /** The seats the order holds or sold, in the order they are painted at the door. */
+  seats: PublicOrderSeat[];
+  /** The tickets issued for this order; an empty array while it is unpaid. */
+  ticketIds: string[];
+  /** The screening, so a reloaded confirmation says what is being bought and when. */
+  eventId: string;
+  filmTitle: string;
+  cinemaName: string;
+  roomName: string;
+  /** The instant the screening starts, in UTC, for a `<time>` element. */
+  startsAt: string;
+  /** The screening time in the venue's own zone; what the page prints. */
+  startsAtLocal: string;
+}
+
 /** One seat of a ticket, as it is painted at the door. */
 export interface PublicTicketSeat {
   eventSeatId: number;
@@ -208,9 +271,86 @@ export interface PublicVerification {
   reason?: string;
 }
 
+/** One screening of the public catalogue, as `GET /events` answers it. */
+export interface PublicScreening {
+  /** Event id; the seat page is reached at `/events/{id}/seats`. */
+  id: string;
+  /**
+   * The stored status of the screening, carried verbatim: `draft`, `published`,
+   * `on_sale`, `started`, `completed` or `cancelled`.
+   *
+   * It is what a surface prints when it has to explain why a screening is not on
+   * sale, so it is read as served rather than interpreted into a second vocabulary
+   * the API never used.
+   */
+  status: string;
+  /**
+   * Whether the API still offers this screening for sale.
+   *
+   * The decision is the database's (`status = 'on_sale'` and still ahead of its
+   * clock) and is the same predicate that decides membership of the catalogue, so
+   * no surface compares a clock of its own to know whether a seat can be bought.
+   * It is the answer, not a hint: `false` means the page must not offer seats.
+   */
+  onSale: boolean;
+  filmTitle: string;
+  cinemaName: string;
+  roomName: string;
+  /**
+   * The instant the screening starts, in UTC. It is the machine-readable value a
+   * `<time>` element carries; the surface prints `startsAtLocal` instead.
+   */
+  startsAt: string;
+  /**
+   * The screening time **in the venue's own zone**, rendered by the API.
+   *
+   * Same rule as the ticket: this is what the catalogue prints. Re-formatting
+   * `startsAt` would render the viewer's zone, so a missing value is a refused
+   * response rather than something this client derives.
+   */
+  startsAtLocal: string;
+  /** The price of one seat, in minor units. */
+  priceCents: number;
+  /** The same amount as the API renders it, for example `12.50`. */
+  priceDisplay: string;
+  /** How many seats the screening sells. */
+  seatCount: number;
+  /** How many of them are neither sold nor held right now. */
+  availableSeats: number;
+}
+
 export interface PublicClient {
+  /**
+   * The screenings a buyer can buy right now, in the API's screening order.
+   *
+   * The order is the API's (screening time, then whatever it breaks ties by), so
+   * callers render the array as served: re-sorting it here would be a second
+   * opinion about a sequence one read already decided. An empty catalogue is an
+   * empty array, never an error.
+   */
+  listEvents(): Promise<PublicResult<PublicScreening[]>>;
+  /**
+   * One screening, whatever its status, so a buyer who followed a link to a
+   * screening that is no longer offered is told so instead of being answered with a
+   * 404 that would claim it never existed.
+   *
+   * The entry shape is the catalogue's own, projected once by the API, so the
+   * catalogue row and the seat page cannot disagree about the film, the venue, the
+   * hour or the price. Only `not_found` means the screening does not exist.
+   */
+  getEvent(eventId: string): Promise<PublicResult<PublicScreening>>;
   listEventSeats(eventId: string): Promise<PublicResult<PublicEventSeats>>;
   createHold(input: CreateHoldInput): Promise<PublicResult<PublicHold>>;
+  /**
+   * One order, whatever its status, so the confirmation page can be reloaded: the
+   * screening it is for, the seats it holds, the deadline it runs against, the money
+   * taken and the tickets issued.
+   *
+   * Only `not_found` means the order does not exist; an unreadable store is a
+   * retryable `503`, never an empty order a page would render as a purchase of
+   * nothing.
+   */
+  getReservation(reservationId: string): Promise<PublicResult<PublicReservation>>;
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
   getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
   verifyTicket(token: string): Promise<PublicResult<PublicVerification>>;
@@ -227,9 +367,19 @@ export type AvailabilityResponse =
   | { ok: true; seats: PublicEventSeat[] }
   | { ok: false; problem: PublicProblem };
 
+/** The serializable answer of a screening read. */
+export type ScreeningResponse =
+  | { ok: true; screening: PublicScreening }
+  | { ok: false; problem: PublicProblem };
+
 /** The serializable answer of a hold attempt. */
 export type HoldResponse =
   | { ok: true; hold: PublicHold }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of an order read. */
+export type ReservationResponse =
+  | { ok: true; reservation: PublicReservation }
   | { ok: false; problem: PublicProblem };
 
 /** The serializable answer of a payment attempt. */
@@ -371,6 +521,37 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
   }
 
   return {
+    async listEvents() {
+      const result = await send<unknown>("/events", {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseCatalog(result.value);
+    },
+
+    async getEvent(eventId) {
+      const id = eventId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidInput("this page needs an event id") };
+      }
+
+      const result = await send<unknown>(`/events/${encodeURIComponent(id)}`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return result;
+      }
+      // The catalogue and this read answer one entry shape, so they share one
+      // parser: neither can interpret the sale state differently from the other.
+      return parseScreening(result.value);
+    },
+
     async listEventSeats(eventId) {
       const result = await send<unknown>(
         `/events/${encodeURIComponent(eventId)}/seats`,
@@ -409,6 +590,28 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseHold(result.value);
+    },
+
+    async getReservation(reservationId) {
+      const id = reservationId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidInput("this page needs a reservation id") };
+      }
+
+      // A read, so no Idempotency-Key and no body: nothing about this request changes
+      // the order, which is why reloading can never charge twice.
+      const result = await send<unknown>(
+        `/reservations/${encodeURIComponent(id)}`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        },
+      );
+      if (!result.ok) {
+        return result;
+      }
+      return parseReservation(result.value);
     },
 
     async payReservation(input) {
@@ -582,6 +785,174 @@ function parsePayment(value: unknown): PublicResult<PublicPayment> {
       ticketIds: Array.isArray(value.ticketIds)
         ? value.ticketIds.filter((id): id is string => typeof id === "string")
         : [],
+    },
+  };
+}
+
+function parseReservation(value: unknown): PublicResult<PublicReservation> {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the order read is not an order"),
+    };
+  }
+  const reservationId = servedString(value.reservationId);
+  if (reservationId === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the order read names no reservation"),
+    };
+  }
+
+  // The status is what the confirmation prints and what decides whether a payment may
+  // be offered, so it is served or the read is refused — never defaulted to something
+  // that would make an ended order look payable.
+  const status = servedString(value.status);
+  if (status === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no status, so its state cannot be shown`,
+      ),
+    };
+  }
+  // Without the server deadline there is no countdown, and a client-side guess would
+  // promise a window the server never granted.
+  const expiresAt = servedString(value.expiresAt);
+  if (expiresAt === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no expiresAt deadline, so its hold window cannot be counted`,
+      ),
+    };
+  }
+
+  // The amount is nullable, and its two forms are null together. A number without the
+  // text the API renders is half an answer: the page would have to format money
+  // itself, which is the rule the catalogue and the ticket already avoid.
+  let amountCents: number | null = null;
+  let amountDisplay: string | null = null;
+  if (value.amountCents !== null && value.amountCents !== undefined) {
+    const served = wholeOrUndefined(value.amountCents);
+    const text = servedString(value.amountDisplay);
+    if (served === undefined || text === undefined) {
+      return {
+        ok: false,
+        error: unexpectedResponse(
+          200,
+          `the order ${reservationId} carries an amount without the display text for it`,
+        ),
+      };
+    }
+    amountCents = served;
+    amountDisplay = text;
+  }
+
+  // The seats and the tickets are always arrays on the wire, so a client iterates them
+  // without a nil check. Something else is not an empty order: it is a broken read.
+  if (!Array.isArray(value.seats)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no seat list, so the seats it holds cannot be shown`,
+      ),
+    };
+  }
+  // A seat the read cannot name is not a seat the page can print, and dropping it would
+  // show an order holding fewer seats than it does. One broken seat refuses the read.
+  const seats: PublicOrderSeat[] = [];
+  for (const item of value.seats) {
+    if (!isRecord(item) || typeof item.eventSeatId !== "number") {
+      return {
+        ok: false,
+        error: unexpectedResponse(
+          200,
+          `the order ${reservationId} contains a seat without a numeric event seat id`,
+        ),
+      };
+    }
+    seats.push({
+      eventSeatId: item.eventSeatId,
+      rowLabel: stringOr(item.rowLabel, ""),
+      seatNumber: stringOr(item.seatNumber, ""),
+    });
+  }
+  if (!Array.isArray(value.ticketIds)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no ticket list, so a paid order could not show its tickets`,
+      ),
+    };
+  }
+
+  // The screening is what a reloaded confirmation keeps. Every field of it is printed,
+  // so a read that lost one is refused rather than rendered as a screening that is only
+  // partly known.
+  const filmTitle = servedString(value.filmTitle);
+  if (filmTitle === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no film title, so a reload cannot say what it buys`,
+      ),
+    };
+  }
+  const cinemaName = servedString(value.cinemaName);
+  if (cinemaName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no cinema name, so a reload cannot say where it is`,
+      ),
+    };
+  }
+  const roomName = servedString(value.roomName);
+  if (roomName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no room name, so a reload cannot say where it is`,
+      ),
+    };
+  }
+  const startsAtLocal = servedString(value.startsAtLocal);
+  if (startsAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the order ${reservationId} carries no startsAtLocal, so its screening time cannot be shown in the venue's zone`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      reservationId,
+      status,
+      expiresAt,
+      amountCents,
+      amountDisplay,
+      seats,
+      ticketIds: value.ticketIds.filter(
+        (id): id is string => typeof id === "string",
+      ),
+      eventId: stringOr(value.eventId, ""),
+      filmTitle,
+      cinemaName,
+      roomName,
+      startsAt: stringOr(value.startsAt, ""),
+      startsAtLocal,
     },
   };
 }
@@ -846,6 +1217,147 @@ function servedString(value: unknown): string | undefined {
   return value.trim() === "" ? undefined : value;
 }
 
+function parseCatalog(value: unknown): PublicResult<PublicScreening[]> {
+  if (!isRecord(value) || !Array.isArray(value.events)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the public catalogue has no screening list"),
+    };
+  }
+
+  const events: PublicScreening[] = [];
+  for (const item of value.events) {
+    const event = parseScreening(item);
+    if (!event.ok) {
+      // One unreadable entry refuses the whole catalogue. Dropping it would hide a
+      // screening the API offered, and printing a screening whose numbers are
+      // missing would show an availability nobody counted.
+      return event;
+    }
+    events.push(event.value);
+  }
+
+  // Served order, untouched: the API answers the catalogue in screening order and
+  // a client that sorted again could disagree with it.
+  return { ok: true, value: events };
+}
+
+function parseScreening(value: unknown): PublicResult<PublicScreening> {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the catalogue contains a screening without an id"),
+    };
+  }
+  const id = servedString(value.id);
+  if (id === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the catalogue contains a screening without an id"),
+    };
+  }
+
+  // The sale state is the API's decision, not a client's: `onSale` is the predicate
+  // the database applied, so a missing flag would leave the page with no honest way
+  // to know whether a seat can be bought. It is a boolean or the response is refused —
+  // never a default, because both defaults would be a claim about the sale.
+  const status = servedString(value.status);
+  if (status === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no status, so why it is not on sale cannot be explained`,
+      ),
+    };
+  }
+  if (typeof value.onSale !== "boolean") {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no onSale flag, so whether its seats can be bought is unknown`,
+      ),
+    };
+  }
+
+  const filmTitle = servedString(value.filmTitle);
+  if (filmTitle === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no film title`),
+    };
+  }
+  const cinemaName = servedString(value.cinemaName);
+  if (cinemaName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no cinema name`),
+    };
+  }
+  const roomName = servedString(value.roomName);
+  if (roomName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no room name`),
+    };
+  }
+  // The venue's local hour is served by the API's own rule, never derived here:
+  // falling back to `startsAt` would print the browser's zone on a page whose
+  // whole point is to print the venue's. A response without it is refused.
+  const startsAtLocal = servedString(value.startsAtLocal);
+  if (startsAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no startsAtLocal, so its screening time cannot be shown in the venue's zone`,
+      ),
+    };
+  }
+  const priceDisplay = servedString(value.priceDisplay);
+  if (priceDisplay === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no priceDisplay, so its price cannot be shown`,
+      ),
+    };
+  }
+  // Availability is the read model's numbers, so both of them have to be there:
+  // "12 of 40 seats available" with either number missing is a claim nobody made.
+  const seatCount = wholeOrUndefined(value.seatCount);
+  const availableSeats = wholeOrUndefined(value.availableSeats);
+  if (seatCount === undefined || availableSeats === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no seat count, so its availability cannot be shown`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      id,
+      status,
+      onSale: value.onSale,
+      filmTitle,
+      cinemaName,
+      roomName,
+      startsAt: stringOr(value.startsAt, ""),
+      startsAtLocal,
+      priceCents: integerOr(value.priceCents),
+      priceDisplay,
+      seatCount,
+      availableSeats,
+    },
+  };
+}
+
 /** A minor-units amount; anything that is not a finite number counts as zero. */
 function integerOr(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -857,4 +1369,12 @@ function optionalString(value: unknown): string | undefined {
     return undefined;
   }
   return value.trim() === "" ? undefined : value;
+}
+
+/** A served whole number (a seat count), or undefined when it is not one. */
+function wholeOrUndefined(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return value;
 }

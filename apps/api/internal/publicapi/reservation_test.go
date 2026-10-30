@@ -77,6 +77,11 @@ func getReservation(t *testing.T, ts *httptest.Server, reservationID string) *ht
 // reservationFixtureExpiry is the durable deadline the fixtures carry.
 var reservationFixtureExpiry = time.Date(2026, time.May, 4, 18, 40, 0, 0, time.UTC)
 
+// reservationFixtureStart is the screening instant of the fixture. Madrid is +02:00 in
+// May, so the venue-local form is the same instant two hours later — which is what the
+// route must print without the browser knowing the zone.
+var reservationFixtureStart = time.Date(2030, time.January, 15, 20, 30, 0, 0, time.UTC)
+
 // fixturePaidReservation is what a paid two-seat order answers: the seats it sold, in
 // seat order, the money the capture took, and the tickets issued for it.
 func fixturePaidReservation() catalog.ReservationDetail {
@@ -85,6 +90,12 @@ func fixturePaidReservation() catalog.ReservationDetail {
 		ID:          "00000000-0000-0000-0000-00000000f2a1",
 		Status:      "paid",
 		ExpiresAt:   reservationFixtureExpiry,
+		EventID:     "00000000-0000-0000-0000-00000000f2e1",
+		FilmTitle:   "La película de la confirmación",
+		CinemaName:  "Cine Confirmación",
+		RoomName:    "Sala 2",
+		StartsAt:    reservationFixtureStart,
+		Timezone:    "Europe/Madrid",
 		AmountCents: &amount,
 		Seats: []catalog.Seat{
 			{EventSeatID: 21, RowLabel: "A", SeatNumber: "1"},
@@ -111,10 +122,18 @@ type reservationBody struct {
 	ReservationID string                `json:"reservationId"`
 	Status        string                `json:"status"`
 	ExpiresAt     string                `json:"expiresAt"`
-	AmountCents   *int64                `json:"amountCents"`
-	AmountDisplay *string               `json:"amountDisplay"`
+	AmountCents    *int64              `json:"amountCents"`
+	AmountDisplay  *string             `json:"amountDisplay"`
+	AmountDueCents   *int64            `json:"amountDueCents"`
+	AmountDueDisplay *string           `json:"amountDueDisplay"`
 	Seats         []reservationSeatBody `json:"seats"`
 	TicketIDs     []string              `json:"ticketIds"`
+	EventID       string                `json:"eventId"`
+	FilmTitle     string                `json:"filmTitle"`
+	CinemaName    string                `json:"cinemaName"`
+	RoomName      string                `json:"roomName"`
+	StartsAt      string                `json:"startsAt"`
+	StartsAtLocal string                `json:"startsAtLocal"`
 }
 
 // S5: reloading the confirmation of a paid order answers everything the screen shows,
@@ -167,7 +186,9 @@ func TestReservationRouteServesTheConfirmationState(t *testing.T) {
 	// read is a capability URL, and payment internals are not part of what the
 	// confirmation shows.
 	if got := objectKeys(t, raw); !equalKeys(got, []string{
-		"amountCents", "amountDisplay", "expiresAt", "reservationId", "seats", "status", "ticketIds",
+		"amountCents", "amountDisplay", "amountDueCents", "amountDueDisplay", "cinemaName",
+		"eventId", "expiresAt", "filmTitle",
+		"reservationId", "roomName", "seats", "startsAt", "startsAtLocal", "status", "ticketIds",
 	}) {
 		t.Fatalf("reservation keys = %v, want the documented confirmation fields", got)
 	}
@@ -184,11 +205,19 @@ func TestReservationRouteServesTheConfirmationState(t *testing.T) {
 // zero charge invented from a missing one. The amount stays null, not 0 and not a
 // price multiplied by the seats.
 func TestReservationRouteKeepsAnUnpaidAmountNull(t *testing.T) {
+	due := int64(2500)
 	unpaid := catalog.ReservationDetail{
-		ID:        "00000000-0000-0000-0000-00000000f2c1",
-		Status:    "held",
-		ExpiresAt: reservationFixtureExpiry,
-		Seats:     []catalog.Seat{{EventSeatID: 30, RowLabel: "B", SeatNumber: "4"}},
+		ID:             "00000000-0000-0000-0000-00000000f2c1",
+		AmountDueCents: &due,
+		Status:     "held",
+		ExpiresAt:  reservationFixtureExpiry,
+		EventID:    "00000000-0000-0000-0000-00000000f2e1",
+		FilmTitle:  "La película de la confirmación",
+		CinemaName: "Cine Confirmación",
+		RoomName:   "Sala 2",
+		StartsAt:   reservationFixtureStart,
+		Timezone:   "Europe/Madrid",
+		Seats:      []catalog.Seat{{EventSeatID: 30, RowLabel: "B", SeatNumber: "4"}},
 	}
 	response := getReservation(t, mountedReservationReadServer(t, &fakeReservationReader{detail: unpaid}), unpaid.ID)
 	if response.StatusCode != http.StatusOK {

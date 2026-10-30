@@ -1,3 +1,102 @@
+/* Tailwind (M3.5 · T3b).
+ *
+ * Imported in two layers on purpose: the theme (so `@theme` tokens exist) and the
+ * utilities, but **not** Tailwind's preflight. Preflight resets margins, headings and
+ * form controls, and the ticket and administration screens still rely on the
+ * hand-written rules below until they migrate in their own slices (T7 and T8). When the
+ * last of them moves to utilities, the preflight can be added and these legacy rules
+ * deleted.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* shadcn's component vocabulary, mapped onto the tokens this app already owns.
+ * `inline` keeps the reference rather than the resolved value, so dark mode and a
+ * future palette change reach every shadcn component without touching them.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius-md: calc(var(--radius) - 0.125rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+}
+
+/* ── Legacy layer ────────────────────────────────────────────────────────────
+ * Everything below is the hand-written styling of M1–M3. It is wrapped in
+ * `@layer base` on purpose: Tailwind's utilities live in `@layer utilities`, and an
+ * unlayered rule always wins over a layered one — which made `text-muted-foreground`
+ * on a paragraph, or a smaller `CardTitle`, silently inert. With the legacy rules in
+ * a layer, utilities override them as they should, and this block shrinks screen by
+ * screen as each one migrates (T5–T8). The preflight joins at that point.
+ *
+ * T5 migrated the seat page — the page, the map and the selection summary are now
+ * shadcn primitives and utilities — and **deleted nothing**, because every rule that
+ * page stopped using is still the only styling of another screen. T6 migrated the
+ * confirmation page (the checkout) the same way and, again, deleted nothing: it used
+ * `.card`, `.problems`, `.notice`, `.meta`, `.actions`, `.feedback`, `.eyebrow`, `.lead`
+ * and `.list`, and every one of them is still load-bearing somewhere else.
+ *
+ * **T7 is the first migration that deleted something.** It moved both ticket screens —
+ * the list and the ticket itself — onto shadcn primitives and utilities, and four rule
+ * groups then had no user left anywhere: `.ticket-facts`, `.qr`, `.qr-image` and
+ * `a.download`. Everything else those screens stopped using is still the only styling of
+ * the administration pages, so the inventory stays and now names who is left with each
+ * rule:
+ *
+ *   .foundation, .skip-link        every page, and the root layout's skip link
+ *   .eyebrow, .lead                administration: the schedule and venues pages
+ *   .card                          administration, and the shell's hand-written Card
+ *                                  still imported by the home page
+ *   .card__*, .card--*             only components/card.tsx (home page)
+ *   .problems                      administration: the layout editor, and the error
+ *                                  block of the schedule and venues pages
+ *   .notice                        administration and the home page
+ *   .meta                          administration: the schedule and layout views
+ *   .list                          administration and the home page
+ *   .actions                       administration (the layout editor)
+ *   .feedback, .feedback.error     administration: the schedule, venues and layout
+ *                                  forms
+ *   .rows, .row, .row-header       administration: the layout editor (M1)
+ *   .path                          administration: schedule, venues and layouts
+ *   .seats, .seat, .fields         administration: the layout editor only
+ *   .editor                        administration: the layouts page only
+ *   .btn, .badge, .alert, .field__*, .empty-state, .skeleton, .page-header__*
+ *                                  the hand-written components in components/ that the
+ *                                  barrel still exports; no page imports them any more
+ *                                  except PageHeader (every page) and the hand-written
+ *                                  Card (home page)
+ *   button, input, select          administration forms and the demo switcher
+ *   code, a, body, headings        base element rules: every remaining screen, and the
+ *                                  migrated checkout and ticket screens still print ids
+ *                                  in <code> and times in <time>
+ *   .visually-hidden               no screen today: kept as the shared utility
+ *
+ * Nothing here may be removed until the screen named beside it migrates, and the
+ * preflight import stays deferred until the last of them does: **administration (T8) is
+ * the only one left**. Importing it now would restyle it in a change that claims to be
+ * about the tickets (L6).
+ */
+@layer base {
 /* Design tokens and shell styling (M3.5 · T3 · S1, S2, S8).
  *
  * One file owns the look. Every value a surface needs is a custom property below,
@@ -24,6 +123,32 @@
 
 :root {
   color-scheme: light dark;
+
+  /* ── shadcn vocabulary, aliased onto the tokens below ─────────────────────
+   * One palette, two naming schemes: Tailwind/shadcn utilities resolve these, and
+   * they in turn point at the design tokens this file owns. Dark mode therefore
+   * reaches every shadcn component without a second palette.
+   */
+  --background: var(--color-bg);
+  --foreground: var(--color-text);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-text);
+  --popover: var(--color-surface);
+  --popover-foreground: var(--color-text);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--color-on-accent);
+  --secondary: var(--color-surface-muted);
+  --secondary-foreground: var(--color-text);
+  --muted: var(--color-surface-muted);
+  --muted-foreground: var(--color-text-muted);
+  --accent: var(--color-surface-muted);
+  --accent-foreground: var(--color-text);
+  --destructive: var(--color-danger);
+  --destructive-foreground: var(--color-on-danger);
+  --border: var(--color-border);
+  --input: var(--color-border);
+  --ring: var(--color-accent);
+  --radius: var(--radius-md);
 
   /* ── Colour: surfaces and text ─────────────────────────────────────────────
    * Three levels, in the order a page stacks them: the page behind everything,
@@ -1055,66 +1180,5 @@ button:disabled {
   color: var(--color-danger-text);
 }
 
-/* ── Guest checkout and ticket surfaces (M3 · T7) ────────────────────────────
- *
- * Two layouts and nothing more: the order facts of a ticket as a definition list
- * that reads as label/value pairs on a phone, and the QR image at a size a scanner
- * can read from a screen. Everything else reuses the cards, notices and problems
- * above.
- */
-
-.ticket-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.35rem var(--space-4);
-  margin: var(--space-4) 0;
 }
 
-.ticket-facts > div {
-  display: contents;
-}
-
-.ticket-facts dt {
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.ticket-facts dd {
-  margin: 0;
-  font-weight: var(--font-weight-bold);
-}
-
-.qr {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-/* A QR code needs quiet space around it and hard edges: no scaling blur, and the
- * white quiet zone stays white in both colour schemes, because a dark-mode image
- * is a code a scanner may refuse. */
-.qr-image {
-  background-color: #ffffff;
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  image-rendering: pixelated;
-  max-width: 100%;
-  height: auto;
-}
-
-a.download {
-  display: inline-block;
-  padding: 0.4rem 0.85rem;
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  color: var(--color-accent);
-  text-decoration: none;
-  font-weight: var(--font-weight-bold);
-}
-
-a.download:hover,
-a.download:focus-visible {
-  text-decoration: underline;
-}

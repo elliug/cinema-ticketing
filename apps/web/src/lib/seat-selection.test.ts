@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PublicProblem } from "./public-api.ts";
+import { MAX_HOLD_SEATS } from "./public-api.ts";
 import type { SeatMapLayout } from "./seat-selection.ts";
 import {
   applyHoldFailure,
@@ -21,11 +22,20 @@ import {
   dropUnavailableSeats,
   describeCountdown,
   describeHoldFailure,
+  describeSaleState,
+  describeScreeningFailure,
+  formatCents,
   formatCountdown,
   idleAttempt,
+  initialSeatFocus,
   layoutFromAvailability,
+  mapAvailability,
+  priceSummary,
   remainingMilliseconds,
+  resolveSeatKey,
+  seatStateWord,
   selectionSummary,
+  SEAT_STATE_LEGEND,
   toggleSeat,
   EMPTY_SELECTION,
 } from "./seat-selection.ts";
@@ -572,4 +582,557 @@ test("applyHoldFailure keeps the calm view and stops the attempt", () => {
   assert.equal(attempt.hold, null);
   assert.equal(attempt.failure?.kind, "seat_unavailable");
   assert.equal(attempt.failure?.refetchAvailability, true);
+});
+
+// ── The screening the buyer clicked (M3.5 · T5 · S3, S8) ─────────────────────
+//
+// The seat page is reached from the catalogue, so it owes the buyer the screening
+// they chose: the film, the venue, the room, the venue's own hour and the price of
+// a seat. Two rules decide what it may say about the sale. `onSale` is the API's
+// answer and is never re-derived from a clock here, and the reason a sale stopped
+// comes from the stored status rather than from the page's imagination.
+
+test("a screening that is on sale is stated plainly, with no reason to give", () => {
+  const state = describeSaleState({ status: "on_sale", onSale: true });
+
+  assert.equal(state.onSale, true);
+  assert.equal(state.reason, null);
+  assert.equal(state.headline, null);
+  assert.equal(state.message, null);
+  assert.equal(state.badge, "On sale");
+});
+
+test("a cancelled screening says it was cancelled, never that it does not exist", () => {
+  const state = describeSaleState({ status: "cancelled", onSale: false });
+
+  assert.equal(state.onSale, false);
+  assert.equal(state.reason, "cancelled");
+  assert.equal(state.badge, "Cancelled");
+  assert.match(state.headline!, /cancel/i);
+  assert.match(state.message!, /cancel/i);
+  // The 404 branch owns "does not exist"; a cancellation must not borrow its words.
+  assert.doesNotMatch(
+    `${state.headline} ${state.message}`,
+    /not found|does not exist|could not be loaded/i,
+  );
+});
+
+test("a draft screening is not on sale yet, and says which reason that is", () => {
+  const state = describeSaleState({ status: "draft", onSale: false });
+
+  assert.equal(state.reason, "draft");
+  assert.equal(state.badge, "Not on sale yet");
+  assert.match(state.message!, /draft|not been published|not published/i);
+  assert.doesNotMatch(`${state.headline} ${state.message}`, /cancel/i);
+});
+
+test("a screening whose start has passed is no longer on sale, because it started", () => {
+  // The API decides `onSale` as `status = 'on_sale'` and still ahead of the database
+  // clock, so a screening that is on sale by status and not by the flag has started.
+  const state = describeSaleState({ status: "on_sale", onSale: false });
+
+  assert.equal(state.reason, "started");
+  assert.equal(state.badge, "No longer on sale");
+  assert.match(state.headline!, /started/i);
+  assert.doesNotMatch(`${state.headline} ${state.message}`, /cancel/i);
+});
+
+test("a status this page does not interpret is printed instead of explained", () => {
+  // "completed", "published" and anything a later milestone adds are not guessed
+  // at: the page states that no sale is open and prints the served status, which is
+  // the one fact it has.
+  for (const status of ["completed", "published", "archived"]) {
+    const state = describeSaleState({ status, onSale: false });
+
+    assert.equal(state.reason, "closed", status);
+    assert.equal(state.badge, "No longer on sale");
+    assert.match(
+      state.message!,
+      new RegExp(status),
+      "the served status is printed verbatim",
+    );
+  }
+});
+
+test("every reason a sale stopped reads differently from the others", () => {
+  const reasons = ["cancelled", "draft", "on_sale", "completed"].map((status) => {
+    const state = describeSaleState({ status, onSale: false });
+    assert.notEqual(state.reason, null, status);
+    return `${state.badge} ${state.headline} ${state.message}`;
+  });
+
+  assert.equal(
+    new Set(reasons).size,
+    reasons.length,
+    "four reasons, four sentences: a buyer can tell them apart",
+  );
+});
+
+test("a screening that does not exist is a 404, and asking again changes nothing", () => {
+  const view = describeScreeningFailure(
+    problem({
+      status: 404,
+      code: "not_found",
+      title: "Not found",
+      detail: "the requested screening does not exist",
+    }),
+  );
+
+  assert.equal(view.kind, "missing");
+  assert.equal(view.retryable, false);
+  assert.match(view.headline, /does not exist/i);
+  assert.doesNotMatch(
+    `${view.headline} ${view.message}`,
+    /temporar|could not be loaded/i,
+    "a screening that does not exist is not described as an outage",
+  );
+});
+
+test("an unavailable screening is retryable, and is never rendered as an empty page", () => {
+  for (const failure of [
+    problem({
+      status: 503,
+      code: "service_unavailable",
+      title: "Service unavailable",
+      detail: "the screening is temporarily unavailable; retry the request",
+    }),
+    problem({ status: 0, code: "network_error", title: "Network error" }),
+    problem({ status: 500, code: "unexpected_response" }),
+  ]) {
+    const view = describeScreeningFailure(failure);
+
+    assert.equal(view.kind, "temporary", `status ${failure.status}`);
+    assert.equal(view.retryable, true, "an outage is worth asking about again");
+    assert.match(view.message, /again|retry/i);
+    assert.doesNotMatch(
+      `${view.headline} ${view.message}`,
+      /does not exist/i,
+      "an outage is not a missing screening",
+    );
+  }
+});
+
+test("a screening read the API refused is a refusal, not an outage", () => {
+  const view = describeScreeningFailure(
+    problem({
+      status: 400,
+      code: "invalid_input",
+      title: "Invalid input",
+      detail: "this page needs an event id",
+    }),
+  );
+
+  assert.equal(view.kind, "refused");
+  assert.equal(view.retryable, false);
+  assert.match(view.message, /invalid_input/, "the API's own code is kept");
+});
+
+// ── The running amount (M3.5 · T5 · S3, S8) ──────────────────────────────────
+//
+// The page shows what the selected seats cost at the price the screening was read
+// with. Money is never derived from a count of availability: the amount is the
+// screening's own price per seat times the seats in the selection, and the copy
+// says plainly that the order, not this sentence, is what gets paid.
+
+test("formatCents renders minor units the way the API renders a price", () => {
+  assert.equal(formatCents(1250), "12.50");
+  assert.equal(formatCents(0), "0.00");
+  assert.equal(formatCents(5), "0.05");
+  assert.equal(formatCents(3750), "37.50");
+  assert.equal(formatCents(100000), "1000.00");
+  // Fail closed: an amount that is not a whole, non-negative number is not money.
+  assert.equal(formatCents(-100), "0.00");
+  assert.equal(formatCents(Number.NaN), "0.00");
+  assert.equal(formatCents(Number.POSITIVE_INFINITY), "0.00");
+  assert.equal(formatCents(12.5), "0.00");
+});
+
+test("the running amount is the screening's price times the seats selected", () => {
+  const seats = [11, 21, 31];
+  const summary = selectionSummary(seats, LAYOUT);
+
+  const priced = priceSummary(summary, { priceCents: 1250, priceDisplay: "12.50" });
+
+  assert.equal(priced.count, 3);
+  assert.equal(priced.amountCents, 3750);
+  assert.equal(priced.amountLabel, "37.50");
+  assert.equal(
+    priced.amountCents,
+    summary.count * 1250,
+    "the price per seat is the screening's, never a count of availability",
+  );
+  assert.match(priced.lineLabel, /3 seats/);
+  assert.match(priced.lineLabel, /12\.50/);
+  assert.match(priced.lineLabel, /37\.50/);
+  assert.equal(priced.overLimit, false);
+  assert.equal(priced.limitNote, null);
+});
+
+test("one seat is priced as one seat, in the singular", () => {
+  const priced = priceSummary(selectionSummary([11], LAYOUT), {
+    priceCents: 900,
+    priceDisplay: "9.00",
+  });
+
+  assert.equal(priced.count, 1);
+  assert.equal(priced.amountCents, 900);
+  assert.equal(priced.amountLabel, "9.00");
+  assert.match(priced.lineLabel, /1 seat/);
+});
+
+test("an empty selection states nothing rather than a cost", () => {
+  const priced = priceSummary(selectionSummary(EMPTY_SELECTION, LAYOUT), {
+    priceCents: 1250,
+    priceDisplay: "12.50",
+  });
+
+  assert.equal(priced.count, 0);
+  assert.equal(priced.amountCents, 0);
+  assert.equal(priced.amountLabel, "0.00");
+  assert.match(priced.lineLabel, /no seats selected/i);
+  assert.match(priced.lineLabel, /12\.50 per seat/);
+});
+
+test("the running amount never promises the amount the payment will take", () => {
+  const priced = priceSummary(selectionSummary([11, 21], LAYOUT), {
+    priceCents: 1250,
+    priceDisplay: "12.50",
+  });
+
+  // The order the API creates is authoritative; this sentence is a summary, and it
+  // says so. Nothing here may read as a promise about the charge.
+  assert.match(priced.note, /price per seat|per seat/i);
+  assert.match(priced.note, /order|payment|charged/i);
+  assert.doesNotMatch(
+    priced.note,
+    /guarantee|final|exactly what you will pay|we will charge you/i,
+    "the summary is not the charge",
+  );
+});
+
+test("a selection over the hold limit is named as over it", () => {
+  const longRowLayout: SeatMapLayout = {
+    geometryKnown: true,
+    rows: [
+      {
+        label: "A",
+        seats: Array.from({ length: MAX_HOLD_SEATS + 1 }, (_, index) => ({
+          eventSeatId: 100 + index,
+          label: `A${index + 1}`,
+          kind: "standard" as const,
+        })),
+      },
+    ],
+  };
+  const everySeat = longRowLayout.rows[0].seats.map((seat) => seat.eventSeatId);
+  assert.equal(everySeat.length, MAX_HOLD_SEATS + 1);
+
+  const priced = priceSummary(selectionSummary(everySeat, longRowLayout), {
+    priceCents: 500,
+    priceDisplay: "5.00",
+  });
+
+  assert.equal(priced.count, MAX_HOLD_SEATS + 1);
+  assert.equal(priced.overLimit, true);
+  assert.match(priced.limitNote!, new RegExp(String(MAX_HOLD_SEATS)));
+  // The amount is still the honest product; only the hold refuses the selection.
+  assert.equal(priced.amountCents, (MAX_HOLD_SEATS + 1) * 500);
+});
+
+// ── Which number the page prints (M3.5 · T5 · S8) ────────────────────────────
+//
+// A screening read carries a count of available seats and the seat read carries the
+// map. The map is the later answer and the only one this page sells, so the page
+// prints the map's numbers; when the two disagree it says so instead of pretending
+// the count was still true.
+
+test("the page counts the seats the map read, not the screening's number", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+  const map = mapAvailability(view, { seatCount: 40, availableSeats: 12 });
+
+  assert.equal(map.seatCount, view.seatCount);
+  assert.equal(map.availableSeats, view.availableCount);
+  assert.equal(map.label, "8 of 10 seats available");
+  assert.equal(map.matchesScreening, false);
+  assert.match(map.note!, /seat map|map/i, "the disagreement is attributed to the map");
+  assert.match(map.note!, /8|10/, "the note names the numbers the page printed");
+});
+
+test("two reads that agree need no note, and still print the map's numbers", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+  const map = mapAvailability(view, {
+    seatCount: view.seatCount,
+    availableSeats: view.availableCount,
+  });
+
+  assert.equal(map.matchesScreening, true);
+  assert.equal(map.note, null);
+  assert.equal(map.label, "8 of 10 seats available");
+});
+
+test("a sold-out map says so in words", () => {
+  const soldOut = AVAILABILITY.map((seat) => ({ ...seat, held: true }));
+  const view = buildSeatMap(LAYOUT, soldOut);
+  const map = mapAvailability(view, {
+    seatCount: view.seatCount,
+    availableSeats: 0,
+  });
+
+  assert.equal(map.availableSeats, 0);
+  assert.equal(map.label, "0 of 10 seats available — sold out");
+});
+
+// ── The keyboard contract (M3.5 · T5 · S6) ───────────────────────────────────
+//
+// The map is movable without a mouse: arrows walk rows and seats, Home and End jump
+// inside a row, and Space or Enter toggles the seat the focus is on. The focus never
+// lands where the map cannot draw it, and it does reach seats that cannot be
+// selected, because a keyboard user must be able to hear why a seat is unavailable.
+
+test("the first tab stop is the first seat that can be selected", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+  // A1 is free, A2 is held, so the entry point is A1 and not the held seat.
+  assert.equal(initialSeatFocus(view), 11);
+
+  const nothingFree = buildSeatMap(
+    LAYOUT,
+    AVAILABILITY.map((seat) => ({ ...seat, held: true })),
+  );
+  assert.equal(
+    initialSeatFocus(nothingFree),
+    11,
+    "with nothing selectable the map still has an entry point to read",
+  );
+
+  assert.equal(initialSeatFocus(buildSeatMap(layoutFromAvailability([]), [])), null);
+});
+
+test("arrow keys move inside a row and stop at its ends", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  assert.equal(resolveSeatKey(view, 11, "ArrowRight").focusSeatId, 12);
+  assert.equal(resolveSeatKey(view, 13, "ArrowRight").focusSeatId, 13, "row A ends at A3");
+  assert.equal(resolveSeatKey(view, 11, "ArrowLeft").focusSeatId, 11, "row A starts at A1");
+  assert.equal(resolveSeatKey(view, 22, "ArrowLeft").focusSeatId, 21);
+});
+
+test("arrow keys move between rows, clamped to the shorter row", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  assert.equal(resolveSeatKey(view, 11, "ArrowDown").focusSeatId, 21, "A1 -> B1");
+  assert.equal(resolveSeatKey(view, 22, "ArrowDown").focusSeatId, 32, "B2 -> C2");
+  assert.equal(
+    resolveSeatKey(view, 25, "ArrowDown").focusSeatId,
+    32,
+    "B5 has no C5, so the focus lands on the last seat of row C",
+  );
+  assert.equal(resolveSeatKey(view, 31, "ArrowDown").focusSeatId, 31, "the last row has no floor");
+  assert.equal(resolveSeatKey(view, 11, "ArrowUp").focusSeatId, 11, "the first row has no ceiling");
+  assert.equal(resolveSeatKey(view, 31, "ArrowUp").focusSeatId, 21);
+});
+
+test("Home and End move to the ends of the focused row", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  assert.equal(resolveSeatKey(view, 23, "Home").focusSeatId, 21);
+  assert.equal(resolveSeatKey(view, 21, "End").focusSeatId, 25);
+  assert.equal(resolveSeatKey(view, 32, "Home").focusSeatId, 31);
+});
+
+test("space and enter ask to toggle the focused seat and leave the focus where it is", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  for (const key of [" ", "Enter"]) {
+    const result = resolveSeatKey(view, 11, key);
+    assert.equal(result.toggle, true, `${key} toggles`);
+    assert.equal(result.focusSeatId, 11, `${key} does not move the focus`);
+  }
+
+  const moved = resolveSeatKey(view, 11, "ArrowRight");
+  assert.equal(moved.toggle, false, "moving is not selecting");
+});
+
+test("arrow keys reach a seat that cannot be selected, so its state can be heard", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  // A2 is held. The focus still moves onto it: the announcement is the reason the
+  // seat cannot be picked, and a focus that skipped it could not deliver that.
+  const ontoHeld = resolveSeatKey(view, 11, "ArrowRight");
+  assert.equal(ontoHeld.focusSeatId, 12);
+  assert.equal(view.rows[0].cells[1].selectable, false);
+  assert.deepEqual(
+    toggleSeat(EMPTY_SELECTION, ontoHeld.focusSeatId!, "held"),
+    EMPTY_SELECTION,
+    "the toggle the focus asked for is refused by the selection rule",
+  );
+});
+
+test("a key the map does not use changes nothing", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  for (const key of ["Tab", "PageDown", "a", "Escape"]) {
+    assert.deepEqual(resolveSeatKey(view, 22, key), {
+      focusSeatId: 22,
+      toggle: false,
+    });
+  }
+});
+
+test("an empty map has no focus and no movement", () => {
+  const view = buildSeatMap(layoutFromAvailability([]), []);
+
+  assert.equal(initialSeatFocus(view), null);
+  assert.deepEqual(resolveSeatKey(view, null, "ArrowRight"), {
+    focusSeatId: null,
+    toggle: false,
+  });
+  assert.deepEqual(resolveSeatKey(view, null, " "), {
+    focusSeatId: null,
+    toggle: false,
+  });
+});
+
+test("a key pressed with nothing focused enters the map", () => {
+  const view = buildSeatMap(LAYOUT, AVAILABILITY);
+
+  assert.equal(resolveSeatKey(view, null, "ArrowDown").focusSeatId, 11);
+  assert.equal(resolveSeatKey(view, 999, "ArrowRight").focusSeatId, 11, "a seat not on the map");
+});
+
+// ── Every seat state, without colour (M3.5 · T5 · S6, S8) ────────────────────
+//
+// A seat the API does not report as available is not selectable, whatever the map
+// would like to offer: `sold` is paid for, `held` belongs to a live hold, and
+// `unavailable` (or a state this milestone does not interpret) is not sold here. A
+// snapshot that carries no state at all keeps the older rule, where the `held` flag
+// was the only statement the API made.
+
+test("a sold seat is never offered for selection", () => {
+  const withSold = [
+    { id: 11, held: false, state: "available" },
+    { id: 12, held: false, state: "sold" },
+    { id: 13, held: false, state: "available" },
+  ];
+  const view = buildSeatMap(LAYOUT, withSold);
+
+  assert.equal(view.rows[0].cells[1].status, "sold");
+  assert.equal(view.rows[0].cells[1].selectable, false);
+  assert.equal(view.soldCount, 1);
+  assert.deepEqual(toggleSeat(EMPTY_SELECTION, 12, "sold"), EMPTY_SELECTION);
+});
+
+test("a seat the API calls unavailable is not offered, and neither is a state this map does not know", () => {
+  const view = buildSeatMap(LAYOUT, [
+    { id: 11, held: false, state: "available" },
+    { id: 12, held: false, state: "unavailable" },
+    { id: 13, held: false, state: "reserved_for_press" },
+  ]);
+
+  assert.equal(view.rows[0].cells[1].status, "blocked");
+  assert.equal(view.rows[0].cells[2].status, "blocked", "an unknown state is never sold");
+  assert.equal(view.rows[0].cells[1].selectable, false);
+  assert.equal(view.rows[0].cells[2].selectable, false);
+  assert.equal(view.blockedCount, 2);
+  assert.equal(view.availableCount, 1);
+});
+
+test("a snapshot with no state at all keeps the held flag's answer", () => {
+  // An older API serves availability without a per-seat state. The map keeps the
+  // rule it had: the `held` flag decides, and a free seat is selectable.
+  const view = buildSeatMap(LAYOUT, [
+    { id: 11, held: false },
+    { id: 12, held: true },
+  ]);
+
+  assert.equal(view.rows[0].cells[0].status, "available");
+  assert.equal(view.rows[0].cells[0].selectable, true);
+  assert.equal(view.rows[0].cells[1].status, "held");
+  assert.equal(view.rows[0].cells[1].selectable, false);
+});
+
+test("a held flag beats a state that says available", () => {
+  // The two fields can disagree inside one response; the live hold is the one that
+  // decides, because selling a held seat is the failure that costs a buyer.
+  const view = buildSeatMap(LAYOUT, [{ id: 11, held: true, state: "available" }]);
+
+  assert.equal(view.rows[0].cells[0].status, "held");
+  assert.equal(view.rows[0].cells[0].selectable, false);
+});
+
+test("the selection is still decorated by position, and a lost seat never renders", () => {
+  const view = buildSeatMap(
+    LAYOUT,
+    [
+      { id: 11, held: false, state: "available" },
+      { id: 12, held: true, state: "held" },
+    ],
+    [11, 12],
+  );
+
+  assert.equal(view.rows[0].cells[0].status, "selected");
+  assert.equal(view.rows[0].cells[1].status, "held", "held wins over stale client state");
+});
+
+test("each seat's accessible name is its row and number plus its state", () => {
+  const projected = layoutFromAvailability([
+    { id: 11, held: false, state: "available", rowLabel: "A", seatNumber: "1", kind: "standard" },
+    { id: 12, held: false, state: "sold", rowLabel: "A", seatNumber: "2", kind: "standard" },
+    { id: 13, held: false, state: "unavailable", rowLabel: "A", seatNumber: "3", kind: "standard" },
+  ]);
+  const view = buildSeatMap(
+    projected,
+    [
+      { id: 11, held: false, state: "available" },
+      { id: 12, held: false, state: "sold" },
+      { id: 13, held: false, state: "unavailable" },
+    ],
+    [11],
+  );
+
+  assert.deepEqual(
+    view.rows[0].cells.map((cell) => cell.description),
+    [
+      "Row A seat 1, selected",
+      "Row A seat 2, sold",
+      "Row A seat 3, not for sale",
+    ],
+  );
+
+  const held = buildSeatMap(projected, [{ id: 11, held: true, state: "held" }]);
+  assert.equal(held.rows[0].cells[0].description, "Row A seat 1, held by another guest");
+});
+
+test("the legend names every state with words, never with a tone alone", () => {
+  const statuses = SEAT_STATE_LEGEND.map((entry) => entry.status);
+
+  assert.deepEqual(statuses, [
+    "available",
+    "selected",
+    "held",
+    "sold",
+    "blocked",
+    "unknown",
+  ]);
+  for (const entry of SEAT_STATE_LEGEND) {
+    assert.ok(entry.legend.trim() !== "", `${entry.status} has a legend word`);
+    assert.ok(entry.legendDescription.trim() !== "", `${entry.status} is explained`);
+    assert.ok(entry.spoken.trim() !== "", `${entry.status} can be announced`);
+  }
+  // The word a cell prints is the state's own, so the map reads without colour.
+  assert.equal(seatStateWord("sold"), "sold");
+  assert.equal(seatStateWord("blocked"), "n/a");
+  assert.equal(seatStateWord("held"), "held");
+});
+
+test("a screening with no seats is not called sold out", () => {
+  // Nothing sold and nothing to sell are different answers, and only the first one is
+  // "sold out": an empty room would be a claim about demand the API never made.
+  const view = buildSeatMap(layoutFromAvailability([]), []);
+  const map = mapAvailability(view, { seatCount: 0, availableSeats: 0 });
+
+  assert.equal(map.seatCount, 0);
+  assert.equal(map.label, "No seats are sold for this screening");
+  assert.doesNotMatch(map.label, /sold out/i);
+  assert.equal(map.matchesScreening, true);
+  assert.equal(map.note, null);
 });

@@ -5,8 +5,10 @@
 // an SVG the ticket page shows, the M3 ticket PDF download route that answers a
 // short-lived pre-signed redirect, the M3 ticket verification route a door
 // scanner calls with a presented signed code, and the M3.5 reads the web needs: the
-// public catalogue of screenings (GET /events) and the confirmation's read of one
-// order (GET /reservations/{reservationId}).
+// public catalogue of screenings (GET /events), one screening of that catalogue
+// (GET /events/{eventID}) so the seat page keeps the film, the venue, the hour and the
+// price it arrived with, and the confirmation's read of one order
+// (GET /reservations/{reservationId}).
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -64,6 +66,11 @@ func (h *Handler) Mux() *http.ServeMux {
 	// decision mounts them together.
 	if h.catalog != nil {
 		mux.HandleFunc(eventsRoute, h.listEvents)
+		// One screening of the catalogue, mounted with the list it belongs to: the seat page
+		// a buyer reaches from the catalogue holds an event id and would otherwise lose the
+		// film, the venue, the hour and the price the entry just showed it. Both answers come
+		// from the same read model, and neither is mounted without it.
+		mux.HandleFunc(eventRoute, h.getEvent)
 	}
 	if h.reservations != nil {
 		// GET on the reservation subtree, next to the POST that creates a hold there: the

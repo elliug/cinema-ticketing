@@ -19,6 +19,7 @@ package publicapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"cinema.local/ticketing/apps/api/internal/catalog"
@@ -63,7 +64,13 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 	var (
 		amountCents   *int64
 		amountDisplay *string
+		dueCents      *int64
+		dueDisplay    *string
 	)
+	if text, ok := detail.DueText(); ok {
+		dueCents = detail.AmountDueCents
+		dueDisplay = &text
+	}
 	if text, ok := detail.AmountText(); ok {
 		amountCents = detail.AmountCents
 		amountDisplay = &text
@@ -79,6 +86,14 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 			"rowLabel":    seat.RowLabel,
 			"seatNumber":  seat.SeatNumber,
 		})
+	}
+
+	// A venue zone that cannot be resolved is a failure, not a guess: a confirmation that
+	// printed the wrong hour would send the buyer to the screening at the wrong time.
+	localStartsAt, err := detail.LocalStartsAt()
+	if err != nil {
+		writeReservationError(w, fmt.Errorf("%w: %s", catalog.ErrUnavailable, err))
+		return
 	}
 
 	// The tickets are an empty array while the order is unpaid, never null.
@@ -100,8 +115,22 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 		// as one seat's price.
 		"amountCents":   amountCents,
 		"amountDisplay": amountDisplay,
+		// What paying costs right now, and null whenever nothing is due. It is a quote:
+		// the charge is whatever the payment answer reports.
+		"amountDueCents":   dueCents,
+		"amountDueDisplay": dueDisplay,
 		"seats":         seats,
 		"ticketIds":     ticketIDs,
+		// The screening, so a reloaded confirmation says what is being bought and when.
+		// Both time forms are answered for the same reason the catalogue answers both: the
+		// instant for comparison, the venue's local form for reading, computed server side
+		// so the browser never has to know the venue's zone.
+		"eventId":     detail.EventID,
+		"filmTitle":   detail.FilmTitle,
+		"cinemaName":  detail.CinemaName,
+		"roomName":    detail.RoomName,
+		"startsAt":    detail.StartsAt.UTC(),
+		"startsAtLocal": localStartsAt,
 	})
 }
 
