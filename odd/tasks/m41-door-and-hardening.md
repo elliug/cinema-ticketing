@@ -55,8 +55,9 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | ID | Specs | Route | Slice |
 |---|---|---|---|
 | T1 | S6, S7 | gate: insecure origin + second engine | 1 · `8b2afc0` (#59) |
-| T2 | S8 | the five cheap defects | 2 |
-| T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 |
+| T2 | S8 | the five cheap defects | 2 · `3c26259` (#60) |
+| T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 · `501bbb6` |
+| T3b | S9 | the schedule form creates on sale in one request | 3b |
 | T4 | S10 | `POST /reservations/{id}/cancel` end to end | 4 |
 | T5 | S11 | catalogue pagination and filters | 5 |
 | T6 | S12 | timezone backfill migration | 6 |
@@ -138,3 +139,28 @@ this session can read, so T2 does not pretend to fix it. What T2 does instead is
 isolation question from the code itself — the gate's `M35_*` overrides are advisory, and a
 Redis index of `0` would point the gate at the development database's neighbour. If the
 original finding said something else, this log is where that becomes visible.
+
+### L5 — T2 merged, and T3 split in two after overshooting
+
+T2 merged as #60 (`3c26259`), reviewed and approved (`review-d638ef08e07d96ed`, seven
+informational findings, one real defect found and deliberately left as T12 rather than widened
+in scope).
+
+T3 was planned as one slice and did not fit. The API half — `POST /admin/events` accepting
+`priceCents` and `status`, and the administrative reads carrying `startsAtLocal` — came to **670
+authored lines in one commit (`501bbb6`), well past the ~400 line boundary this milestone set
+for itself**. The cause is worth writing down: the two halves are conceptually separate but
+share three files (`venue.go`, `store_postgres.go`, `events.go`), so splitting by file would not
+have separated them, and splitting by hunk was not worth the review value it would have bought.
+The PR is therefore structured by half so a reviewer can take it in two passes, and the
+boundary is recorded here instead of being quietly absorbed.
+
+The web half is **T3b**, deliberately not in T3: switching the schedule form to a single request
+changes what the browser gate asserts today ("created as a draft", then "saved"), and disturbing
+the gate twice for one feature is exactly the cost T1 was built to stop paying.
+
+Verified by the parent, beyond the writer's word: the PostgreSQL-gated test the writer could not
+run (no database URL) was run against a throwaway database migrated by the project's own runner,
+proving that the INSERT writes the price and that the read's join renders the venue hour. The
+throwaway database was dropped afterwards. The rest: 16 Go packages ok, `gofmt -l` empty,
+`go vet` clean, and the differential create-versus-update refusal test passing on eight values.
