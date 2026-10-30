@@ -19,6 +19,7 @@ package publicapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"cinema.local/ticketing/apps/api/internal/catalog"
@@ -81,6 +82,14 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// A venue zone that cannot be resolved is a failure, not a guess: a confirmation that
+	// printed the wrong hour would send the buyer to the screening at the wrong time.
+	localStartsAt, err := detail.LocalStartsAt()
+	if err != nil {
+		writeReservationError(w, fmt.Errorf("%w: %s", catalog.ErrUnavailable, err))
+		return
+	}
+
 	// The tickets are an empty array while the order is unpaid, never null.
 	ticketIDs := detail.TicketIDs
 	if ticketIDs == nil {
@@ -102,6 +111,16 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 		"amountDisplay": amountDisplay,
 		"seats":         seats,
 		"ticketIds":     ticketIDs,
+		// The screening, so a reloaded confirmation says what is being bought and when.
+		// Both time forms are answered for the same reason the catalogue answers both: the
+		// instant for comparison, the venue's local form for reading, computed server side
+		// so the browser never has to know the venue's zone.
+		"eventId":     detail.EventID,
+		"filmTitle":   detail.FilmTitle,
+		"cinemaName":  detail.CinemaName,
+		"roomName":    detail.RoomName,
+		"startsAt":    detail.StartsAt.UTC(),
+		"startsAtLocal": localStartsAt,
 	})
 }
 

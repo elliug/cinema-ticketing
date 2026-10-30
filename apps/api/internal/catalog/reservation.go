@@ -45,6 +45,23 @@ type ReservationDetail struct {
 	// an empty list for an unpaid order, never nil, so a confirmation page can iterate it
 	// without a nil check.
 	TicketIDs []string
+
+	// The screening the order is for. A reloaded confirmation has to say *what* is being
+	// bought and *when*, not only how many seats and what they cost: without these, a
+	// buyer returning to an unpaid order sees a countdown attached to nothing.
+	//
+	// They are read from the event's own row, so a screening that is later rescheduled
+	// answers its current time — the order holds seats for the event, not for a moment.
+	EventID    string
+	FilmTitle  string
+	CinemaName string
+	RoomName   string
+	// StartsAt is the raw screening instant. The transport answers it in UTC for the same
+	// reason the rest of the API does.
+	StartsAt time.Time
+	// Timezone is the venue's zone (`cinema.cinemas.timezone`), the input to
+	// [ReservationDetail.LocalStartsAt].
+	Timezone string
 }
 
 // Seat is one seat of an order, as it is painted at the door.
@@ -72,4 +89,12 @@ func (r ReservationDetail) AmountText() (string, bool) {
 		return "", false
 	}
 	return tickets.FormatMoney(*r.AmountCents), true
+}
+
+// LocalStartsAt renders the screening time in the venue's own zone, with the offset
+// spelled numerically. It delegates to the ticket projection's rule rather than
+// reimplementing it, so a confirmation page, a ticket and a PDF cannot show the same
+// screening at three different hours.
+func (r ReservationDetail) LocalStartsAt() (string, error) {
+	return tickets.EventDetail{ID: r.EventID, StartsAt: r.StartsAt, Timezone: r.Timezone}.LocalStartsAt()
 }

@@ -224,6 +224,22 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 		if detail.ExpiresAt.IsZero() {
 			t.Fatal("expiresAt is zero, want the stored hold deadline")
 		}
+		// The screening travels with the order, so a reloaded confirmation says what is
+		// being bought and when — the gap T1 left open.
+		if detail.EventID == "" || detail.FilmTitle == "" || detail.CinemaName == "" || detail.RoomName == "" {
+			t.Fatalf("screening = %q/%q/%q/%q, want event, film, cinema and room",
+				detail.EventID, detail.FilmTitle, detail.CinemaName, detail.RoomName)
+		}
+		if detail.StartsAt.IsZero() || detail.Timezone == "" {
+			t.Fatalf("startsAt/timezone = %v/%q, want both", detail.StartsAt, detail.Timezone)
+		}
+		local, err := detail.LocalStartsAt()
+		if err != nil {
+			t.Fatalf("LocalStartsAt() = unexpected error %v", err)
+		}
+		if local == "" || local == detail.StartsAt.UTC().Format(time.RFC3339) {
+			t.Fatalf("local start %q, want the venue's own spelling", local)
+		}
 
 		// The amount is the charge the checkout captured for the whole order, not the
 		// price times the seats this read happened to join.

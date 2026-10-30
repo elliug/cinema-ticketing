@@ -99,8 +99,18 @@ SELECT r.id::text,
        r.expires_at,
        captured.amount_cents,
        COALESCE(seats.items, '[]'::jsonb),
-       COALESCE(tickets.items, '[]'::jsonb)
+       COALESCE(tickets.items, '[]'::jsonb),
+       e.id::text,
+       f.title,
+       c.name,
+       room.name,
+       e.starts_at,
+       c.timezone
 FROM cinema.reservations r
+JOIN cinema.events e ON e.id = r.event_id
+JOIN cinema.films f ON f.id = e.film_id
+JOIN cinema.rooms room ON room.id = e.room_id
+JOIN cinema.cinemas c ON c.id = room.cinema_id
 LEFT JOIN LATERAL (
   SELECT pa.amount_cents
   FROM cinema.payment_attempts pa
@@ -268,6 +278,12 @@ func (s *PostgresStore) Reservation(ctx context.Context, reservationID string) (
 		&amount,
 		&seats,
 		&ticketIDs,
+		&detail.EventID,
+		&detail.FilmTitle,
+		&detail.CinemaName,
+		&detail.RoomName,
+		&detail.StartsAt,
+		&detail.Timezone,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReservationDetail{}, fmt.Errorf("%w: %s", ErrNotFound, reservationID)
