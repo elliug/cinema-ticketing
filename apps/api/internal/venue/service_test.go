@@ -10,17 +10,19 @@ import (
 )
 
 type fakeStore struct {
-	layout        venue.Layout
-	layouts       map[string]venue.Layout
-	layoutList    []venue.Layout
-	cinemas       []venue.Cinema
-	rooms         []venue.Room
-	events        []venue.Event
-	seats         []venue.EventSeat
-	calls         []string
-	failWith      error
-	lastRowsSet   []venue.Row
-	layoutCreated int
+	layout         venue.Layout
+	layouts        map[string]venue.Layout
+	layoutList     []venue.Layout
+	cinemas        []venue.Cinema
+	rooms          []venue.Room
+	events         []venue.Event
+	seats          []venue.EventSeat
+	calls          []string
+	failWith       error
+	lastRowsSet    []venue.Row
+	layoutCreated  int
+	lastEventID    string
+	lastPriceCents int64
 }
 
 func (f *fakeStore) record(name string) {
@@ -87,6 +89,41 @@ func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event) error {
 func (f *fakeStore) ListEventSeats(_ context.Context, _ string) ([]venue.EventSeat, error) {
 	f.record("ListEventSeats")
 	return f.seats, f.failWith
+}
+
+func (f *fakeStore) ListEvents(_ context.Context) ([]venue.Event, error) {
+	f.record("ListEvents")
+	return f.events, f.failWith
+}
+
+func (f *fakeStore) GetEvent(_ context.Context, eventID string) (venue.Event, error) {
+	f.record("GetEvent")
+	f.lastEventID = eventID
+	if f.failWith != nil {
+		return venue.Event{}, f.failWith
+	}
+	for _, event := range f.events {
+		if event.ID == eventID {
+			return event, nil
+		}
+	}
+	return venue.Event{}, venue.ErrNotFound
+}
+
+func (f *fakeStore) SetEventPrice(_ context.Context, eventID string, priceCents int64) (venue.Event, error) {
+	f.record("SetEventPrice")
+	f.lastEventID = eventID
+	f.lastPriceCents = priceCents
+	if f.failWith != nil {
+		return venue.Event{}, f.failWith
+	}
+	for position := range f.events {
+		if f.events[position].ID == eventID {
+			f.events[position].PriceCents = priceCents
+			return f.events[position], nil
+		}
+	}
+	return venue.Event{}, venue.ErrNotFound
 }
 
 func (f *fakeStore) ListCinemas(_ context.Context) ([]venue.Cinema, error) {
@@ -289,5 +326,93 @@ func TestCreateEventPropagatesMaterializationConflict(t *testing.T) {
 	_, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now())
 	if !errors.Is(err, venue.ErrConflict) {
 		t.Fatalf("error = %v, want conflict propagation", err)
+	}
+}
+
+const serviceEventID = "00000000-0000-0000-0000-000000000e01"
+
+func TestCreateEventDefaultsThePriceToZero(t *testing.T) {
+	store := &fakeStore{}
+	svc := venue.NewService(store)
+	event, err := svc.CreateEvent(context.Background(), "room-1", "film-1", "layout-1", time.Now())
+	if err != nil {
+		t.Fatalf("CreateEvent returned error: %v", err)
+	}
+	if event.PriceCents != 0 {
+		t.Fatalf("price = %d, want the schema default zero", event.PriceCents)
+	}
+}
+
+func TestSetEventPriceAcceptsZeroWithoutRejectingItAsMissing(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, RoomID: "room-1", PriceCents: 1250}}}
+	svc := venue.NewService(store)
+	event, err := svc.SetEventPrice(context.Background(), serviceEventID, 0)
+	if err != nil {
+		t.Fatalf("SetEventPrice returned error: %v", err)
+	}
+	if event.PriceCents != 0 || store.lastPriceCents != 0 {
+		t.Fatalf("price = %d (store saw %d), want the explicit zero", event.PriceCents, store.lastPriceCents)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "SetEventPrice" {
+		t.Fatalf("calls = %v, want exactly SetEventPrice", store.calls)
+	}
+}
+
+func TestSetEventPriceRejectsNegativeWithoutPersisting(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, PriceCents: 1250}}}
+	svc := venue.NewService(store)
+	_, err := svc.SetEventPrice(context.Background(), serviceEventID, -1)
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "priceCents" || invalid.Message != "must be zero or greater" {
+		t.Fatalf("error = %v, want the priceCents range rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
+	}
+}
+
+func TestSetEventPriceRejectsAboveInt4WithoutPersisting(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
+	svc := venue.NewService(store)
+	_, err := svc.SetEventPrice(context.Background(), serviceEventID, venue.MaxPriceCents+1)
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "priceCents" || invalid.Message != "must be at most 2147483647" {
+		t.Fatalf("error = %v, want the int4 range rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
+	}
+}
+
+func TestSetEventPriceRejectsMalformedEventIDWithoutPersisting(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
+	svc := venue.NewService(store)
+	_, err := svc.SetEventPrice(context.Background(), "event-1", 1250)
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "eventId" || invalid.Message != "must be a valid identifier" {
+		t.Fatalf("error = %v, want the eventId rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
+	}
+}
+
+func TestGetEventRejectsMalformedEventIDWithoutReading(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
+	svc := venue.NewService(store)
+	_, err := svc.GetEvent(context.Background(), "event-1")
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "eventId" {
+		t.Fatalf("error = %v, want the eventId rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no read attempt", store.calls)
+	}
+}
+
+func TestListEventsPropagatesReadFailure(t *testing.T) {
+	svc := venue.NewService(&fakeStore{failWith: errors.New("database unreachable")})
+	if _, err := svc.ListEvents(context.Background()); err == nil {
+		t.Fatal("ListEvents returned no error for a failed read")
 	}
 }

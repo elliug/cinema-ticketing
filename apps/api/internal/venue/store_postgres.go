@@ -297,6 +297,61 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
 	return classifyError(err)
 }
 
+// eventColumns is the read shape of a screening. Every screening read selects the same
+// columns so the list, the show and the price write's RETURNING cannot drift apart.
+const eventColumns = `id, room_id, film_id, layout_version_id, starts_at, status, price_cents`
+
+// ListEvents reads every screening in start order, with the identifier as the
+// tiebreaker so two screenings at the same minute cannot swap places between two reads.
+func (s *PostgresStore) ListEvents(ctx context.Context) ([]Event, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+eventColumns+` FROM cinema.events ORDER BY starts_at, id`)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+	events := []Event{}
+	for rows.Next() {
+		var event Event
+		if err := rows.Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
+			&event.StartsAt, &event.Status, &event.PriceCents); err != nil {
+			return nil, classifyError(err)
+		}
+		events = append(events, event)
+	}
+	return events, classifyError(rows.Err())
+}
+
+// GetEvent reads one screening with its stored price. A missing row is not found.
+func (s *PostgresStore) GetEvent(ctx context.Context, eventID string) (Event, error) {
+	var event Event
+	err := s.pool.QueryRow(ctx,
+		`SELECT `+eventColumns+` FROM cinema.events WHERE id = $1`, eventID).
+		Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
+			&event.StartsAt, &event.Status, &event.PriceCents)
+	if err != nil {
+		return Event{}, classifyError(err)
+	}
+	return event, nil
+}
+
+// SetEventPrice updates only the price of one screening in a single statement. The event
+// is the guard in WHERE, so an unknown identifier updates no row and answers not found
+// instead of a success the database never produced. RETURNING answers the event as it is
+// now stored, not a value assembled from the arguments.
+func (s *PostgresStore) SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error) {
+	var event Event
+	err := s.pool.QueryRow(ctx,
+		`UPDATE cinema.events SET price_cents = $2 WHERE id = $1 RETURNING `+eventColumns,
+		eventID, priceCents).
+		Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
+			&event.StartsAt, &event.Status, &event.PriceCents)
+	if err != nil {
+		return Event{}, classifyError(err)
+	}
+	return event, nil
+}
+
 // ListEventSeats reads the materialized seats of one event.
 func (s *PostgresStore) ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error) {
 	rows, err := s.pool.Query(ctx,

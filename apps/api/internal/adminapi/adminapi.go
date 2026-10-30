@@ -1,5 +1,10 @@
-// Package adminapi exposes the M1 venue and layout administrative HTTP
-// surface. It must be mounted behind the local-development guard.
+// Package adminapi exposes the local venue, layout and screening administration
+// HTTP surface. It must be mounted behind the local-development guard.
+//
+// The price of a screening is per seat: an order's amount is price x seats, and a
+// payment attempt's amount is fixed when it is created, so changing a price affects
+// future orders only. A stored attempt and an issued ticket keep the money actually
+// taken.
 package adminapi
 
 import (
@@ -28,6 +33,9 @@ type VenueService interface {
 	CreateFilm(ctx context.Context, title string, runtimeMinutes int, rating string) (venue.Film, error)
 	CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (venue.Event, error)
 	ListEventSeats(ctx context.Context, eventID string) ([]venue.EventSeat, error)
+	ListEvents(ctx context.Context) ([]venue.Event, error)
+	GetEvent(ctx context.Context, eventID string) (venue.Event, error)
+	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (venue.Event, error)
 }
 
 // Handler serves the administrative routes.
@@ -53,6 +61,9 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /layouts/{layoutId}", h.getLayout)
 	mux.HandleFunc("POST /films", h.createFilm)
 	mux.HandleFunc("POST /events", h.createEvent)
+	mux.HandleFunc("GET /events", h.listEvents)
+	mux.HandleFunc("GET /events/{eventId}", h.getEvent)
+	mux.HandleFunc("PATCH /events/{eventId}", h.setEventPrice)
 	mux.HandleFunc("GET /events/{eventId}/seats", h.listEventSeats)
 	return mux
 }
@@ -232,10 +243,7 @@ func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": event.ID, "roomId": event.RoomID, "filmId": event.FilmID,
-		"layoutVersionId": event.LayoutVersionID, "startsAt": event.StartsAt, "status": event.Status,
-	})
+	writeJSON(w, http.StatusCreated, eventJSON(event))
 }
 
 func (h *Handler) listEventSeats(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +275,7 @@ func roomJSON(room venue.Room) map[string]any {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(dst); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)).Decode(dst); err != nil {
 		writeJSON(w, http.StatusBadRequest, problem{
 			Type: "https://cinema.local/problems/invalid-request", Title: "Invalid request",
 			Status: http.StatusBadRequest, Code: "invalid_request", Detail: "request body must be valid JSON",

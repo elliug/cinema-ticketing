@@ -1,31 +1,194 @@
-/* M0 foundation styling.
+/* Design tokens and shell styling (M3.5 · T3 · S1, S2, S8).
  *
- * Self-contained on purpose: no @import, no url() fetch, no remote font or
- * image. Typography uses the system font stack so the build and runtime never
- * reach the network.
+ * One file owns the look. Every value a surface needs is a custom property below,
+ * and no component hard-codes a colour, a radius or a spacing step: changing this
+ * block changes the whole application. `src/components/components.test.ts` pins
+ * the "no hex outside this file" rule so it cannot erode.
+ *
+ * Self-contained on purpose: no @import, no url() fetch, no remote font or image.
+ * Typography uses the system font stack, so the build and runtime never reach the
+ * network.
+ *
+ * The palette is contrast-safe, not decorative. Against their own background:
+ *
+ *   --color-text        >= 16:1 on surface and page (AA and AAA for body text)
+ *   --color-text-muted  >= 6.4:1 on surface, page and muted surface (AA)
+ *   --color-accent      >= 6.7:1 as link text, and white on it >= 7.6:1 as a
+ *                       primary button (AA in both directions)
+ *   state fg/bg pairs   >= 5.6:1 for every badge, alert and field error
+ *
+ * Colour never carries a state on its own: every status pill, alert and validation
+ * message also spells the state out in words and a glyph (see components/badge.tsx
+ * and components/alert.tsx).
  */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --muted: #5a5a5a;
-  --accent: #1f4fd8;
-  --border: #d9d9d9;
-  --code-bg: #f4f4f6;
-  --radius: 0.5rem;
-  --max-width: 38rem;
-
   color-scheme: light dark;
+
+  /* ── Colour: surfaces and text ─────────────────────────────────────────────
+   * Three levels, in the order a page stacks them: the page behind everything,
+   * the surface a card or the header sits on, and the muted surface used for
+   * secondary buttons, code and skeletons.
+   */
+  --color-bg: #f6f8fa;
+  --color-surface: #ffffff;
+  --color-surface-muted: #eaeff5;
+  --color-text: #141c26;
+  --color-text-muted: #4b5561;
+  --color-border: #c6cfda;
+  --color-border-strong: #66727f;
+
+  /* ── Colour: brand and interaction ─────────────────────────────────────────
+   * The accent is both the link colour and the primary button background, so the
+   * two must read against very different neighbours: --color-on-accent is the
+   * text colour that goes *on* the accent, never the accent used as text.
+   */
+  --color-accent: #1b4fa8;
+  --color-accent-hover: #143d85;
+  --color-on-accent: #ffffff;
+
+  /* ── Colour: destructive ───────────────────────────────────────────────────
+   * A danger *background* needs white text on it; a danger *message* needs to be
+   * readable on a light surface. In light mode one value does both.
+   */
+  --color-danger: #b3261e;
+  --color-danger-hover: #8f1d17;
+  --color-on-danger: #ffffff;
+  --color-danger-text: #b3261e;
+
+  /* ── Colour: state tones ───────────────────────────────────────────────────
+   * A background/foreground pair per tone, used by badges, alerts and field
+   * errors. Each pair is above 5.6:1 so a state is legible even on a bad screen.
+   */
+  --color-neutral-bg: #e9edf2;
+  --color-neutral-fg: #37414c;
+  --color-info-bg: #e7effd;
+  --color-info-fg: #1b4fa8;
+  --color-success-bg: #e4f3e9;
+  --color-success-fg: #0f5c28;
+  --color-warning-bg: #fdf3d7;
+  --color-warning-fg: #6f4300;
+  --color-danger-bg: #fdecea;
+  --color-danger-fg: #b3261e;
+
+  /* ── Spacing ───────────────────────────────────────────────────────────────
+   * One 0.25rem step, used for every gap, padding and stack. No surface should
+   * invent a 13px margin.
+   */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* ── Radius ────────────────────────────────────────────────────────────────
+   * Small for controls, medium for cards, pill for badges, full for a circle.
+   */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-pill: 999px;
+
+  /* ── Type scale ────────────────────────────────────────────────────────────
+   * Six sizes, with the tight line height reserved for headings and the normal
+   * one for anything a person reads in sentences.
+   */
+  --font-family-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-family-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.375rem;
+  --font-size-2xl: 1.75rem;
+  --font-size-3xl: 2.125rem;
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.5;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 600;
+
+  /* ── Focus ─────────────────────────────────────────────────────────────────
+   * One ring, drawn on `:focus-visible` only, so a mouse click does not paint a
+   * rectangle but every keyboard user sees exactly where they are. The offset is
+   * part of the token: a ring flush against a dark button edge is invisible.
+   */
+  --focus-ring-color: var(--color-accent);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* ── Elevation ─────────────────────────────────────────────────────────────
+   * Two levels only: a surface that sits on the page, and the one thing that
+   * must lift off it. Shadows are decoration; nothing depends on them to be
+   * understood, which is also why they are almost absent in dark mode.
+   */
+  --shadow-1: 0 1px 2px rgb(16 24 32 / 8%);
+  --shadow-2: 0 4px 16px rgb(16 24 32 / 12%);
+
+  /* ── Layout ────────────────────────────────────────────────────────────────
+   * The shell and every page share one width, so the header, the content and the
+   * footer line up. --measure keeps a sentence readable inside a wide card.
+   */
+  --layout-max-width: 64rem;
+  --layout-gutter: var(--space-5);
+  --measure: 74ch;
+
+  /* ── Legacy aliases ────────────────────────────────────────────────────────
+   * The M0–M3 rules further down this file were written against these names.
+   * They stay as aliases so those surfaces inherit the token set instead of
+   * carrying their own copy of it; custom properties resolve at use time, so the
+   * dark-scheme overrides below reach them too.
+   */
+  --bg: var(--color-bg);
+  --fg: var(--color-text);
+  --muted: var(--color-text-muted);
+  --accent: var(--color-accent);
+  --border: var(--color-border);
+  --code-bg: var(--color-surface-muted);
+  --radius: var(--radius-md);
+  --max-width: var(--layout-max-width);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1115;
-    --fg: #f5f5f7;
-    --muted: #a9adb6;
-    --accent: #7aa2ff;
-    --border: #2a2f3a;
-    --code-bg: #1a1e27;
+    --color-bg: #0d1117;
+    --color-surface: #161b22;
+    --color-surface-muted: #1f2630;
+    --color-text: #eef2f7;
+    --color-text-muted: #b0bac6;
+    --color-border: #2c3540;
+    --color-border-strong: #6d7987;
+
+    /* A light accent on a dark surface: the accent is used as *text* here, and
+     * --color-on-accent is the dark ink that goes on the filled button. */
+    --color-accent: #9dc1ff;
+    --color-accent-hover: #c2d8ff;
+    --color-on-accent: #0b1220;
+
+    /* White on this red is 5.6:1; the same red as text is unreadable on a dark
+     * page, so messages use --color-danger-text instead. */
+    --color-danger: #c0322a;
+    --color-danger-hover: #a82920;
+    --color-on-danger: #ffffff;
+    --color-danger-text: #ff9a92;
+
+    --color-neutral-bg: #232a34;
+    --color-neutral-fg: #cfd8e3;
+    --color-info-bg: #17233a;
+    --color-info-fg: #9dc1ff;
+    --color-success-bg: #14291b;
+    --color-success-fg: #7fd39a;
+    --color-warning-bg: #2b2410;
+    --color-warning-fg: #f2c14e;
+    --color-danger-bg: #2e1614;
+    --color-danger-fg: #ff9a92;
+
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-2: 0 4px 16px rgb(0 0 0 / 50%);
   }
 }
 
@@ -33,99 +196,92 @@
   box-sizing: border-box;
 }
 
+/* The shell is a column: header, the page's own `<main>`, footer. `min-height`
+ * and the footer's top margin keep the footer at the bottom of a short page
+ * instead of floating under a half-empty screen. */
 body {
   margin: 0;
-  background-color: var(--bg);
-  color: var(--fg);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
-  line-height: 1.5;
-}
-
-.foundation {
-  max-width: var(--max-width);
-  margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  align-items: stretch;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
 }
 
-.card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.5rem;
-}
-
-.eyebrow {
-  margin: 0 0 0.25rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 0.75rem;
-  color: var(--muted);
+h1,
+h2,
+h3 {
+  line-height: var(--line-height-tight);
+  font-weight: var(--font-weight-bold);
 }
 
 h1 {
-  margin: 0.25rem 0 0.75rem;
-  font-size: 1.75rem;
-  line-height: 1.2;
+  margin: var(--space-1) 0 var(--space-3);
+  font-size: var(--font-size-2xl);
 }
 
 h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.125rem;
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-lg);
+}
+
+h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-base);
 }
 
 p,
 li {
-  color: var(--fg);
+  color: var(--color-text);
 }
 
-.lead {
-  font-size: 1.05rem;
-  color: var(--muted);
-  margin: 0;
+a {
+  color: var(--color-accent);
+  text-underline-offset: 0.2em;
 }
 
-.list {
-  margin: 0;
-  padding-left: 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+a:hover {
+  color: var(--color-accent-hover);
 }
 
 code {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: 0.9em;
-  background-color: var(--code-bg);
-  border-radius: 0.25rem;
+  background-color: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
   padding: 0.1em 0.35em;
 }
 
-/* Keyboard focus is always visible. */
+/* Keyboard focus is always visible, and never a colour-only signal: the ring is
+ * 2px of accent plus the offset token. */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
   border-radius: 2px;
 }
 
-/* Skip link: hidden visually, visible when focused. */
+/* Skip link: off screen until focused, then the first thing above the header. It
+ * targets `#main-content`, which every page in this application renders. */
 .skip-link {
   position: absolute;
-  left: 0.5rem;
-  top: -3rem;
+  left: var(--space-2);
+  top: calc(-1 * var(--space-8));
   z-index: 10;
-  padding: 0.5rem 0.75rem;
-  background-color: var(--accent);
-  color: #ffffff;
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--color-accent);
+  color: var(--color-on-accent);
   text-decoration: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-bold);
   transition: top 0.15s ease-in-out;
 }
 
 .skip-link:focus {
-  top: 0.5rem;
+  top: var(--space-2);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -134,26 +290,622 @@ code {
   }
 }
 
-@media (max-width: 640px) {
-  .foundation {
-    padding: 1.25rem 1rem 3rem;
+/* Visually hidden, still announced: for a label a sighted reader does not need
+ * but a screen reader does. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Site header ─────────────────────────────────────────────────────────────
+ * Flex with wrapping, not a media query per breakpoint: on a phone the brand, the
+ * navigation and the session switcher become three stacked rows on their own,
+ * and nothing overflows a 360px screen because no item has a minimum width.
+ */
+.site-header {
+  background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: var(--shadow-1);
+}
+
+.site-header__inner {
+  max-width: var(--layout-max-width);
+  margin: 0 auto;
+  padding: var(--space-3) var(--layout-gutter);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-right: auto;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.brand__name {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-tight);
+}
+
+.brand__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.site-nav {
+  min-width: 0;
+}
+
+.site-nav__list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.site-nav__link {
+  display: inline-block;
+  padding: var(--space-1) 0;
+  color: var(--color-text);
+  text-decoration: none;
+  font-weight: var(--font-weight-medium);
+  border-bottom: 2px solid transparent;
+}
+
+.site-nav__link:hover {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-border-strong);
+}
+
+/* The active page is marked twice over: a thicker underline and `aria-current`
+ * from the markup, so it is announced as well as seen. */
+.site-nav__link[aria-current="page"] {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  font-weight: var(--font-weight-bold);
+}
+
+.site-nav__pending {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+/* ── Demo session switcher ───────────────────────────────────────────────────
+ * Permanent, in the header, and never inside a menu: the sentence next to the
+ * name is the whole point (S2, S8), so it is always on screen in both schemes.
+ */
+.demo-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-muted);
+}
+
+.demo-switcher__label {
+  margin: 0;
+  max-width: 42ch;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  line-height: var(--line-height-normal);
+}
+
+.demo-switcher__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.demo-switcher__form label {
+  color: var(--color-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.demo-switcher__form select {
+  font: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+.demo-switcher__reset {
+  font: inherit;
+  color: var(--color-accent);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.demo-switcher__reset:hover {
+  color: var(--color-accent-hover);
+  border-color: var(--color-border-strong);
+}
+
+/* ── Site footer ─────────────────────────────────────────────────────────── */
+.site-footer {
+  margin-top: var(--space-7);
+  background-color: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.site-footer__inner {
+  max-width: var(--layout-max-width);
+  margin: 0 auto;
+  padding: var(--space-5) var(--layout-gutter) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.site-footer__inner p {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.site-footer__heading {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+}
+
+/* ── Page header ─────────────────────────────────────────────────────────────
+ * The one `h1` of a page, with its eyebrow and lead, and an optional row of
+ * actions that wraps instead of pushing the title off a narrow screen.
+ */
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.page-header__eyebrow {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.page-header__title {
+  margin: 0;
+}
+
+.page-header__description {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--color-text-muted);
+}
+
+.page-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* ── Button ──────────────────────────────────────────────────────────────────
+ * Three variants, two states. A busy button keeps its width and announces
+ * `aria-busy`, so the label does not jump under the finger that clicked it.
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.btn--primary {
+  background-color: var(--color-accent);
+  color: var(--color-on-accent);
+  border-color: var(--color-accent);
+}
+
+.btn--primary:hover {
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+  color: var(--color-on-accent);
+}
+
+.btn--secondary {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.btn--secondary:hover {
+  background-color: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.btn--danger {
+  background-color: var(--color-danger);
+  color: var(--color-on-danger);
+  border-color: var(--color-danger);
+}
+
+.btn--danger:hover {
+  background-color: var(--color-danger-hover);
+  border-color: var(--color-danger-hover);
+  color: var(--color-on-danger);
+}
+
+/* Disabled is not a colour-only signal: the cursor changes and the button is
+ * announced as disabled by the platform. */
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  background-color: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  cursor: not-allowed;
+}
+
+.btn__spinner {
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-pill);
+  animation: btn-spin 0.7s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(1turn);
   }
 }
 
-/* Local administrative layout editor (M1).
+@media (prefers-reduced-motion: reduce) {
+  .btn__spinner {
+    animation: none;
+  }
+}
+
+/* ── Card ────────────────────────────────────────────────────────────────── */
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-1);
+}
+
+.card__eyebrow {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.card__description {
+  margin: 0 0 var(--space-3);
+  max-width: var(--measure);
+  color: var(--color-text-muted);
+}
+
+.card--muted {
+  background-color: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+.card--danger {
+  border-color: var(--color-danger-fg);
+  background-color: var(--color-danger-bg);
+}
+
+/* ── Badge / status pill ─────────────────────────────────────────────────────
+ * The label is the state. The tone only reinforces it, and the glyph in front is
+ * decorative (`aria-hidden`), so colour is never the only carrier. */
+.badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  line-height: 1.6;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-neutral-bg);
+  color: var(--color-neutral-fg);
+  white-space: nowrap;
+}
+
+.badge--pill {
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-3);
+}
+
+.badge--info {
+  background-color: var(--color-info-bg);
+  color: var(--color-info-fg);
+}
+
+.badge--success {
+  background-color: var(--color-success-bg);
+  color: var(--color-success-fg);
+}
+
+.badge--warning {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+}
+
+.badge--danger {
+  background-color: var(--color-danger-bg);
+  color: var(--color-danger-fg);
+}
+
+.badge__glyph {
+  font-weight: var(--font-weight-bold);
+}
+
+/* ── Field ───────────────────────────────────────────────────────────────────
+ * Label, control, hint and error, with the ids the markup wires together:
+ * `htmlFor` on the label, `aria-describedby` on the control for hint and error,
+ * and `aria-invalid` when the value was refused.
+ */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.field__label {
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+}
+
+.field__required {
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
+}
+
+.field__input {
+  font: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  max-width: 24rem;
+}
+
+.field__input[aria-invalid="true"] {
+  border-color: var(--color-danger-fg);
+  border-width: 2px;
+  padding: calc(var(--space-2) - 1px) calc(var(--space-3) - 1px);
+}
+
+.field__hint {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.field__error {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-danger-text);
+}
+
+/* ── Alert ───────────────────────────────────────────────────────────────────
+ * A tone, a border on the leading edge, a glyph and a heading: four signals, of
+ * which only one is colour. */
+.alert {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-fg);
+  border-left-width: 4px;
+  border-radius: var(--radius-md);
+  background-color: var(--color-neutral-bg);
+  color: var(--color-neutral-fg);
+}
+
+.alert > * {
+  max-width: var(--measure);
+  margin: 0;
+  color: inherit;
+}
+
+.alert__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+}
+
+.alert__glyph {
+  flex: none;
+}
+
+.alert--info {
+  background-color: var(--color-info-bg);
+  border-color: var(--color-info-fg);
+  color: var(--color-info-fg);
+}
+
+.alert--success {
+  background-color: var(--color-success-bg);
+  border-color: var(--color-success-fg);
+  color: var(--color-success-fg);
+}
+
+.alert--warning {
+  background-color: var(--color-warning-bg);
+  border-color: var(--color-warning-fg);
+  color: var(--color-warning-fg);
+}
+
+.alert--error {
+  background-color: var(--color-danger-bg);
+  border-color: var(--color-danger-fg);
+  color: var(--color-danger-fg);
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-muted);
+}
+
+.empty-state__title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+}
+
+.empty-state__description {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--color-text-muted);
+}
+
+/* ── Skeleton ────────────────────────────────────────────────────────────────
+ * A placeholder, hidden from assistive technology: the region that loads the real
+ * thing announces itself, and a skeleton that shouted "loading" would double it.
+ */
+.skeleton {
+  display: block;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+/* ── Page container ──────────────────────────────────────────────────────────
+ * Every page renders `<main id="main-content" class="foundation">`, handed down
+ * from M0 and kept (S1): the shell adds a header and a footer around it, and this
+ * rule is the only thing that had to grow for the wider frame.
+ */
+.foundation {
+  width: 100%;
+  max-width: var(--layout-max-width);
+  margin: 0 auto;
+  padding: var(--space-5) var(--layout-gutter) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  flex: 1 0 auto;
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-1);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.lead {
+  font-size: var(--font-size-lg);
+  color: var(--color-text-muted);
+  margin: 0;
+  max-width: var(--measure);
+}
+
+.list {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: var(--measure);
+}
+
+@media (max-width: 640px) {
+  :root {
+    --layout-gutter: var(--space-4);
+  }
+
+  h1,
+  .page-header__title {
+    font-size: var(--font-size-xl);
+  }
+
+  .foundation {
+    padding: var(--space-4) var(--layout-gutter) var(--space-5);
+  }
+}
+
+/* ── Local administrative layout editor (M1) ─────────────────────────────────
  *
  * Rows are laid out as independent blocks, each with its own seat list, so a
  * row with one seat and a row with twelve seats need no shared column count.
  */
 
-.foundation.admin {
-  max-width: 64rem;
-}
-
 .editor {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: var(--space-5);
 }
 
 .editor-header h1 {
@@ -162,33 +914,35 @@ code {
 
 .meta {
   margin: 0;
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-size: 0.9rem;
+  max-width: var(--measure);
 }
 
 .notice {
-  margin: 0.5rem 0 0;
-  color: var(--muted);
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  max-width: var(--measure);
 }
 
 .problems {
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
 }
 
 .problems h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-base);
 }
 
 .problems ul {
   margin: 0;
-  padding-left: 1.25rem;
+  padding-left: var(--space-5);
 }
 
 .path {
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-size: 0.85rem;
 }
 
@@ -199,44 +953,44 @@ code {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .row {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .row-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .row-header h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--font-size-base);
 }
 
 .fields {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .fields label,
 .seat label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--space-1);
   font-size: 0.85rem;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .seat label.checkbox {
@@ -249,10 +1003,10 @@ input[type="text"],
 input[type="number"],
 select {
   font: inherit;
-  color: var(--fg);
-  background-color: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
   padding: 0.3rem 0.5rem;
   max-width: 12rem;
 }
@@ -263,16 +1017,16 @@ input[type="number"] {
 
 button {
   font: inherit;
-  color: var(--fg);
-  background-color: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
+  color: var(--color-text);
+  background-color: var(--color-surface-muted);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
   padding: 0.35rem 0.75rem;
   cursor: pointer;
 }
 
 button:disabled {
-  color: var(--muted);
+  color: var(--color-text-muted);
   cursor: not-allowed;
 }
 
@@ -280,34 +1034,28 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  padding: 0.5rem 0.75rem;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .feedback {
   margin: 0;
-  color: var(--fg);
+  color: var(--color-text);
 }
 
 .feedback.error {
-  color: #b3261e;
+  color: var(--color-danger-text);
 }
 
-@media (prefers-color-scheme: dark) {
-  .feedback.error {
-    color: #ff8a80;
-  }
-}
-
-/* Guest checkout and ticket surfaces (M3 · T7).
+/* ── Guest checkout and ticket surfaces (M3 · T7) ────────────────────────────
  *
  * Two layouts and nothing more: the order facts of a ticket as a definition list
  * that reads as label/value pairs on a phone, and the QR image at a size a scanner
@@ -318,8 +1066,8 @@ button:disabled {
 .ticket-facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.35rem 1rem;
-  margin: 1rem 0;
+  gap: 0.35rem var(--space-4);
+  margin: var(--space-4) 0;
 }
 
 .ticket-facts > div {
@@ -327,20 +1075,20 @@ button:disabled {
 }
 
 .ticket-facts dt {
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
 
 .ticket-facts dd {
   margin: 0;
-  font-weight: 600;
+  font-weight: var(--font-weight-bold);
 }
 
 .qr {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 /* A QR code needs quiet space around it and hard edges: no scaling blur, and the
@@ -348,9 +1096,9 @@ button:disabled {
  * is a code a scanner may refuse. */
 .qr-image {
   background-color: #ffffff;
-  padding: 0.75rem;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
   image-rendering: pixelated;
   max-width: 100%;
   height: auto;
@@ -359,11 +1107,11 @@ button:disabled {
 a.download {
   display: inline-block;
   padding: 0.4rem 0.85rem;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  color: var(--accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  color: var(--color-accent);
   text-decoration: none;
-  font-weight: 600;
+  font-weight: var(--font-weight-bold);
 }
 
 a.download:hover,

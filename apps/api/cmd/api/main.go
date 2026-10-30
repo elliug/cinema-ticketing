@@ -8,7 +8,8 @@
 // surface with its expiry worker, and M3 adds the checkout route that pays a held
 // reservation, the ticket detail route the confirmation page and the PDF read, the
 // ticket PDF download route and the worker that stores those PDFs in the object
-// bucket.
+// bucket. M3.5 adds the two reads the public web needs: the catalogue of screenings a
+// buyer can buy and the confirmation's read of one reservation.
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"cinema.local/ticketing/apps/api/internal/adminapi"
+	"cinema.local/ticketing/apps/api/internal/catalog"
 	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
@@ -191,12 +193,13 @@ const startupTimeout = 10 * time.Second
 const requiredMigrations = "0003_reservation, 0004_idempotency, 0005_checkout, 0006_one_open_payment_attempt"
 
 // reservationProcess owns what the public reservation surface, the checkout, the
-// ticket detail read, the ticket PDF archive and the expiry worker need, so one Close
-// releases every pool on shutdown.
+// ticket detail read, the ticket PDF archive, the catalogue and confirmation reads and
+// the expiry worker need, so one Close releases every pool on shutdown.
 type reservationProcess struct {
 	store         *reservation.PostgresStore
 	checkoutStore *checkout.PostgresStore
 	ticketStore   *tickets.PostgresStore
+	catalogStore  *catalog.PostgresStore
 	outboxStore   *pdf.OutboxStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
@@ -218,6 +221,9 @@ func (p *reservationProcess) Close() {
 	if p.ticketStore != nil {
 		p.ticketStore.Close()
 	}
+	if p.catalogStore != nil {
+		p.catalogStore.Close()
+	}
 	if p.outboxStore != nil {
 		p.outboxStore.Close()
 	}
@@ -237,7 +243,7 @@ func (p *reservationProcess) Close() {
 // closed on shutdown and is nil when nothing was mounted. A failure is reported
 // without echoing a connection URL, which may carry credentials.
 func mountReservation(cfg config.Config, srv *httpserver.Server, logger *slog.Logger) (*reservationProcess, error) {
-	return mountReservationWithProbes(cfg, srv, logger, reservationSchemaProbe, checkoutSchemaProbe, ticketSchemaProbe)
+	return mountReservationWithProbes(cfg, srv, logger, reservationSchemaProbe, checkoutSchemaProbe, ticketSchemaProbe, catalogueSchemaProbe)
 }
 
 // schemaProbe reports whether the database carries the reservation tables,
@@ -249,6 +255,10 @@ type schemaProbe func(context.Context, *reservation.PostgresStore) (bool, error)
 type checkoutProbe func(context.Context, *checkout.PostgresStore) (bool, error)
 
 type ticketsProbe func(context.Context, *tickets.PostgresStore) (bool, error)
+
+// readsProbe reports whether the database carries the objects the catalogue and the
+// confirmation's read touch.
+type readsProbe func(context.Context, *catalog.PostgresStore) (bool, error)
 
 // reservationSchemaProbe is the production probe: the store's own check.
 func reservationSchemaProbe(ctx context.Context, store *reservation.PostgresStore) (bool, error) {
@@ -273,6 +283,16 @@ func ticketSchemaProbe(ctx context.Context, store *tickets.PostgresStore) (bool,
 	return store.TicketDetailSchemaPresent(ctx)
 }
 
+// catalogueSchemaProbe is the production probe of the objects the two public reads
+// touch: the venue, film and event tables the catalogue answers from, the event seats
+// and holds its availability count reads, and the tickets and captured payment attempts
+// the confirmation's read needs. It is its own probe rather than a reuse of the ticket
+// one because the catalogue also counts `cinema.reservation_seats`, which the ticket
+// read never touches: a database missing it could serve a ticket but not a catalogue.
+func catalogueSchemaProbe(ctx context.Context, store *catalog.PostgresStore) (bool, error) {
+	return store.ReadSchemaPresent(ctx)
+}
+
 // newPaymentGateway builds the payment boundary the checkout is wired with: the
 // simulated provider, which never declines. A decline is a test scenario built by
 // constructing an adapter with a decline rule, never the default the process runs
@@ -282,7 +302,7 @@ func newPaymentGateway() payment.PaymentGateway { return payment.NewSimulated() 
 
 // mountReservationWithProbes is mountReservation with every schema check injected.
 func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logger *slog.Logger,
-	probe schemaProbe, checkoutSchema checkoutProbe, ticketSchema ticketsProbe) (*reservationProcess, error) {
+	probe schemaProbe, checkoutSchema checkoutProbe, ticketSchema ticketsProbe, reads readsProbe) (*reservationProcess, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, nil
 	}
@@ -460,11 +480,63 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		}
 	}
 
-	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).WithTicketPDFs(ticketPDFs).Mux())
+	// The catalogue and the confirmation's read are the two things the public web needs
+	// and the API did not have: a stranger needs no event identifier to reach the seat
+	// page, and reloading the confirmation keeps its state. Both read what the modules
+	// above wrote, so they are mounted last and only against a database that carries
+	// every table they touch; one store answers both reads, and one probe decides whether
+	// either is advertised. It gets its own startup budget for the same reason the other
+	// stores do.
+	catalogCtx, cancelCatalog := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelCatalog()
+	catalogStore, err := catalog.NewPostgresStore(catalogCtx, cfg.DatabaseURL)
+	if err != nil {
+		ticketStore.Close()
+		if checkoutStore != nil {
+			checkoutStore.Close()
+		}
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("open the catalogue store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+	readsPresent, err := reads(catalogCtx, catalogStore)
+	if err != nil {
+		catalogStore.Close()
+		ticketStore.Close()
+		if checkoutStore != nil {
+			checkoutStore.Close()
+		}
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("check the catalogue schema: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+
+	// catalogue and reservationReads are nil interfaces unless the schema is present,
+	// which is exactly what keeps each route unmounted. One store satisfies both: the two
+	// reads are one read model, and mounting only one of them would advertise half of what
+	// the web needs.
+	var catalogue publicapi.CatalogService
+	var reservationReads publicapi.ReservationService
+	if readsPresent {
+		catalogue = catalogStore
+		reservationReads = catalogStore
+	} else {
+		catalogStore.Close()
+		catalogStore = nil
+		logger.Info("catalogue schema not present; catalogue and reservation read routes disabled",
+			"required", "0005_checkout")
+	}
+
+	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).WithTicketPDFs(ticketPDFs).
+		WithCatalog(catalogue).WithReservations(reservationReads).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
 		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent,
-		"ticket_pdfs", ticketPDFs != nil)
+		"ticket_pdfs", ticketPDFs != nil, "catalogue", catalogue != nil)
+	if catalogue != nil {
+		logger.Info("catalogue and reservation read routes mounted",
+			"routes", []string{"/api/v1/events", "/api/v1/reservations/{reservationId}"})
+	}
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret
 		// and the fact that it is configured is what an operator needs to know. The two
@@ -481,7 +553,8 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			"presign_ttl", cfg.S3PresignTTL, "worker", pdfWorker != nil)
 	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
-		outboxStore: outboxStore, redis: client, sweeper: sweeper, pdfWorker: pdfWorker}, nil
+		catalogStore: catalogStore, outboxStore: outboxStore, redis: client, sweeper: sweeper,
+		pdfWorker: pdfWorker}, nil
 }
 
 // newTicketArchive builds the artefact archive over the S3 adapter. The adapter

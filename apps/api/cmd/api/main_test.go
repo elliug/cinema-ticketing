@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"cinema.local/ticketing/apps/api/internal/adminapi"
+	"cinema.local/ticketing/apps/api/internal/catalog"
 	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
@@ -19,6 +21,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/reservation"
 	"cinema.local/ticketing/apps/api/internal/tickets"
+	"cinema.local/ticketing/apps/api/internal/venue"
 )
 
 const adminTestURL = "postgres://cinema:s3cr3t-pw@127.0.0.1:5432/cinema?sslmode=disable"
@@ -193,7 +196,7 @@ func TestMountReservationMountsThePublicSurface(t *testing.T) {
 		TicketQRKey: testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -227,7 +230,7 @@ func TestMountReservationRejectsUnusableConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := testServer()
-			proc, err := mountReservationWithProbes(tc.cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+			proc, err := mountReservationWithProbes(tc.cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 			if err == nil {
 				proc.Close()
 				t.Fatal("mountReservation succeeded, want a refusal")
@@ -291,7 +294,7 @@ func TestMountReservationMountsTheCheckoutRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -327,7 +330,7 @@ func TestMountReservationSkipsTheCheckoutRouteWithoutItsSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutAbsentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutAbsentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -360,7 +363,7 @@ func TestMountReservationFailsWhenTheCheckoutProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutFailingSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutFailingSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable checkout schema probe")
 	}
@@ -406,7 +409,7 @@ func TestMountReservationMountsTheTicketRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -444,7 +447,7 @@ func TestMountReservationSkipsTheTicketRouteWithoutItsSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketAbsentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketAbsentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -477,7 +480,7 @@ func TestMountReservationFailsWhenTheTicketProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketFailingSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketFailingSchema, cataloguePresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable ticket schema probe")
 	}
@@ -528,7 +531,7 @@ func TestMountReservationSkipsAnOlderSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, absentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, absentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -557,7 +560,7 @@ func TestMountReservationFailsWhenTheProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), failingSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), failingSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable schema probe")
 	}
@@ -602,7 +605,7 @@ func TestMountReservationMountsTheTicketVerificationRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -639,7 +642,7 @@ func TestMountReservationMountsTheTicketQRImageRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -684,7 +687,7 @@ func TestMountReservationRequiresAUsableTicketQRKey(t *testing.T) {
 				TicketQRKey:    testCase.key,
 			}
 			srv := testServer()
-			proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+			proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 			if err == nil {
 				proc.Close()
 				t.Fatal("mountReservation mounted a ticket surface without a usable signing key")
@@ -742,7 +745,7 @@ func TestMountReservationMountsTheTicketPDFRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	})
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -784,7 +787,7 @@ func TestMountReservationSkipsTheTicketPDFRouteWithoutStorage(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -826,7 +829,7 @@ func TestMountReservationSkipsThePDFWorkerWithoutTheCheckoutSchema(t *testing.T)
 		TicketQRKey:    testTicketQRKey,
 	})
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutAbsentSchema, ticketPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutAbsentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -854,7 +857,7 @@ func TestMountReservationSkipsTheTicketPDFRouteWithoutTheTicketSchema(t *testing
 		ExpiryBatch:    25,
 	})
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketAbsentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketAbsentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -871,5 +874,192 @@ func TestMountReservationSkipsTheTicketPDFRouteWithoutTheTicketSchema(t *testing
 	}
 	if !reservationRouted(srv) || !paymentRouted(srv) {
 		t.Fatal("the reservation and payment routes disappeared because the ticket schema is missing")
+	}
+}
+
+// The catalogue and reservation read probes stand in for the schema check of the two
+// M3.5 reads, so their mount decision is testable without a database.
+func cataloguePresentSchema(context.Context, *catalog.PostgresStore) (bool, error) {
+	return true, nil
+}
+func catalogueAbsentSchema(context.Context, *catalog.PostgresStore) (bool, error) {
+	return false, nil
+}
+func catalogueFailingSchema(context.Context, *catalog.PostgresStore) (bool, error) {
+	return false, errors.New("database unreachable")
+}
+
+// catalogueRouted reports whether the public catalogue route is mounted, i.e. whether a
+// catalogue request reaches the handler instead of a 404. A mounted route cannot answer
+// 404 for the catalogue — an empty catalogue is a 200 with an empty list — and the store
+// here points at a database that does not answer, so the probe never needs a live one.
+func catalogueRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+	return w.Code != http.StatusNotFound
+}
+
+// reservationReadRouted reports whether the confirmation read is mounted, i.e. whether
+// a GET on the reservation subtree reaches the handler instead of a 404.
+func reservationReadRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/reservations/00000000-0000-0000-0000-00000000c0f1", nil))
+	return w.Code != http.StatusNotFound
+}
+
+// T1 (S5): the two reads the public web needs are part of the customer surface, so they
+// are mounted at /api/v1 next to the hold, payment and ticket routes and outside the
+// administrative guard: a stranger has no event id to reach the seat page with and no
+// administrative token to present.
+func TestMountReservationMountsTheCatalogueAndReservationReads(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema,
+		ticketPresentSchema, cataloguePresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if proc.catalogStore == nil {
+		t.Fatal("mountReservation built no catalogue store next to the ticket store")
+	}
+	if !catalogueRouted(srv) {
+		t.Fatal("the catalogue route was not mounted although its schema is present")
+	}
+	if !reservationReadRouted(srv) {
+		t.Fatal("the reservation read was not mounted although its schema is present")
+	}
+	// The routes the customer surface already served are still mounted next to them.
+	if !reservationRouted(srv) || !paymentRouted(srv) || !ticketRouted(srv) {
+		t.Fatal("mounting the two reads dropped a route next to them")
+	}
+	if adminRouted(srv) {
+		t.Fatal("mounting the two reads exposed the administrative subtree")
+	}
+}
+
+// T1 (S5): a database without the objects the reads touch advertises neither route — a
+// catalogue route that could only count seats it cannot read, or a confirmation read
+// that could not answer an amount or a ticket, is worse than an absent one. The rest of
+// the customer surface keeps working, with one informative line instead of an error per
+// request.
+func TestMountReservationSkipsTheReadsWithoutTheirSchema(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema,
+		ticketPresentSchema, catalogueAbsentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+
+	if proc.catalogStore != nil {
+		t.Fatal("mountReservation kept a catalogue store without the schema its reads touch")
+	}
+	if catalogueRouted(srv) || reservationReadRouted(srv) {
+		t.Fatal("the catalogue and reservation read routes were mounted without their schema")
+	}
+	if !reservationRouted(srv) || !paymentRouted(srv) || !ticketRouted(srv) {
+		t.Fatal("the rest of the customer surface disappeared because the read schema is missing")
+	}
+	if !strings.Contains(logged.String(), "catalogue schema not present") {
+		t.Fatalf("log = %q, want the one informative line about the missing read schema", logged.String())
+	}
+}
+
+// A read schema probe that cannot answer is a startup failure: mounting a catalogue or a
+// confirmation read whose schema state is unknown would be guessing, and the refusal
+// never echoes the database URL or its password.
+func TestMountReservationFailsWhenTheReadProbeCannotAnswer(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema,
+		ticketPresentSchema, catalogueFailingSchema)
+	if err == nil {
+		t.Fatal("mountReservation returned no error for an unanswerable read schema probe")
+	}
+	if proc != nil {
+		t.Fatal("mountReservation returned a process for an unanswerable read schema probe")
+	}
+	if catalogueRouted(srv) || reservationReadRouted(srv) || ticketRouted(srv) || reservationRouted(srv) {
+		t.Fatal("a surface was mounted although the read schema state is unknown")
+	}
+	for _, leaked := range []string{"s3cr3t-pw", "postgres://"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("error leaked %q: %v", leaked, err)
+		}
+	}
+}
+
+// T2 (S4): the two screening reads and the price write are part of the administrative
+// subtree, so they are mounted behind the same local-only guard as the venue routes.
+// An unauthorized request is indistinguishable from a missing route, and a guarded one
+// reaches the new handler.
+func TestAdminScreeningRoutesAreBehindTheGuard(t *testing.T) {
+	cfg := config.Config{Environment: "development", LocalAdminEnabled: true, LocalAdminToken: "admin-guard-token"}
+	srv := httpserver.New(cfg, health.New(health.ProcessProbe{}), discardLogger())
+	srv.WithAdmin(adminapi.New(venue.NewService(nil)).Mux())
+
+	call := func(method, target, token string) int {
+		request := httptest.NewRequest(method, target, strings.NewReader(`{"priceCents":1250}`))
+		request.RemoteAddr = "127.0.0.1:12345"
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, request)
+		return w.Code
+	}
+
+	for _, target := range []string{"/api/v1/admin/events", "/api/v1/admin/events/not-an-event"} {
+		if status := call(http.MethodGet, target, ""); status != http.StatusNotFound {
+			t.Fatalf("GET %s without a token = %d, want 404 like a missing route", target, status)
+		}
+		if status := call(http.MethodGet, target, "wrong-token"); status != http.StatusNotFound {
+			t.Fatalf("GET %s with a wrong token = %d, want 404 like a missing route", target, status)
+		}
+	}
+	if status := call(http.MethodPatch, "/api/v1/admin/events/not-an-event", ""); status != http.StatusNotFound {
+		t.Fatalf("PATCH without a token = %d, want 404 like a missing route", status)
+	}
+	// A guarded request reaches the handler: the malformed identifier is the handler's
+	// rejection, which proves the route is present behind the guard without needing a
+	// database or a service.
+	if status := call(http.MethodPatch, "/api/v1/admin/events/not-an-event", "admin-guard-token"); status != http.StatusBadRequest {
+		t.Fatalf("PATCH with the token = %d, want the handler's 400", status)
+	}
+	if status := call(http.MethodGet, "/api/v1/admin/events/not-an-event", "admin-guard-token"); status != http.StatusBadRequest {
+		t.Fatalf("GET one event with the token = %d, want the handler's 400", status)
 	}
 }
