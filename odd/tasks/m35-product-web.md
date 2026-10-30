@@ -391,3 +391,33 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   `aria-current`, and no mobile viewport beyond the rules the seat map applies. CI: the `m35-browser`
   job installs `--with-deps chromium`, bootstraps the stack and runs `make verify-m35` as its own
   job, like `m3-checkout`.
+- L17 — T9b closed the two product findings the browser gate recorded rather than fixed, instead of
+  documenting around them. **The download is declared, not inferred.** `storage.PresignOptions`
+  extends the one presign call with a `ContentDisposition` the adapter signs into the URL as
+  `response-content-disposition`, validated by `ValidateContentDisposition` (attachment or inline, no
+  control character) so a value that would end the header early is refused before anything is signed;
+  `pdf.Archive.DownloadURL` signs `attachment; filename="ticket-<ticketID>.pdf"` through the new
+  `pdf.TicketAttachmentDisposition`, which names the file after the ticket instead of after the
+  `tickets/{eventID}/{ticketID}.pdf` key, and escapes a quote or a backslash in the quoted filename
+  because an identifier is not trusted input. `PresignOptions{}` is the zero value, so every other
+  caller and every existing boundary test keeps its behaviour. Both screens now print one sentence,
+  `TICKET_PDF_LINK_LABEL` — "Download the ticket PDF" — exported from
+  `apps/web/src/lib/issued-tickets.ts`, because the checkout panel's "Download the PDF" was a promise
+  the route did not keep while the ticket page's "Open the ticket PDF" was the wording that matched a
+  browser's own decision. **`aria-current` marks a section, not a link.** `SiteNavItem` gained an
+  optional `prefix`, declared by the Administration entry alone (`prefix: "/admin"`), and
+  `isCurrentEntry` applies the existing exact-or-child rule to the href and to the prefix — so
+  `/admin/schedule` and `/admin/layouts` are the administration while `/administrator` is not. The
+  contract is written where the code lives, in `apps/api/internal/tickets/doc.go`. Evidence: unit
+  tests for the validator and for the signed parameter (a pre-signed URL is computed, never
+  requested, so neither needs a bucket), the archive's tests for the declared filename and its
+  escaping, the gated round trips against Floci — the store answered
+  `Content-Disposition: attachment; filename="ticket-00000000-0000-0000-0000-00000000d0a1.pdf"` — and
+  a `make verify-m35` that now follows the PDF route and **compares** the delivered
+  `filename="ticket-<id>.pdf"` rather than checking that a header exists, plus `aria-current="page"` on
+  Administration on `/admin/venues`, `/admin/schedule` and `/admin/layouts`, keeping every assertion
+  the gate already had. 7 scenarios green in 11.4s (verified twice, by writer and orchestrator),
+  `pnpm check` green with 315 tests, `go test ./apps/api/...` with 16 packages ok and `make verify-m3`
+  still green. Still unproven, as the gate's own closing line says: nothing about Firefox or WebKit,
+  no real payment provider, no real storage credentials, and no accessibility audit beyond the
+  keyboard path, the focus ring, the heading count and `aria-current`.
