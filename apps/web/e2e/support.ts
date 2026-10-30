@@ -240,21 +240,37 @@ export async function selectByLabelPrefix(
  * neither from the API's answer: the administration spec compares the two, which is what
  * makes "the catalogue prints the venue's hour" a claim about the product.
  */
+/**
+ * A film title that belongs to this test alone.
+ *
+ * Both engines drive **one** stack, and a stack keeps what the other engine created: a
+ * constant title then matches twice, and `toHaveCount(1)` fails on whichever engine runs
+ * second. That is exactly what happened when the gate grew a second engine, and the
+ * assertion was right both times — the fixture was not.
+ *
+ * The suffix keeps every screening distinguishable from every other run of the same spec,
+ * in the same engine, in another engine, or in a database a developer reused by hand.
+ */
+function uniqueTitle(base: string): string {
+  return `${base} · ${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export async function createAndPublishScreening(
   page: Page,
   fixture: ScreeningFixture,
 ): Promise<CreatedScreening> {
+  const filmTitle = uniqueTitle(fixture.filmTitle);
   await visit(page, "/admin/schedule");
 
   // 1. The film: created once, then chosen from the repertoire below.
-  await page.getByLabel("Title").fill(fixture.filmTitle);
+  await page.getByLabel("Title").fill(filmTitle);
   await page.getByLabel("Runtime (minutes)").fill(fixture.runtimeMinutes);
   await page.getByLabel("Rating").fill(fixture.rating);
   await page.getByRole("button", { name: "Create film" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Created " }),
     "the film's confirmation",
-  ).toContainText(`Created ${fixture.filmTitle}`);
+  ).toContainText(`Created ${filmTitle}`);
 
   // 2. The room and its published layout version: two reads, neither of them a guess.
   await selectByLabelPrefix(
@@ -269,13 +285,11 @@ export async function createAndPublishScreening(
   await page
     .getByRole("combobox", { name: "Film" })
     .click();
-  // `.first()`: the gate's database is created for this run, so this title exists once.
-  // A database reused by hand — a developer pointing this suite at their own stack —
-  // could hold a film with the same title from an earlier attempt, and either row is the
-  // film this scenario means.
+  // `.first()`: the title carries this test's own suffix, so this row is the one the test
+  // just created; the `.first()` is belt and braces for a reused database, not a guess.
   await page
     .getByRole("option", {
-      name: `${fixture.filmTitle} (${fixture.runtimeMinutes} min, ${fixture.rating})`,
+      name: `${filmTitle} (${fixture.runtimeMinutes} min, ${fixture.rating})`,
     })
     .first()
     .click();
@@ -313,7 +327,7 @@ export async function createAndPublishScreening(
 
   return {
     eventId,
-    filmTitle: fixture.filmTitle,
+    filmTitle,
     price: fixture.price,
     venueHour: STARTS_AT.venueHour,
   };
