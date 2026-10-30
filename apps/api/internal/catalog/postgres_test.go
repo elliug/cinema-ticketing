@@ -139,10 +139,13 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 	}
 
 	t.Run("the catalogue answers the screenings a buyer can buy, in screening order", func(t *testing.T) {
-		screenings, err := store.Events(ctx)
+		// One page, sized to hold the whole fixture: this case is about which screenings
+		// belong in the catalogue and in what order, not about where a page ends.
+		answered, err := store.Events(ctx, catalog.ListQuery{Limit: catalog.MaxEventLimit})
 		if err != nil {
 			t.Fatalf("Events() = unexpected error %v", err)
 		}
+		screenings := answered.Screenings
 		// The database is shared with the other M3 read-model suites, so the fixture's
 		// own entries are what this test decides about; an entry of another suite is
 		// not this test's business.
@@ -211,12 +214,12 @@ func TestCatalogReadsARealSaleAndItsNeighbourhood(t *testing.T) {
 	})
 
 	t.Run("one screening answers the entry the catalogue list shows", func(t *testing.T) {
-		screenings, err := store.Events(ctx)
+		answered, err := store.Events(ctx, catalog.ListQuery{Limit: catalog.MaxEventLimit})
 		if err != nil {
 			t.Fatalf("Events() = unexpected error %v", err)
 		}
 		var listed catalog.Screening
-		for _, screening := range screenings {
+		for _, screening := range answered.Screenings {
 			if screening.ID == eventOnSale {
 				listed = screening
 			}

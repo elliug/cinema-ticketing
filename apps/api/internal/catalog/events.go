@@ -34,9 +34,13 @@ var (
 // confirmation route each read one of these and none assembles its own answer from
 // parts.
 type Reader interface {
-	// Events answers the screenings a buyer can buy right now, in screening order. A
-	// catalogue with nothing to sell is an empty list and not an error.
-	Events(ctx context.Context) ([]Screening, error)
+	// Events answers one page of the screenings a buyer can buy right now, in screening
+	// order. The request decides how many, from where and within which bounds; the answer
+	// says where the next page starts, so a caller never has to guess whether more exist.
+	// A page with nothing to sell is an empty page and not an error. A request the
+	// catalogue cannot mean is [ErrInvalidQuery], naming the field; a read that could not
+	// be completed is [ErrUnavailable].
+	Events(ctx context.Context, query ListQuery) (Page, error)
 	// Event answers one screening, whatever its status: a buyer who followed a link to a
 	// screening that is no longer offered needs to be told so, not told it never existed.
 	// It answers the same projection, from the same statement, as the entry [Events]
@@ -50,8 +54,8 @@ type Reader interface {
 }
 
 // Screening is one catalogue entry: a screening with the venue, the price and how many
-// seats are free right now. The list answers every screening a buyer can buy; the single
-// read answers one screening that exists, whether or not it is still offered.
+// seats are free right now. The list answers the entries of one page; the single read
+// answers one screening that exists, whether or not it is still offered.
 //
 // It is a projection and not a second event model: the event, its film, its room, its
 // cinema and its seats belong to the modules that own them, and this is the slice of

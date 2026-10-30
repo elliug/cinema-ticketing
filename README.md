@@ -339,8 +339,7 @@ Four milestones are delivered, and what they leave out is part of the delivery. 
 | **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
 | **Single-use redemption** | A ticket is issued and its code can be verified server-side, but nothing marks it as used. The same QR can be presented at a door indefinitely. This is the largest gap: the ticket is worth one admission and currently proves an infinite number. |
 | **Cashier, reporting and audit** | No door screen, no takings, no record of who changed what. The administrative surface is local-only and unauthenticated beyond a shared token. |
-| **Cancelling a hold** | `POST /reservations/{id}/cancel` is specified and not implemented — `ARCHITECTURE.md` now says so instead of listing it as if it existed. A buyer who changes their mind waits out the hold's TTL. |
-| **Catalogue filtering and pagination** | `GET /events` returns every screening on sale. Fine for a seed, wrong for a month of programming. |
+| **Catalogue filters beyond time** | `GET /events` pages with a keyset cursor and bounds each page with `from`/`to`, and nothing else: there is no film or cinema filter until a deployment has more than one cinema. |
 | **Email** | The PDF is downloaded from the web. Nothing is mailed. |
 | **PDFs that follow a void** | The PDF is rendered when the payment is captured and stored immutably: cancelling a screening or voiding a ticket does not change a PDF already issued. It is a record of the sale and never proof of validity — validity is `POST /tickets/verify`. |
 | **Real payment and storage** | The provider is simulated and storage is Floci. A real decline needs `NewSimulatedWithDeclineRule`; the wired simulator always approves. |
