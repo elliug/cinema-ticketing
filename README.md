@@ -1,44 +1,59 @@
 # Cinema ticketing foundation
 
-M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. Product behavior starts in M1; reservations and concurrency guarantees in M2; a guest buys a ticket through a simulated payment and receives it as a PDF in M3.
+M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. On top of it, four milestones are delivered: **M1** venues, rooms and versioned layouts; **M2** durable seat holds with per-seat exclusivity and expiry; **M3** the purchase path — a guest holds seats, pays through a simulated provider, and receives a ticket with a signed code and a PDF stored in S3; **M3.5** the product web — catalogue, keyboard-operable seat map, checkout, tickets, and an administration surface that can price and publish a screening.
+
+Identity, single-use redemption, reporting and audit do not exist yet. `## What this build does not do` lists them, with what each one currently costs.
 
 ## Quick path
 
 Prerequisites: Go 1.27+, Node.js 22+, pnpm 12+, Docker Engine, Docker Compose, and `curl`.
 
+To run the product and click through a purchase, follow [`## Run locally`](#run-locally): four commands, two of them long-running.
+
+To prove the build instead, without reading anything else:
+
 ```sh
 pnpm install
 make deps-up
 make migrate
-make verify-m0
+make check
 ```
 
-Expected result: Go tests and vet pass, the web tests/lint/typecheck/build pass, migrations pass an isolated up/down/up cycle, and both health endpoints return their exact contracts.
+Expected result: Go tests and vet pass, and the web tests, lint, typecheck and build pass. The four milestones also have their own end-to-end gates — `make verify-m1`, `make verify-m2`, `make verify-m3` and `make verify-m35` — which start their own stack and prove the behaviour rather than the compilation.
 
 ## Run locally
 
-Start dependencies and apply the migrations:
+Four commands. The first two finish; the last two stay running, each in its own terminal.
 
 ```sh
 make up
-make migrate-all
+API_ENV=development make bootstrap
 ```
+
+`make up` creates the containers and their volumes and waits until all three are healthy. `make bootstrap` applies the six migrations, seeds the development data and creates the ticket bucket. Both are re-runnable: a second run changes nothing.
 
 `make deps-up` starts the three local services: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci`, pinned by digest because CI starts it on every run, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. `make up` then waits for the services themselves within a bounded timeout: PostgreSQL with `pg_isready` inside its container, Redis with `PING`, and Floci with `GET http://127.0.0.1:4566/_floci/health`. A service that does not answer fails the target and is named (`postgres is not ready after 1m0s: …`); the wait only reads and never touches the database, and its budget can be changed with `make up WAIT_TIMEOUT=120s`. Redis runs with `--maxmemory-policy noeviction`, because an eviction policy could drop a hold key before its TTL and let a second buyer hold the same seat. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three containers; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
 
-Run the API:
+Run the API in the first terminal. Every variable below matters, and the next section says what breaks without each one:
 
 ```sh
-API_DEPENDENCIES=postgresql,redis go run ./apps/api/cmd/api
+API_ENV=development \
+API_DATABASE_URL="postgres://cinema:cinema_local_only@127.0.0.1:5432/cinema?sslmode=disable" \
+API_DEPENDENCIES=postgresql,redis \
+API_LOCAL_ADMIN=true \
+API_LOCAL_ADMIN_TOKEN=change_me_in_local \
+   go run ./apps/api/cmd/api
 ```
 
-Run the web application in another terminal:
+Run the web application in the second terminal, with **the same token**:
 
 ```sh
-pnpm web:dev
+API_LOCAL_ADMIN_TOKEN=change_me_in_local pnpm web:dev
 ```
 
-Open `http://localhost:3000`. Health endpoints:
+Open `http://localhost:3000` to buy, and `http://localhost:3000/admin/venues` to administer. `change_me_in_local` is a placeholder you choose: any value works locally, as long as **both** processes are started with the same one.
+
+Health endpoints:
 
 | Service | Endpoint | Purpose |
 |---|---|---|
@@ -46,6 +61,15 @@ Open `http://localhost:3000`. Health endpoints:
 | API | `GET http://localhost:8080/health/ready` | PostgreSQL and Redis TCP readiness |
 | Floci | `GET http://localhost:4566/_floci/health` | Local S3 readiness, probed from the host |
 | Web | `GET http://localhost:3000/api/health` | Web runtime health contract |
+
+### Settings that fail quietly
+
+Two settings fail at startup, and both failures look like a product that answers nothing rather than a process that was started wrong.
+
+- **`API_DATABASE_URL` is not optional.** Without it the API mounts no customer surface at all: `/api/v1/events`, holds, payments and tickets all answer `404`, and the process still reports healthy. If the catalogue is empty and every route 404s, read the API's startup log for the mounted surfaces before suspecting the code.
+- **The token must match on both sides.** `API_LOCAL_ADMIN=true` mounts the administrative surface on the API; the web reaches it with `API_LOCAL_ADMIN_TOKEN`, which must equal the API's. When it does not, the administrative guard answers `404` — not `401` — so a caller cannot tell a missing surface from a wrong token. The administration screens name both causes when they see that `404`; the fix is to restart whichever process has the other value.
+
+A third one fails later, when the first cinema is created: a cinema's timezone must be an **IANA name** such as `Europe/Madrid`, and the API refuses anything else instead of storing a name it could never render. See [`## M1 local administration`](#m1-local-administration) for the rule and its exact message.
 
 ## Configuring an environment that is not development
 
@@ -139,8 +163,9 @@ make bootstrap
   identifier and `ON CONFLICT DO NOTHING`, so a second run changes no row count.
   The layout is inserted as a draft, filled and then published, because the M1
   guard refuses a layout inserted as published and freezes the geometry of a
-  published one. There is no price in the seed: the per-event price arrives with
-  the checkout schema.
+  published one. Both sessions carry a price, because the catalogue a stranger
+  reads prints one: `12.50` and `11.50`. Change either with
+  `PATCH /api/v1/admin/events/{eventId}` or on the administration screen.
 - `ensure-bucket` loads the validated configuration, creates the bucket when it is
   missing and prints its name. It never prints the credentials, and it exits
   non-zero when the object storage is not configured instead of pretending to
@@ -286,12 +311,27 @@ Two things this build is honest about:
 
 `make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, Chromium only.
 
-## M0 boundaries
+## What this build does not do
 
-M0 intentionally contained no cinema, room, layout, event, seat, reservation, payment, ticket, identity, or reporting behavior. The M1 migration added the `cinema` schema; the M2 migrations added durable holds with per-seat exclusivity and expiry; the M3 migrations added the price per event, the payment attempt, the sold ticket, the outbox and the guard that allows one open payment attempt per reservation. Identity and reporting remain absent, and so does single-use redemption: a ticket is issued and can be verified, but nothing yet marks it as used at a door. The tagged acceptance test for the double-booking contract still runs as its own proof:
+Four milestones are delivered, and what they leave out is part of the delivery. Each line names what is missing and what that costs today, so nobody has to infer it from a green build.
+
+| Not there | What it costs today |
+|---|---|
+| **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
+| **Single-use redemption** | A ticket is issued and its code can be verified server-side, but nothing marks it as used. The same QR can be presented at a door indefinitely. This is the largest gap: the ticket is worth one admission and currently proves an infinite number. |
+| **Cashier, reporting and audit** | No door screen, no takings, no record of who changed what. The administrative surface is local-only and unauthenticated beyond a shared token. |
+| **Cancelling a hold** | `POST /reservations/{id}/cancel` is specified and not implemented — `ARCHITECTURE.md` now says so instead of listing it as if it existed. A buyer who changes their mind waits out the hold's TTL. |
+| **Catalogue filtering and pagination** | `GET /events` returns every screening on sale. Fine for a seed, wrong for a month of programming. |
+| **Email** | The PDF is downloaded from the web. Nothing is mailed. |
+| **PDFs that follow a void** | The PDF is rendered when the payment is captured and stored immutably: cancelling a screening or voiding a ticket does not change a PDF already issued. It is a record of the sale and never proof of validity — validity is `POST /tickets/verify`. |
+| **Real payment and storage** | The provider is simulated and storage is Floci. A real decline needs `NewSimulatedWithDeclineRule`; the wired simulator always approves. |
+| **Accessibility beyond the keyboard path** | The seat map is operable without a mouse, with a visible focus ring, one `h1` per screen and `aria-current` on the navigation. That is not an accessibility audit. |
+| **Browser coverage beyond Chromium** | `make verify-m35` drives Chromium only, and only by `localhost` — an origin the browser treats as secure. Anything the browser decides by origin stays invisible to it. |
+
+The tagged acceptance test for the double-booking contract still runs as its own proof:
 
 ```sh
 go test -tags=acceptance_m2 ./tests/concurrency
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and the milestone table, and the records in [`odd/tasks/`](odd/tasks): `m0-foundation.md`, `m1-venue-layout.md`, `m2-reservation-core.md` and `m3-checkout-tickets.md`.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and the milestone table, and the records in [`odd/tasks/`](odd/tasks): `m0-foundation.md`, `m1-venue-layout.md`, `m2-reservation-core.md`, `m3-checkout-tickets.md` and `m35-product-web.md`.
