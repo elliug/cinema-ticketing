@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2
+.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -78,3 +78,13 @@ verify-m1:
 
 verify-m2:
 	./scripts/verify_m2.sh
+
+# The milestone's exit evidence: against the real compose services, a hold is paid,
+# the tickets answer their own detail, the signed code verifies, the PDF is stored in
+# Floci and served by pre-signed link, the payment guards hold, and the artefact
+# survives both a Floci restart and a Floci container recreation. It creates and
+# removes its own database, Redis index, API port and bucket. It needs Docker Compose
+# v2, Go, jq and openssl (checked with a named refusal, never a stack trace) and
+# refuses to run when the Redis index it would flush already holds keys.
+verify-m3:
+	./scripts/verify_m3.sh

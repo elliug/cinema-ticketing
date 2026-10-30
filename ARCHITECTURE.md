@@ -233,6 +233,9 @@ Everything else in these tables is planned. M3 adds the payment and ticket route
 | `POST` | `/reservations/{reservationId}/payment` | Start/replay payment confirmation. |
 | `POST` | `/reservations/{reservationId}/cancel` | Cancel a valid, unpaid hold. |
 | `GET` | `/tickets/{ticketId}` | Retrieve ticket presentation data for its owner. |
+| `GET` | `/tickets/{ticketId}/pdf` | Download the stored ticket PDF through a short-lived pre-signed link. |
+| `GET` | `/tickets/{ticketId}/qr.svg` | Render the ticket's signed QR code as an image for the page and the printout. |
+| `POST` | `/tickets/verify` | Verify a presented ticket code against the stored ticket. |
 
 `POST /reservations/holds` requires `Idempotency-Key`, a customer session/guest verification token, and this body shape:
 
