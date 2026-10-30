@@ -189,6 +189,14 @@ export interface PublicReservation {
   amountCents: number | null;
   /** The same amount as the API renders it, for example `19.98`; null with the above. */
   amountDisplay: string | null;
+  /**
+   * What paying costs right now, as the API quotes it, or null when nothing is due —
+   * paid, ended, or holding no seats. It is a quote: the payment answer reports the money
+   * actually taken.
+   */
+  amountDueCents: number | null;
+  /** The same quote as the API renders it; null with the above. */
+  amountDueDisplay: string | null;
   /** The seats the order holds or sold, in the order they are painted at the door. */
   seats: PublicOrderSeat[];
   /** The tickets issued for this order; an empty array while it is unpaid. */
@@ -851,6 +859,26 @@ function parseReservation(value: unknown): PublicResult<PublicReservation> {
     amountDisplay = text;
   }
 
+  // The quote follows the same rule: two forms that are null together, and half an
+  // answer is a broken read rather than a reason to format money in the browser.
+  let amountDueCents: number | null = null;
+  let amountDueDisplay: string | null = null;
+  if (value.amountDueCents !== null && value.amountDueCents !== undefined) {
+    const due = wholeOrUndefined(value.amountDueCents);
+    const dueText = servedString(value.amountDueDisplay);
+    if (due === undefined || dueText === undefined) {
+      return {
+        ok: false,
+        error: unexpectedResponse(
+          200,
+          `the order ${reservationId} carries an amount due without the display text for it`,
+        ),
+      };
+    }
+    amountDueCents = due;
+    amountDueDisplay = dueText;
+  }
+
   // The seats and the tickets are always arrays on the wire, so a client iterates them
   // without a nil check. Something else is not an empty order: it is a broken read.
   if (!Array.isArray(value.seats)) {
@@ -943,6 +971,8 @@ function parseReservation(value: unknown): PublicResult<PublicReservation> {
       expiresAt,
       amountCents,
       amountDisplay,
+      amountDueCents,
+      amountDueDisplay,
       seats,
       ticketIds: value.ticketIds.filter(
         (id): id is string => typeof id === "string",

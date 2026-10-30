@@ -5,6 +5,12 @@
 // payment attempt's amount is fixed when it is created, so changing a price affects
 // future orders only. A stored attempt and an issued ticket keep the money actually
 // taken.
+//
+// A screening's status decides whether it can be sold at all: POST /admin/events stores
+// one as a draft and the public catalogue answers only an on_sale screening whose start is
+// still ahead, so PATCH /admin/events/{eventId} is the only way a screening reaches the
+// catalogue. What each status means for the buyer-facing surface is documented on that
+// handler, in events.go.
 package adminapi
 
 import (
@@ -31,11 +37,14 @@ type VenueService interface {
 	CloneLayout(ctx context.Context, layoutID string) (venue.Layout, error)
 	GetLayout(ctx context.Context, layoutID string) (venue.Layout, error)
 	CreateFilm(ctx context.Context, title string, runtimeMinutes int, rating string) (venue.Film, error)
+	ListFilms(ctx context.Context) ([]venue.Film, error)
 	CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (venue.Event, error)
 	ListEventSeats(ctx context.Context, eventID string) ([]venue.EventSeat, error)
 	ListEvents(ctx context.Context) ([]venue.Event, error)
 	GetEvent(ctx context.Context, eventID string) (venue.Event, error)
-	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (venue.Event, error)
+	// UpdateEvent writes the price, the status, or both of one screening; a nil field was
+	// not sent and leaves its stored column untouched.
+	UpdateEvent(ctx context.Context, eventID string, update venue.EventUpdate) (venue.Event, error)
 }
 
 // Handler serves the administrative routes.
@@ -60,10 +69,11 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /layouts/{layoutId}/clone", h.cloneLayout)
 	mux.HandleFunc("GET /layouts/{layoutId}", h.getLayout)
 	mux.HandleFunc("POST /films", h.createFilm)
+	mux.HandleFunc("GET /films", h.listFilms)
 	mux.HandleFunc("POST /events", h.createEvent)
 	mux.HandleFunc("GET /events", h.listEvents)
 	mux.HandleFunc("GET /events/{eventId}", h.getEvent)
-	mux.HandleFunc("PATCH /events/{eventId}", h.setEventPrice)
+	mux.HandleFunc("PATCH /events/{eventId}", h.updateEvent)
 	mux.HandleFunc("GET /events/{eventId}/seats", h.listEventSeats)
 	return mux
 }
@@ -230,7 +240,26 @@ func (h *Handler) createFilm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": film.ID, "title": film.Title, "runtimeMinutes": film.RuntimeMinutes, "rating": film.Rating})
+	writeJSON(w, http.StatusCreated, filmJSON(film))
+}
+
+// listFilms answers every film the administration may schedule a screening against. A
+// screen that offers a film to pick cannot offer what it cannot list.
+//
+// The order is the store's own (title, then identifier): the handler does not re-sort a
+// repertoire the database already ordered, and it does not page a list no screen has
+// asked to page yet.
+func (h *Handler) listFilms(w http.ResponseWriter, r *http.Request) {
+	films, err := h.svc.ListFilms(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(films))
+	for _, film := range films {
+		items = append(items, filmJSON(film))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"films": items})
 }
 
 func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +301,12 @@ func cinemaJSON(cinema venue.Cinema) map[string]any {
 // roomJSON is the wire shape of a room, shared by every room response.
 func roomJSON(room venue.Room) map[string]any {
 	return map[string]any{"id": room.ID, "cinemaId": room.CinemaID, "name": room.Name}
+}
+
+// filmJSON is the wire shape of a film, shared by the create and the list so the two
+// cannot answer different fields for the same stored film.
+func filmJSON(film venue.Film) map[string]any {
+	return map[string]any{"id": film.ID, "title": film.Title, "runtimeMinutes": film.RuntimeMinutes, "rating": film.Rating}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {

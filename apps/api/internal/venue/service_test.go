@@ -10,19 +10,20 @@ import (
 )
 
 type fakeStore struct {
-	layout         venue.Layout
-	layouts        map[string]venue.Layout
-	layoutList     []venue.Layout
-	cinemas        []venue.Cinema
-	rooms          []venue.Room
-	events         []venue.Event
-	seats          []venue.EventSeat
-	calls          []string
-	failWith       error
-	lastRowsSet    []venue.Row
-	layoutCreated  int
-	lastEventID    string
-	lastPriceCents int64
+	layout        venue.Layout
+	layouts       map[string]venue.Layout
+	layoutList    []venue.Layout
+	cinemas       []venue.Cinema
+	rooms         []venue.Room
+	events        []venue.Event
+	films         []venue.Film
+	seats         []venue.EventSeat
+	calls         []string
+	failWith      error
+	lastRowsSet   []venue.Row
+	layoutCreated int
+	lastEventID   string
+	lastUpdate    venue.EventUpdate
 }
 
 func (f *fakeStore) record(name string) {
@@ -91,6 +92,11 @@ func (f *fakeStore) ListEventSeats(_ context.Context, _ string) ([]venue.EventSe
 	return f.seats, f.failWith
 }
 
+func (f *fakeStore) ListFilms(_ context.Context) ([]venue.Film, error) {
+	f.record("ListFilms")
+	return f.films, f.failWith
+}
+
 func (f *fakeStore) ListEvents(_ context.Context) ([]venue.Event, error) {
 	f.record("ListEvents")
 	return f.events, f.failWith
@@ -110,16 +116,21 @@ func (f *fakeStore) GetEvent(_ context.Context, eventID string) (venue.Event, er
 	return venue.Event{}, venue.ErrNotFound
 }
 
-func (f *fakeStore) SetEventPrice(_ context.Context, eventID string, priceCents int64) (venue.Event, error) {
-	f.record("SetEventPrice")
+func (f *fakeStore) UpdateEvent(_ context.Context, eventID string, update venue.EventUpdate) (venue.Event, error) {
+	f.record("UpdateEvent")
 	f.lastEventID = eventID
-	f.lastPriceCents = priceCents
+	f.lastUpdate = update
 	if f.failWith != nil {
 		return venue.Event{}, f.failWith
 	}
 	for position := range f.events {
 		if f.events[position].ID == eventID {
-			f.events[position].PriceCents = priceCents
+			if update.PriceCents != nil {
+				f.events[position].PriceCents = *update.PriceCents
+			}
+			if update.Status != nil {
+				f.events[position].Status = *update.Status
+			}
 			return f.events[position], nil
 		}
 	}
@@ -343,25 +354,108 @@ func TestCreateEventDefaultsThePriceToZero(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceAcceptsZeroWithoutRejectingItAsMissing(t *testing.T) {
-	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, RoomID: "room-1", PriceCents: 1250}}}
+// priceUpdate is a request that sends the price and nothing else.
+func priceUpdate(cents int64) venue.EventUpdate { return venue.EventUpdate{PriceCents: &cents} }
+
+// statusUpdate is a request that sends the status and nothing else.
+func statusUpdate(status string) venue.EventUpdate { return venue.EventUpdate{Status: &status} }
+
+func TestUpdateEventAcceptsZeroWithoutRejectingItAsMissing(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, RoomID: "room-1", Status: venue.EventDraft, PriceCents: 1250}}}
 	svc := venue.NewService(store)
-	event, err := svc.SetEventPrice(context.Background(), serviceEventID, 0)
+	event, err := svc.UpdateEvent(context.Background(), serviceEventID, priceUpdate(0))
 	if err != nil {
-		t.Fatalf("SetEventPrice returned error: %v", err)
+		t.Fatalf("UpdateEvent returned error: %v", err)
 	}
-	if event.PriceCents != 0 || store.lastPriceCents != 0 {
-		t.Fatalf("price = %d (store saw %d), want the explicit zero", event.PriceCents, store.lastPriceCents)
+	if event.PriceCents != 0 || store.lastUpdate.PriceCents == nil || *store.lastUpdate.PriceCents != 0 {
+		t.Fatalf("price = %d (store saw %v), want the explicit zero", event.PriceCents, store.lastUpdate.PriceCents)
 	}
-	if len(store.calls) != 1 || store.calls[0] != "SetEventPrice" {
-		t.Fatalf("calls = %v, want exactly SetEventPrice", store.calls)
+	// A price-only request says nothing about the status, so it must not carry one.
+	if store.lastUpdate.Status != nil || event.Status != venue.EventDraft {
+		t.Fatalf("status = %v (store saw %v), want a price-only request to leave the status alone", event.Status, store.lastUpdate.Status)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "UpdateEvent" {
+		t.Fatalf("calls = %v, want exactly UpdateEvent", store.calls)
 	}
 }
 
-func TestSetEventPriceRejectsNegativeWithoutPersisting(t *testing.T) {
+// A status-only request is what puts a draft on sale, and it must not touch the price it
+// was not asked about.
+func TestUpdateEventPublishesADraftAndLeavesThePriceAlone(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft, PriceCents: 1250}}}
+	svc := venue.NewService(store)
+	event, err := svc.UpdateEvent(context.Background(), serviceEventID, statusUpdate(venue.EventOnSale))
+	if err != nil {
+		t.Fatalf("UpdateEvent returned error: %v", err)
+	}
+	if event.Status != venue.EventOnSale || event.PriceCents != 1250 {
+		t.Fatalf("event = %+v, want the status changed to on_sale and the price kept at 1250", event)
+	}
+	if store.lastUpdate.PriceCents != nil {
+		t.Fatalf("price = %v, want a status-only request to carry no price", store.lastUpdate.PriceCents)
+	}
+}
+
+func TestUpdateEventWritesBothFieldsInOneCall(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft, PriceCents: 0}}}
+	svc := venue.NewService(store)
+	event, err := svc.UpdateEvent(context.Background(), serviceEventID, venue.EventUpdate{
+		PriceCents: ptrInt64(1400), Status: ptrString(venue.EventOnSale),
+	})
+	if err != nil {
+		t.Fatalf("UpdateEvent returned error: %v", err)
+	}
+	if event.Status != venue.EventOnSale || event.PriceCents != 1400 {
+		t.Fatalf("event = %+v, want both fields changed by one call", event)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "UpdateEvent" {
+		t.Fatalf("calls = %v, want exactly one write", store.calls)
+	}
+}
+
+func TestUpdateEventAcceptsEveryStatusTheColumnAllows(t *testing.T) {
+	for _, status := range venue.EventStatuses {
+		t.Run(status, func(t *testing.T) {
+			store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft}}}
+			svc := venue.NewService(store)
+			if _, err := svc.UpdateEvent(context.Background(), serviceEventID, statusUpdate(status)); err != nil {
+				t.Fatalf("UpdateEvent(%q) = %v, want the value cinema.events.status allows to be accepted", status, err)
+			}
+		})
+	}
+}
+
+func TestUpdateEventRejectsNothingToChangeWithoutPersisting(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft}}}
+	svc := venue.NewService(store)
+	_, err := svc.UpdateEvent(context.Background(), serviceEventID, venue.EventUpdate{})
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Error() != "nothing to change: provide priceCents or status" {
+		t.Fatalf("error = %v, want the nothing-to-change rejection", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
+	}
+}
+
+func TestUpdateEventRejectsUnknownStatusWithoutPersisting(t *testing.T) {
+	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, Status: venue.EventDraft}}}
+	svc := venue.NewService(store)
+	_, err := svc.UpdateEvent(context.Background(), serviceEventID, statusUpdate("sold_out"))
+	var invalid *venue.InvalidError
+	if !errors.As(err, &invalid) || invalid.Field != "status" ||
+		invalid.Message != "must be one of draft, published, on_sale, started, completed, cancelled" {
+		t.Fatalf("error = %v, want the status rejection naming the column's values", err)
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
+	}
+}
+
+func TestUpdateEventRejectsNegativeWithoutPersisting(t *testing.T) {
 	store := &fakeStore{events: []venue.Event{{ID: serviceEventID, PriceCents: 1250}}}
 	svc := venue.NewService(store)
-	_, err := svc.SetEventPrice(context.Background(), serviceEventID, -1)
+	_, err := svc.UpdateEvent(context.Background(), serviceEventID, priceUpdate(-1))
 	var invalid *venue.InvalidError
 	if !errors.As(err, &invalid) || invalid.Field != "priceCents" || invalid.Message != "must be zero or greater" {
 		t.Fatalf("error = %v, want the priceCents range rejection", err)
@@ -371,10 +465,10 @@ func TestSetEventPriceRejectsNegativeWithoutPersisting(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsAboveInt4WithoutPersisting(t *testing.T) {
+func TestUpdateEventRejectsAboveInt4WithoutPersisting(t *testing.T) {
 	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
 	svc := venue.NewService(store)
-	_, err := svc.SetEventPrice(context.Background(), serviceEventID, venue.MaxPriceCents+1)
+	_, err := svc.UpdateEvent(context.Background(), serviceEventID, priceUpdate(venue.MaxPriceCents+1))
 	var invalid *venue.InvalidError
 	if !errors.As(err, &invalid) || invalid.Field != "priceCents" || invalid.Message != "must be at most 2147483647" {
 		t.Fatalf("error = %v, want the int4 range rejection", err)
@@ -384,10 +478,10 @@ func TestSetEventPriceRejectsAboveInt4WithoutPersisting(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsMalformedEventIDWithoutPersisting(t *testing.T) {
+func TestUpdateEventRejectsMalformedEventIDWithoutPersisting(t *testing.T) {
 	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
 	svc := venue.NewService(store)
-	_, err := svc.SetEventPrice(context.Background(), "event-1", 1250)
+	_, err := svc.UpdateEvent(context.Background(), "event-1", priceUpdate(1250))
 	var invalid *venue.InvalidError
 	if !errors.As(err, &invalid) || invalid.Field != "eventId" || invalid.Message != "must be a valid identifier" {
 		t.Fatalf("error = %v, want the eventId rejection", err)
@@ -396,6 +490,10 @@ func TestSetEventPriceRejectsMalformedEventIDWithoutPersisting(t *testing.T) {
 		t.Fatalf("calls = %v, want no persistence attempt", store.calls)
 	}
 }
+
+func ptrInt64(value int64) *int64 { return &value }
+
+func ptrString(value string) *string { return &value }
 
 func TestGetEventRejectsMalformedEventIDWithoutReading(t *testing.T) {
 	store := &fakeStore{events: []venue.Event{{ID: serviceEventID}}}
@@ -414,5 +512,59 @@ func TestListEventsPropagatesReadFailure(t *testing.T) {
 	svc := venue.NewService(&fakeStore{failWith: errors.New("database unreachable")})
 	if _, err := svc.ListEvents(context.Background()); err == nil {
 		t.Fatal("ListEvents returned no error for a failed read")
+	}
+}
+
+// The administration schedules a screening against a film it picked from this list, so
+// the read is a pass-through of everything stored, in the store's own order: the service
+// has nothing to validate in a read that takes no argument.
+func TestListFilmsReturnsEveryStoredFilm(t *testing.T) {
+	store := &fakeStore{films: []venue.Film{
+		{ID: "film-1", Title: "Aardvark", RuntimeMinutes: 88, Rating: "PG"},
+		{ID: "film-2", Title: "Zulu", RuntimeMinutes: 121, Rating: "18"},
+	}}
+	svc := venue.NewService(store)
+	films, err := svc.ListFilms(context.Background())
+	if err != nil {
+		t.Fatalf("ListFilms returned error: %v", err)
+	}
+	if len(films) != 2 || films[0].Title != "Aardvark" || films[1].Title != "Zulu" {
+		t.Fatalf("films = %+v, want both stored films in the order the store answered", films)
+	}
+	if films[0].RuntimeMinutes != 88 || films[0].Rating != "PG" || films[0].ID != "film-1" {
+		t.Fatalf("film = %+v, want the stored columns unchanged", films[0])
+	}
+	if len(store.calls) != 1 || store.calls[0] != "ListFilms" {
+		t.Fatalf("store calls = %v, want exactly ListFilms", store.calls)
+	}
+}
+
+func TestListFilmsPropagatesReadFailure(t *testing.T) {
+	svc := venue.NewService(&fakeStore{failWith: errors.New("database unreachable")})
+	if _, err := svc.ListFilms(context.Background()); err == nil {
+		t.Fatal("ListFilms returned no error for a failed read")
+	}
+}
+
+// The names of what a screening is scheduled against travel with it through the
+// service, so the administrative read answers what the store projected instead of an
+// entry the service filled in.
+func TestListEventsAndGetEventKeepTheNamesTheStoreProjected(t *testing.T) {
+	event := venue.Event{ID: serviceEventID, FilmTitle: "The Quiet Cartographer", RoomName: "Sala 2", CinemaName: "Cine Central"}
+	store := &fakeStore{events: []venue.Event{event}}
+	svc := venue.NewService(store)
+	events, err := svc.ListEvents(context.Background())
+	if err != nil {
+		t.Fatalf("ListEvents returned error: %v", err)
+	}
+	if len(events) != 1 || events[0].FilmTitle != "The Quiet Cartographer" || events[0].RoomName != "Sala 2" || events[0].CinemaName != "Cine Central" {
+		t.Fatalf("events = %+v, want the store's names kept", events)
+	}
+	single, err := svc.GetEvent(context.Background(), serviceEventID)
+	if err != nil {
+		t.Fatalf("GetEvent returned error: %v", err)
+	}
+	if single.FilmTitle != "The Quiet Cartographer" || single.RoomName != "Sala 2" || single.CinemaName != "Cine Central" {
+		t.Fatalf("event = %+v, want the store's names kept", single)
 	}
 }

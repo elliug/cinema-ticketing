@@ -17,10 +17,20 @@ import type { SchedulingDeps } from "./scheduling.ts";
 import {
   ADMIN_SCHEDULE_PATH,
   createFilm,
+  describeScreeningStatus,
+  EVENT_STATUSES,
+  EVENT_STATUS_OPTIONS,
   eventInput,
+  eventStatusOption,
+  fieldProblem,
   filmInput,
+  isEventStatus,
+  MAX_PRICE_CENTS,
+  priceCentsFromText,
   readEventSeats,
   scheduleEvent,
+  screeningUpdateInput,
+  updateScreening,
 } from "./scheduling.ts";
 
 interface RecordedClientCall {
@@ -56,7 +66,11 @@ function recordingClient(respond: Responder): RecordingClient {
     cloneLayout: method("cloneLayout"),
     getLayout: method("getLayout"),
     createFilm: method("createFilm"),
+    listFilms: method("listFilms"),
     createEvent: method("createEvent"),
+    listEvents: method("listEvents"),
+    getEvent: method("getEvent"),
+    updateEvent: method("updateEvent"),
     listEventSeats: method("listEventSeats"),
   } as unknown as AdminClient;
   return { client, calls };
@@ -126,6 +140,8 @@ const EVENT = {
   layoutVersionId: "layout-1",
   startsAt: "2024-05-01T18:00:00Z",
   status: "draft",
+  priceCents: 0,
+  priceDisplay: "0.00",
 };
 
 const FILM_FORM = { title: "Metropolis", runtimeMinutes: "153", rating: "TP" };
@@ -346,3 +362,228 @@ test("readEventSeats surfaces a missing event as a typed problem", async () => {
   assert.equal(problemResult.code, "not_found");
   assert.equal(problemResult.status, 404);
 });
+
+// ── The statuses, the price and the update (M3.5 · T8 · S3, S4) ───────────────
+//
+// The screen can carry the six statuses, but it does not get to invent them: the list is
+// the schema's spellings, in the schema's order, and it is what the select offers and what
+// the refusal spells. The price form and the PATCH body are the other two rules, and the
+// last group is the honesty rule S8 asks for — a screening whose start has passed is never
+// called on sale, whatever its stored status says.
+
+const DRAFT = { id: "event-1", priceCents: 0, status: "draft", priceDisplay: "0.00" };
+
+test("EVENT_STATUSES spells the six values cinema.events.status accepts", () => {
+  assert.deepEqual(EVENT_STATUSES, [
+    "draft",
+    "published",
+    "on_sale",
+    "started",
+    "completed",
+    "cancelled",
+  ]);
+});
+
+test("the screen offers every status the column accepts, and each one says what it means", () => {
+  assert.deepEqual(
+    EVENT_STATUS_OPTIONS.map((option) => option.value),
+    [...EVENT_STATUSES],
+    "the select offers exactly the statuses the write accepts",
+  );
+  for (const option of EVENT_STATUS_OPTIONS) {
+    assert.notEqual(option.label.trim(), "", `${option.value} needs a word for its badge`);
+    assert.notEqual(option.note.trim(), "", `${option.value} needs a sentence about the sale`);
+  }
+});
+
+test("eventStatusOption does not invent a status the column would refuse", () => {
+  assert.equal(eventStatusOption("on_sale")?.label, "On sale");
+  assert.equal(eventStatusOption("  ARCHIVED "), undefined);
+  assert.equal(isEventStatus("archived"), false);
+  assert.equal(isEventStatus("on_sale"), true);
+});
+
+test("priceCentsFromText reads the money a person types into minor units", () => {
+  assert.equal(unwrap(priceCentsFromText("12.50")), 1250);
+  assert.equal(unwrap(priceCentsFromText("12.5")), 1250);
+  assert.equal(unwrap(priceCentsFromText("12")), 1200);
+  assert.equal(unwrap(priceCentsFromText(" 7.25 ")), 725);
+  // A free screening is a legal price, not a missing one.
+  assert.equal(unwrap(priceCentsFromText("0")), 0);
+});
+
+test("priceCentsFromText refuses a price it cannot represent", () => {
+  assert.equal(
+    unwrapError(priceCentsFromText("12.505")).detail,
+    "priceCents: must have at most two decimal places",
+  );
+  assert.equal(
+    unwrapError(priceCentsFromText("-1")).detail,
+    "priceCents: must be zero or greater",
+  );
+  for (const text of ["", "twelve", "1e3", "12,50"]) {
+    assert.equal(
+      unwrapError(priceCentsFromText(text)).detail,
+      "priceCents: must be a price such as 12.50",
+    );
+  }
+  assert.equal(
+    unwrapError(priceCentsFromText("21474836.48")).detail,
+    `priceCents: must be at most ${MAX_PRICE_CENTS}`,
+  );
+});
+
+test("create then publish sends the price and the status in one request", () => {
+  // The create stored a draft at price 0 and cannot carry either field, so this is the
+  // second and last request of the flow.
+  const update = unwrap(
+    screeningUpdateInput(DRAFT, { price: "12.50", status: "on_sale" }),
+  );
+
+  assert.deepEqual(update, { priceCents: 1250, status: "on_sale" });
+});
+
+test("an unchanged field is not sent, so a status-only change keeps the price", () => {
+  const current = { id: "event-1", priceCents: 1250, status: "on_sale", priceDisplay: "12.50" };
+
+  assert.deepEqual(
+    unwrap(screeningUpdateInput(current, { price: "12.50", status: "cancelled" })),
+    { status: "cancelled" },
+  );
+  assert.deepEqual(
+    unwrap(screeningUpdateInput(current, { price: "14.00", status: "on_sale" })),
+    { priceCents: 1400 },
+  );
+});
+
+test("an update that changes nothing is refused in the API's own words", () => {
+  const run = harness();
+  const refused = unwrapError(
+    screeningUpdateInput(DRAFT, { price: "0.00", status: "draft" }),
+  );
+
+  assert.equal(refused.code, "invalid_input");
+  assert.equal(refused.status, 400);
+  assert.equal(refused.detail, "nothing to change: provide priceCents or status");
+  assert.deepEqual(run.calls, []);
+});
+
+test("a status the column would refuse never reaches the API", () => {
+  const refused = unwrapError(
+    screeningUpdateInput(DRAFT, { price: "0.00", status: "archived" }),
+  );
+
+  assert.equal(
+    refused.detail,
+    "status: must be one of draft, published, on_sale, started, completed, cancelled",
+  );
+});
+
+test("updateScreening PATCHes the chosen fields and refreshes the schedule", async () => {
+  const run = harness(() =>
+    Promise.resolve({ ok: true, value: { ...EVENT, priceCents: 1250, priceDisplay: "12.50", status: "on_sale" } }),
+  );
+
+  const updated = unwrap(
+    await updateScreening(run.deps, DRAFT, { price: "12.50", status: "on_sale" }),
+  );
+
+  assert.equal(updated.priceDisplay, "12.50");
+  assert.deepEqual(run.calls, [
+    { method: "updateEvent", args: ["event-1", { priceCents: 1250, status: "on_sale" }] },
+  ]);
+  assert.deepEqual(run.revalidated, [ADMIN_SCHEDULE_PATH]);
+});
+
+test("updateScreening prints the API's field-naming refusal and refreshes nothing", async () => {
+  const run = harness(() =>
+    Promise.resolve({
+      ok: false,
+      error: problem("invalid_input", 400, "priceCents: must be zero or greater"),
+    }),
+  );
+
+  const refused = unwrapError(
+    await updateScreening(run.deps, DRAFT, { price: "12.50", status: "on_sale" }),
+  );
+
+  assert.equal(refused.detail, "priceCents: must be zero or greater");
+  assert.deepEqual(run.revalidated, []);
+});
+
+test("the screening list prints the stored status and what it means for the sale", () => {
+  const now = new Date("2024-05-01T12:00:00Z");
+
+  const draft = describeScreeningStatus(
+    { status: "draft", startsAt: "2024-05-01T18:00:00Z" },
+    now,
+  );
+  assert.equal(draft.label, "Draft");
+  assert.equal(draft.tone, "neutral");
+  assert.match(String(draft.catalogueNote), /Not for sale/);
+
+  const published = describeScreeningStatus(
+    { status: "published", startsAt: "2024-05-01T18:00:00Z" },
+    now,
+  );
+  // The catalogue's membership is exactly `on_sale`, so publishing does not sell anything.
+  assert.match(String(published.catalogueNote), /not for sale/i);
+
+  const onSale = describeScreeningStatus(
+    { status: "on_sale", startsAt: "2024-05-01T18:00:00Z" },
+    now,
+  );
+  assert.equal(onSale.label, "On sale");
+  assert.equal(onSale.startPassed, false);
+  assert.equal(onSale.catalogueNote, null);
+});
+
+test("a screening whose start has passed is never called on sale", () => {
+  const now = new Date("2024-05-01T12:00:00Z");
+
+  const passed = describeScreeningStatus(
+    { status: "on_sale", startsAt: "2024-05-01T10:00:00Z" },
+    now,
+  );
+  assert.equal(passed.startPassed, true);
+  assert.equal(passed.label, "Start passed");
+  assert.match(String(passed.catalogueNote), /catalogue no longer lists it/);
+
+  // The API's predicate is `starts_at > now()`, so a start equal to this instant is behind
+  // it and the screening is already out of the catalogue.
+  const boundary = describeScreeningStatus(
+    { status: "on_sale", startsAt: "2024-05-01T12:00:00Z" },
+    now,
+  );
+  assert.equal(boundary.startPassed, true);
+  assert.notEqual(boundary.label, "On sale");
+});
+
+test("a status this build does not interpret is printed verbatim", () => {
+  const view = describeScreeningStatus(
+    { status: "archived", startsAt: "2024-05-01T18:00:00Z" },
+    new Date("2024-05-01T12:00:00Z"),
+  );
+
+  assert.equal(view.status, "archived");
+  assert.equal(view.label, "archived", "an uninterpreted status is never translated");
+  assert.match(String(view.catalogueNote), /does not interpret/);
+});
+
+test("fieldProblem splits the field the API named from its own words", () => {
+  assert.deepEqual(
+    fieldProblem(problem("invalid_input", 400, "priceCents: must be zero or greater")),
+    { field: "priceCents", detail: "priceCents: must be zero or greater" },
+  );
+  // A refusal about the request as a whole names no single field.
+  assert.deepEqual(
+    fieldProblem(problem("invalid_input", 400, "nothing to change: provide priceCents or status")),
+    { field: "", detail: "nothing to change: provide priceCents or status" },
+  );
+  // Only `invalid_input` names a field; a conflict's prose is not a field name.
+  assert.deepEqual(
+    fieldProblem(problem("conflict", 409, "roomId: already scheduled")),
+    { field: "", detail: "roomId: already scheduled" },
+  );
+});
+

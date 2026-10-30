@@ -1,14 +1,32 @@
 "use client";
 
-// Local administrative layout editor view.
+// Local administrative layout editor view (M3.5 · T8 · S3).
 //
-// This component is presentation only. Every geometry change is delegated to
-// the pure model in lib/layout-editor.ts, and every write is delegated to a
-// server action in ./actions.ts. Rows are rendered as independent groups, so a
-// row with one seat and a row with twelve seats render side by side without any
-// grid assumption.
+// This component is presentation only. Every geometry change is delegated to the pure model
+// in lib/layout-editor.ts, and every write is delegated to a server action in ./actions.ts.
+// Rows are rendered as independent groups, so a row with one seat and a row with twelve
+// seats render side by side without any grid assumption.
+//
+// Accessibility: every control is labelled, the version's state is a word in a badge as
+// well as a tone, and the two issue lists are printed in full rather than reduced to "fix
+// these" — the whole point of the editor is that saving and publishing refuse for reasons
+// the operator can read.
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useId, useState, useTransition } from "react";
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SEAT_KINDS } from "@/lib/admin-api";
 import type { SeatKind } from "@/lib/admin-api";
 import type { EditorLayout } from "@/lib/layout-editor";
@@ -76,8 +94,9 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
       setLayout(fromLayout(result.value));
       setFeedback({
         kind: "success",
-        message: `Saved rows for draft version ${result.value.version}.`,
+        message: `Saved the rows of draft version ${result.value.version}.`,
       });
+      router.refresh();
     });
   }
 
@@ -95,8 +114,9 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
       setLayout(fromLayout(result.value));
       setFeedback({
         kind: "success",
-        message: `Published version ${result.value.version}.`,
+        message: `Published version ${result.value.version}. It is immutable now: clone it to change it. A screening can be scheduled against it.`,
       });
+      router.refresh();
     });
   }
 
@@ -120,223 +140,301 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
     });
   }
 
+  const disabled = !isDraft || pending;
+
   return (
-    <section className="editor" aria-labelledby="layout-title">
-      <header className="editor-header">
-        <h1 id="layout-title">Layout editor</h1>
-        <p className="meta">
-          Layout <code>{layout.layoutId}</code> · version{" "}
-          <strong>{layout.version}</strong> · status{" "}
-          <strong>{layout.status}</strong> · {layout.rows.length} row(s) ·{" "}
-          {enabledSeats} enabled seat(s)
-        </p>
-        {layout.status === "published" ? (
-          <p className="notice">
-            Version {layout.version} is published and immutable. Clone it to
-            edit a new draft version.
+    <section aria-labelledby="layout-version" className="flex flex-col gap-5">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 id="layout-version" className="m-0 text-lg leading-tight font-semibold">
+              Version {layout.version}
+            </h2>
+            {/* The word is the state; the tone only reinforces it, so the header reads the
+                same in greyscale. */}
+            <Badge variant={isDraft ? "secondary" : "success"}>{layout.status}</Badge>
+          </div>
+          <p className="m-0 max-w-prose text-sm text-muted-foreground">
+            Layout <code>{layout.layoutId}</code> · {layout.rows.length} row(s) ·{" "}
+            {enabledSeats} enabled seat(s)
           </p>
-        ) : null}
-      </header>
+          {isDraft ? null : (
+            <p className="m-0 max-w-prose text-sm">
+              Version {layout.version} is published and immutable. Clone it to edit a new
+              draft version.
+            </p>
+          )}
+        </CardHeader>
+      </Card>
 
       {issues.length > 0 ? (
-        <section className="problems" aria-labelledby="layout-problems">
-          <h2 id="layout-problems">Fix these before saving</h2>
-          <ul>
-            {issues.map((issue) => (
-              <li key={issue.path}>
-                <code>{layoutIssueDetail(issue)}</code>{" "}
-                <span className="path">({issue.path})</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <Alert
+          variant="warning"
+          role="alert"
+          aria-labelledby="layout-problems"
+          className="flex flex-col gap-2"
+        >
+          <h2 id="layout-problems" className="m-0 text-lg leading-tight font-semibold">
+            Fix these before saving
+          </h2>
+          <AlertDescription>
+            <ul role="list" className="m-0 flex list-disc flex-col gap-1 pl-5">
+              {issues.map((issue) => (
+                <li key={issue.path}>
+                  <code>{layoutIssueDetail(issue)}</code>{" "}
+                  <span className="text-muted-foreground">({issue.path})</span>
+                </li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       {layout.rows.length === 0 ? (
-        <p className="notice">
+        <p className="m-0 max-w-prose text-sm text-muted-foreground">
           This version has no rows yet. Add a row to describe the room.
         </p>
       ) : null}
 
-      <ol className="rows">
+      <ol role="list" className="m-0 flex list-none flex-col gap-4 p-0">
         {layout.rows.map((row, rowIndex) => (
-          <li key={rowIndex} className="row">
-            <div className="row-header">
-              <h2>Row {rowIndex + 1}</h2>
-              <button
-                type="button"
-                onClick={() => setLayout(removeRow(layout, rowIndex))}
-                disabled={!isDraft || pending}
-              >
-                Remove row
-              </button>
-            </div>
+          <li key={rowIndex} className="min-w-0">
+            <Card className="flex flex-col gap-4 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="m-0 text-base leading-tight font-semibold">
+                  Row {rowIndex + 1}
+                </h3>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setLayout(removeRow(layout, rowIndex))}
+                  disabled={disabled}
+                >
+                  Remove row {rowIndex + 1}
+                </Button>
+              </div>
 
-            <div className="fields">
-              <label>
-                Label
-                <input
-                  type="text"
-                  value={row.label}
-                  onChange={(event) =>
-                    setLayout(setRowLabel(layout, rowIndex, event.target.value))
-                  }
-                  disabled={!isDraft || pending}
-                />
-              </label>
-              <label>
-                Position
-                <input
-                  type="number"
-                  value={row.position}
-                  onChange={(event) =>
-                    setLayout(
-                      setRowPosition(
-                        layout,
-                        rowIndex,
-                        Number(event.target.value),
-                      ),
-                    )
-                  }
-                  disabled={!isDraft || pending}
-                />
-              </label>
-              <span className="meta">{row.seats.length} seat(s)</span>
-            </div>
+              <RowFields
+                rowLabel={row.label}
+                rowPosition={row.position}
+                seatCount={row.seats.length}
+                disabled={disabled}
+                onLabel={(value) => setLayout(setRowLabel(layout, rowIndex, value))}
+                onPosition={(value) =>
+                  setLayout(setRowPosition(layout, rowIndex, value))
+                }
+              />
 
-            <ol className="seats">
-              {row.seats.map((seat, seatIndex) => (
-                <li key={seatIndex} className="seat">
-                  <label>
-                    Number
-                    <input
-                      type="text"
-                      value={seat.number}
-                      onChange={(event) =>
-                        setLayout(
-                          setSeatNumber(
-                            layout,
-                            rowIndex,
-                            seatIndex,
-                            event.target.value,
-                          ),
-                        )
-                      }
-                      disabled={!isDraft || pending}
-                    />
-                  </label>
-                  <label>
-                    Position
-                    <input
-                      type="number"
-                      value={seat.position}
-                      onChange={(event) =>
-                        setLayout(
-                          setSeatPosition(
-                            layout,
-                            rowIndex,
-                            seatIndex,
-                            Number(event.target.value),
-                          ),
-                        )
-                      }
-                      disabled={!isDraft || pending}
-                    />
-                  </label>
-                  <label>
-                    Kind
-                    <select
-                      value={seat.kind}
-                      onChange={(event) =>
-                        setLayout(
-                          setSeatKind(
-                            layout,
-                            rowIndex,
-                            seatIndex,
-                            event.target.value as SeatKind,
-                          ),
-                        )
-                      }
-                      disabled={!isDraft || pending}
-                    >
-                      {SEAT_KINDS.map((kind) => (
-                        <option key={kind} value={kind}>
-                          {kind}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={seat.enabled}
-                      onChange={() =>
-                        setLayout(
-                          toggleSeatEnabled(layout, rowIndex, seatIndex),
-                        )
-                      }
-                      disabled={!isDraft || pending}
-                    />
-                    Enabled
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setLayout(removeSeat(layout, rowIndex, seatIndex))
-                    }
-                    disabled={!isDraft || pending}
-                  >
-                    Remove seat
-                  </button>
-                </li>
-              ))}
-            </ol>
+              <ol role="list" className="m-0 flex list-none flex-col gap-3 p-0">
+                {row.seats.map((seat, seatIndex) => (
+                  <li key={seatIndex} className="min-w-0">
+                    <div className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
+                      <div className="flex w-28 flex-col gap-1.5">
+                        <Label htmlFor={`seat-${rowIndex}-${seatIndex}-number`}>
+                          Number
+                        </Label>
+                        <Input
+                          id={`seat-${rowIndex}-${seatIndex}-number`}
+                          value={seat.number}
+                          onChange={(event) =>
+                            setLayout(
+                              setSeatNumber(
+                                layout,
+                                rowIndex,
+                                seatIndex,
+                                event.target.value,
+                              ),
+                            )
+                          }
+                          disabled={disabled}
+                        />
+                      </div>
+                      <div className="flex w-28 flex-col gap-1.5">
+                        <Label htmlFor={`seat-${rowIndex}-${seatIndex}-position`}>
+                          Position
+                        </Label>
+                        <Input
+                          id={`seat-${rowIndex}-${seatIndex}-position`}
+                          type="number"
+                          inputMode="numeric"
+                          value={seat.position}
+                          onChange={(event) =>
+                            setLayout(
+                              setSeatPosition(
+                                layout,
+                                rowIndex,
+                                seatIndex,
+                                Number(event.target.value),
+                              ),
+                            )
+                          }
+                          disabled={disabled}
+                        />
+                      </div>
+                      <div className="flex w-40 flex-col gap-1.5">
+                        <Label htmlFor={`seat-${rowIndex}-${seatIndex}-kind`}>Kind</Label>
+                        <Select
+                          value={seat.kind}
+                          onValueChange={(value) =>
+                            setLayout(
+                              setSeatKind(
+                                layout,
+                                rowIndex,
+                                seatIndex,
+                                value as SeatKind,
+                              ),
+                            )
+                          }
+                          disabled={disabled}
+                        >
+                          <SelectTrigger id={`seat-${rowIndex}-${seatIndex}-kind`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SEAT_KINDS.map((kind) => (
+                              <SelectItem key={kind} value={kind}>
+                                {kind}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Label className="flex h-10 items-center gap-2 text-sm font-medium">
+                        <input
+                          type="checkbox"
+                          className="size-4"
+                          checked={seat.enabled}
+                          onChange={() =>
+                            setLayout(
+                              toggleSeatEnabled(layout, rowIndex, seatIndex),
+                            )
+                          }
+                          disabled={disabled}
+                        />
+                        Enabled
+                      </Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setLayout(removeSeat(layout, rowIndex, seatIndex))
+                        }
+                        disabled={disabled}
+                      >
+                        Remove seat {seat.number.trim() === "" ? "" : seat.number}
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
 
-            <button
-              type="button"
-              onClick={() => setLayout(addSeat(layout, rowIndex))}
-              disabled={!isDraft || pending}
-            >
-              Add seat to row {rowIndex + 1}
-            </button>
+              <div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setLayout(addSeat(layout, rowIndex))}
+                  disabled={disabled}
+                >
+                  Add a seat to row {rowIndex + 1}
+                </Button>
+              </div>
+            </Card>
           </li>
         ))}
       </ol>
 
-      <div className="actions">
-        <button
+      <div className="flex flex-wrap gap-3">
+        <Button
           type="button"
+          variant="outline"
           onClick={() => setLayout(addRow(layout))}
-          disabled={!isDraft || pending}
+          disabled={disabled}
         >
           Add row
-        </button>
-        <button type="button" onClick={handleSave} disabled={!canSave}>
-          Save rows
-        </button>
-        <button type="button" onClick={handlePublish} disabled={!canPublish}>
+        </Button>
+        <Button type="button" onClick={handleSave} disabled={!canSave}>
+          {pending ? "Saving…" : "Save rows"}
+        </Button>
+        <Button type="button" onClick={handlePublish} disabled={!canPublish}>
           Publish version
-        </button>
-        <button type="button" onClick={handleClone} disabled={!canClone}>
+        </Button>
+        <Button type="button" variant="secondary" onClick={handleClone} disabled={!canClone}>
           Clone into new draft
-        </button>
+        </Button>
       </div>
 
       {publishIssues.length > 0 ? (
-        <p className="notice">
-          Publishing is blocked:{" "}
-          <code>{layoutIssueDetail(publishIssues[0])}</code>
+        <p className="m-0 max-w-prose text-sm text-muted-foreground">
+          Publishing is blocked: <code>{layoutIssueDetail(publishIssues[0])}</code>
         </p>
       ) : null}
 
-      {feedback ? (
-        <p
-          className={feedback.kind === "error" ? "feedback error" : "feedback"}
-          role={feedback.kind === "error" ? "alert" : "status"}
-        >
-          {feedback.message}
-        </p>
-      ) : null}
+      {feedback ? <EditorFeedback feedback={feedback} /> : null}
     </section>
   );
+}
+
+/** One row's label and position, in the same block as its seat count. */
+function RowFields({
+  rowLabel,
+  rowPosition,
+  seatCount,
+  disabled,
+  onLabel,
+  onPosition,
+}: {
+  rowLabel: string;
+  rowPosition: number;
+  seatCount: number;
+  disabled: boolean;
+  onLabel: (value: string) => void;
+  onPosition: (value: number) => void;
+}) {
+  const ids = useRowIds();
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div className="flex w-40 flex-col gap-1.5">
+        <Label htmlFor={ids.label}>Label</Label>
+        <Input
+          id={ids.label}
+          value={rowLabel}
+          onChange={(event) => onLabel(event.target.value)}
+          disabled={disabled}
+        />
+      </div>
+      <div className="flex w-28 flex-col gap-1.5">
+        <Label htmlFor={ids.position}>Position</Label>
+        <Input
+          id={ids.position}
+          type="number"
+          inputMode="numeric"
+          value={rowPosition}
+          onChange={(event) => onPosition(Number(event.target.value))}
+          disabled={disabled}
+        />
+      </div>
+      <p className="m-0 text-sm text-muted-foreground">{seatCount} seat(s)</p>
+    </div>
+  );
+}
+
+function EditorFeedback({ feedback }: { feedback: Feedback }) {
+  const error = feedback.kind === "error";
+  return (
+    <Alert variant={error ? "destructive" : "success"} role={error ? "alert" : "status"}>
+      <AlertDescription className="m-0">{feedback.message}</AlertDescription>
+    </Alert>
+  );
+}
+
+/** A stable id set for one row's controls. */
+function useRowIds() {
+  const base = useId();
+  return {
+    label: `${base}-row-label`,
+    position: `${base}-row-position`,
+  };
 }

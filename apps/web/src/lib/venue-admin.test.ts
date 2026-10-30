@@ -36,6 +36,7 @@ import {
   readLayouts,
   readRooms,
   roomInput,
+  publishedLayoutOptions,
   summarizeCinemas,
   summarizeLayouts,
   summarizeRooms,
@@ -371,6 +372,25 @@ test("summarizeLayouts states every version with its status", () => {
       label: "v2 · draft",
     },
   ]);
+});
+
+test("publishedLayoutOptions offers only the versions a screening may use", () => {
+  // A draft layout version is the API's conflict, so the scheduling select cannot offer
+  // one: the form would be inviting a request the API refuses.
+  const rows = summarizeLayouts({
+    roomId: "room-1",
+    layouts: [
+      { id: "layout-1", version: 1, status: "published" },
+      { id: "layout-2", version: 2, status: "draft" },
+      { id: "layout-3", version: 3, status: "published" },
+    ],
+  });
+
+  assert.deepEqual(
+    publishedLayoutOptions(rows).map((row) => row.id),
+    ["layout-1", "layout-3"],
+  );
+  assert.deepEqual(publishedLayoutOptions([]), []);
 });
 
 test("empty lists summarize to empty arrays, never to undefined", () => {

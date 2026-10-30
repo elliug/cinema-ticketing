@@ -267,3 +267,81 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   render of a valid, a voided, a forged-code, a missing and an unreadable ticket plus the list
   and its navigation, all with a single `h1` and a single skip link. Not covered: the click path
   in a browser, which is T9's gate.
+- L13 — T8a closed the gap the administration screen would have hit on its first day: it could
+  create a film but not list one, and its screening reads answered identifiers without naming what
+  they are. `GET /api/v1/admin/films` answers the repertoire as stored (`id`, `title`,
+  `runtimeMinutes`, `rating`) in one statement ordered `title, id`, inside the same guard as every
+  administrative route, and shares one `filmJSON` shape with `POST /films` so a create and a list
+  cannot describe a film differently. Both screening reads keep every key they had and add
+  `filmTitle`, `roomName` and `cinemaName`, joined in the same statement, so a list of screenings
+  is one query and never an n+1 of films, rooms and cinemas. **The enrichment is the read's
+  alone, deliberately**: a write's `RETURNING` cannot join, so the create and the price write
+  still answer the eight stored-column keys — a name nobody read is not a name to answer — and a
+  test pins it by handing the price write an event that carries names and proving they do not
+  appear. Evidence: handler rules over fakes, a gated suite where two fixture films come back in
+  title order rather than insertion order and the list entry equals the single read field for
+  field, and a differential probe of the three writes whose answers are identical to the previous
+  commit.
+- L14 — T8b closed the gap T8a found: `POST /admin/events` stores a screening as `draft` and no
+  route moved it, while the public catalogue answers only `status = 'on_sale'` with a future start
+  — so a screening created in the administration could never be sold, and the milestone's own demo
+  could not be completed from the interface. `PATCH /admin/events/{eventId}` now sets the price,
+  the status, or both in one request. **The allowed statuses are the migration's, never a second
+  list**: `venue.EventStatuses` spells `cinema.events.status`'s CHECK constraint from
+  `db/migrations/0002_venue_layout.up.sql` and the refusal is built from that same slice, so a
+  value the column accepts cannot be refused and one it would refuse cannot pass; a value that is
+  not a JSON string is refused while the price keeps its number-literal rule. **Missing is still
+  not zero, now per field**: the body decodes as a field map, so a price-only request carries no
+  status all the way to the statement, whose SET list names only the columns the request named. A
+  body with neither field is refused rather than accepted as a request that changes nothing, and
+  that rule lives in one exported validator shared by the handler and the service. **The write
+  stays one guarded statement**, so an unknown identifier is a `404` instead of a claimed success,
+  and the answer keeps the create's stored-columns-only shape. **What each status means for the
+  buyer-facing surface is documented where the route lives**: `draft` is not for sale; `on_sale` is
+  what the catalogue shows while the start is ahead, and once it has passed the row drops out on
+  its own because the list's membership is that status and the database clock together;
+  `cancelled` is a screening the ticket surface reports as cancelled; the rest are recording
+  states this milestone writes and does not act on. Evidence: handler and service rules over fakes
+  (status only, price only, both, neither, every allowed value, unknown and non-string status, the
+  price refusals, unknown event for both body shapes, `503`, exact key sets, and no persistence on
+  any refusal), a gated suite over a throwaway database (a draft becoming `on_sale` with its price
+  kept, both columns in one request, a price-only request leaving the status untouched, an unknown
+  id not found for all three shapes with nothing inserted), and a real run over HTTP that created a
+  cinema, room, published layout, film and screening, showed an empty catalogue, published it with
+  a price, saw it appear at `12.50` with `onSale: true`, changed the price alone, cancelled it and
+  watched the catalogue empty. Unchanged on purpose: the create, the reads and the catalogue. What
+  the administration screen must still do itself: create-then-publish is two requests, the six
+  statuses are carried by the screen because no endpoint serves them, and it must not claim "for
+  sale" on its own — the administrative list carries no `onSale`.
+- L15 — T8 built the administration screens the milestone's demo needs, and ended the
+  hand-written stylesheet. **Sellable is create-then-patch, and the screen performs both
+  requests.** `POST /admin/events` still stores a draft at price `0.00` and cannot carry a price
+  or a status, so the schedule creates the screening from a film chosen out of the repertoire —
+  and a room and a published layout version chosen the same way, never pasted — then opens that
+  draft's own form pre-filled with `0.00`/`draft`, and one `PATCH /admin/events/{eventId}`
+  carries the price, the status, or both. **Only what changed is sent**: a status-only change
+  sends `{status}` and leaves the price alone, a price-only change sends `{priceCents}`, and a
+  submit that changed nothing is refused locally in the API's own words instead of being sent
+  for the server to refuse again. **The screen carries the six statuses because no endpoint
+  serves them** (L14): the list is the migration's own spellings in its own order, each option
+  carrying the sentence about what it means for the sale — including that `published` is a
+  recording state the catalogue does not act on. **Nothing here calls a screening for sale.**
+  The administrative list carries `status` and no `onSale`, so the row prints the stored status
+  and the price, and when the status says `on_sale` but the start is behind us the badge reads
+  *Start passed* and the row says the catalogue no longer lists it and its seats cannot be
+  bought — the mirror of the API's `starts_at > now()` predicate, tested at the boundary.
+  **Errors are printed, not paraphrased**: code, HTTP status and the API's `detail` appear
+  unchanged, and the input a `400` named is the control the form marks. **The parser is still
+  the contract**: the film list and both screening reads refuse an entry they cannot print, and
+  one unreadable entry refuses the whole read rather than being dropped. **The stylesheet
+  ended.** Preflight is imported, L6's deferral closes, and fifteen legacy rule groups are
+  deleted after a grep per rule; what remains is named in the file beside the screen that still
+  needs it. Two preflight consequences reached screens outside this slice — every list's marker
+  and every anchor's underline — and were repaired in the stylesheet rather than in those
+  screens, which is where they belong. The guard T7 wrote to stop a future slice deleting rules
+  other screens needed was retired in the same commit, because T8 is that slice: it now asserts
+  that the rules with a remaining user stay and the ones whose last screen migrated are gone.
+  Evidence: 27 new tests, `pnpm check` green with 312 tests, a build whose schedule route is
+  4.27 kB, and a real render of the three screens against a stub API — one `h1` per screen, no
+  legacy class in the markup, and a passed-but-`on_sale` screening labelled *Start passed*. Not
+  covered: the click path in a browser, which is T9's gate.

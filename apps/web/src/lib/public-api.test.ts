@@ -1091,6 +1091,8 @@ const RESERVATION_BODY = {
   status: "held",
   expiresAt: "2026-05-04T18:40:00Z",
   amountCents: null,
+  amountDueCents: 2500,
+  amountDueDisplay: "25.00",
   amountDisplay: null,
   seats: [
     { eventSeatId: 11, rowLabel: "A", seatNumber: "1" },
@@ -1230,6 +1232,26 @@ test("an amount is answered with its text, and a seat or ticket list as a list",
   );
   assert.equal(seatProblem.code, "unexpected_response");
   assert.match(seatProblem.detail, /event seat id/);
+});
+
+test("the amount due is a quote with its own text, and half of it is refused", async () => {
+  // The quote is what paying costs now; the amount is what was taken. Both come in pairs,
+  // and a number without the API's own text would force the page to format money itself.
+  const answered = await makeClient(
+    recordingFetch(() => jsonResponse(200, { ...RESERVATION_BODY })),
+  ).getReservation("reservation-a");
+  assert.equal(answered.ok, true);
+  if (!answered.ok) return;
+  assert.equal(answered.value.amountDueCents, 2500);
+  assert.equal(answered.value.amountDueDisplay, "25.00");
+
+  const halfQuote = unwrapError(
+    await makeClient(
+      recordingFetch(() => jsonResponse(200, { ...RESERVATION_BODY, amountDueDisplay: null })),
+    ).getReservation("reservation-a"),
+  );
+  assert.equal(halfQuote.code, "unexpected_response");
+  assert.match(halfQuote.detail, /amount due/i);
 });
 
 test("an unknown order is a 404 and an unreachable read is retryable", async () => {

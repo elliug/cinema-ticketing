@@ -20,6 +20,7 @@ type fakeService struct {
 	rooms          []venue.Room
 	event          venue.Event
 	events         []venue.Event
+	films          []venue.Film
 	seats          []venue.EventSeat
 	calls          []string
 	createErr      error
@@ -27,7 +28,7 @@ type fakeService struct {
 	lastEvent      venue.Event
 	lastCinema     venue.Cinema
 	lastEventID    string
-	lastPriceCents int64
+	lastUpdate     venue.EventUpdate
 	lastRequest    string
 }
 
@@ -87,6 +88,14 @@ func (f *fakeService) ListEventSeats(_ context.Context, eventID string) ([]venue
 	return f.seats, f.createErr
 }
 
+func (f *fakeService) ListFilms(_ context.Context) ([]venue.Film, error) {
+	f.calls = append(f.calls, "ListFilms")
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.films, nil
+}
+
 func (f *fakeService) ListEvents(_ context.Context) ([]venue.Event, error) {
 	f.calls = append(f.calls, "ListEvents")
 	if f.createErr != nil {
@@ -106,16 +115,21 @@ func (f *fakeService) GetEvent(_ context.Context, eventID string) (venue.Event, 
 	return event, nil
 }
 
-func (f *fakeService) SetEventPrice(_ context.Context, eventID string, priceCents int64) (venue.Event, error) {
-	f.calls = append(f.calls, "SetEventPrice")
+func (f *fakeService) UpdateEvent(_ context.Context, eventID string, update venue.EventUpdate) (venue.Event, error) {
+	f.calls = append(f.calls, "UpdateEvent")
 	f.lastEventID = eventID
-	f.lastPriceCents = priceCents
+	f.lastUpdate = update
 	if f.createErr != nil {
 		return venue.Event{}, f.createErr
 	}
 	event := f.event
 	event.ID = eventID
-	event.PriceCents = priceCents
+	if update.PriceCents != nil {
+		event.PriceCents = *update.PriceCents
+	}
+	if update.Status != nil {
+		event.Status = *update.Status
+	}
 	return event, nil
 }
 
@@ -177,6 +191,87 @@ func TestCreateCinemaRejectsInvalidInputWithoutPersisting(t *testing.T) {
 	body := decodeBody(t, w)
 	if body["code"] != "invalid_input" || body["detail"] != "name: must not be empty" {
 		t.Fatalf("problem = %v, want invalid_input with field detail", body)
+	}
+}
+
+// The administration cannot schedule a screening against a film it cannot list, so the
+// read answers every stored film as the create wrote it, in the order the store
+// decided (title, then identifier): the handler does not re-sort a repertoire.
+func TestListFilmsAnswersEveryStoredFilm(t *testing.T) {
+	svc := &fakeService{films: []venue.Film{
+		{ID: "film-1", Title: "Aardvark", RuntimeMinutes: 88, Rating: "PG"},
+		{ID: "film-2", Title: "Zulu", RuntimeMinutes: 121, Rating: "18"},
+	}}
+	w := do(t, svc, http.MethodGet, "/films", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	films, ok := body["films"].([]any)
+	if !ok || len(films) != 2 {
+		t.Fatalf("films = %v, want both stored films", body["films"])
+	}
+	first, _ := films[0].(map[string]any)
+	if len(first) != 4 {
+		t.Fatalf("film = %v, want exactly id, title, runtimeMinutes and rating", first)
+	}
+	for _, key := range []string{"id", "title", "runtimeMinutes", "rating"} {
+		if _, ok := first[key]; !ok {
+			t.Fatalf("film is missing key %q: %v", key, first)
+		}
+	}
+	if first["id"] != "film-1" || first["title"] != "Aardvark" || first["runtimeMinutes"] != float64(88) || first["rating"] != "PG" {
+		t.Fatalf("first film = %v, want the stored Aardvark", first)
+	}
+	if second, _ := films[1].(map[string]any); second["id"] != "film-2" || second["title"] != "Zulu" {
+		t.Fatalf("second film = %v, want Zulu after Aardvark, in the order the service answered", second)
+	}
+	if len(svc.calls) != 1 || svc.calls[0] != "ListFilms" {
+		t.Fatalf("calls = %v, want exactly ListFilms", svc.calls)
+	}
+}
+
+func TestListFilmsWithoutFilmsReturnsEmptyArray(t *testing.T) {
+	w := do(t, &fakeService{}, http.MethodGet, "/films", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	films, ok := decodeBody(t, w)["films"].([]any)
+	if !ok || len(films) != 0 {
+		t.Fatalf("films = %v, want an empty JSON array", films)
+	}
+}
+
+func TestListFilmsStoreFailureIsNotAnEmptyRepertoire(t *testing.T) {
+	w := do(t, &fakeService{createErr: context.DeadlineExceeded}, http.MethodGet, "/films", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	if body["code"] != "internal_error" || body["detail"] != "the request could not be completed" {
+		t.Fatalf("problem = %v, want the generic internal error", body)
+	}
+	if _, ok := body["films"]; ok {
+		t.Fatalf("problem = %v, want no film list beside the failure", body)
+	}
+}
+
+// The create and the list answer the same four keys, because both use one film shape: a
+// second copy is how a create and a list start to disagree about what a film is.
+func TestCreateFilmAndListAnswerTheSameFilm(t *testing.T) {
+	svc := &fakeService{}
+	created := do(t, svc, http.MethodPost, "/films", `{"title":"Aardvark","runtimeMinutes":88,"rating":"PG"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", created.Code, created.Body)
+	}
+	body := decodeBody(t, created)
+	for _, key := range []string{"id", "title", "runtimeMinutes", "rating"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("created film is missing key %q: %v", key, body)
+		}
+	}
+	if len(body) != 4 {
+		t.Fatalf("created film = %v, want exactly id, title, runtimeMinutes and rating", body)
 	}
 }
 

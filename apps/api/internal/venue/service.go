@@ -20,11 +20,12 @@ type Store interface {
 	CloneLayout(ctx context.Context, sourceID, targetID string) (Layout, error)
 	GetLayout(ctx context.Context, layoutID string) (Layout, error)
 	CreateFilm(ctx context.Context, film Film) error
+	ListFilms(ctx context.Context) ([]Film, error)
 	CreateEvent(ctx context.Context, event Event) error
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
 	ListEvents(ctx context.Context) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (Event, error)
-	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error)
+	UpdateEvent(ctx context.Context, eventID string, update EventUpdate) (Event, error)
 }
 
 // Service applies M1 validation before persisting venue aggregates.
@@ -175,6 +176,13 @@ func (s *Service) CreateFilm(ctx context.Context, title string, runtimeMinutes i
 	return film, nil
 }
 
+// ListFilms returns every catalog entry the administration may schedule a screening
+// against, in the store's own order (title, then identifier). The read takes no argument
+// and has nothing to validate, so it is the store's answer, unabridged.
+func (s *Service) ListFilms(ctx context.Context) ([]Film, error) {
+	return s.store.ListFilms(ctx)
+}
+
 // CreateEvent schedules a screening; PostgreSQL materializes exactly one
 // event seat per enabled layout seat inside the same transaction.
 func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (Event, error) {
@@ -192,7 +200,7 @@ func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersion
 		FilmID:          filmID,
 		LayoutVersionID: layoutVersionID,
 		StartsAt:        startsAt.UTC(),
-		Status:          "draft",
+		Status:          EventDraft,
 	}
 	if err := s.store.CreateEvent(ctx, event); err != nil {
 		return Event{}, err
@@ -223,17 +231,22 @@ func (s *Service) GetEvent(ctx context.Context, eventID string) (Event, error) {
 	return s.store.GetEvent(ctx, eventID)
 }
 
-// SetEventPrice validates the identifier and the price, then lets the store write the
-// single guarded statement. A missing event is not found and an out-of-range value is a
-// rejected field, both before SQL; zero is accepted as a free screening.
-func (s *Service) SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error) {
+// UpdateEvent validates the identifier and the fields the request carries, then lets the
+// store write them in one guarded statement. A missing event is not found, an unknown
+// status and an out-of-range price are rejected fields, and a request that carries neither
+// is refused — all before SQL, except the identifier's own guard, which is the WHERE.
+//
+// The two fields are independent on purpose: a price-only request leaves the status where
+// it is, a status-only request leaves the price where it is, and only an explicit 0 is a
+// free screening. This is the only write that moves a screening into the public catalogue.
+func (s *Service) UpdateEvent(ctx context.Context, eventID string, update EventUpdate) (Event, error) {
 	if err := ValidateEventID(eventID); err != nil {
 		return Event{}, err
 	}
-	if err := ValidatePriceCents(priceCents); err != nil {
+	if err := ValidateEventUpdate(update); err != nil {
 		return Event{}, err
 	}
-	return s.store.SetEventPrice(ctx, eventID, priceCents)
+	return s.store.UpdateEvent(ctx, eventID, update)
 }
 
 func requireID(field, value string) error {

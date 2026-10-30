@@ -527,21 +527,37 @@ test("the ticket screens no longer use the legacy stylesheet", () => {
 test("globals.css no longer carries the rules only the ticket screen used", () => {
   const css = sourceAt("../app/globals.css");
 
-  // The rules, not the words: the inventory above still names what T7 deleted, which is
-  // how the next migration knows it was deliberate.
-  for (const selector of ["\n.ticket-facts", "\n.qr-image", "\na.download", "\n.qr {"]) {
+  // The rules, not the words: the inventory above still names what T7 deleted, which is how
+  // the next migration knows it was deliberate.
+  //
+  // This guard was written in T7 to stop a future slice deleting rules other screens still
+  // needed. T8 was that future slice, and it migrated the last screen that needed the
+  // administration block, so those rules join the list: the guard now protects both halves
+  // of one promise — the rules that still have a user stay, and the ones whose last screen
+  // migrated away are gone. A guard that kept asserting a requirement nobody has would force
+  // dead rules to survive forever.
+  for (const selector of [
+    "\n.ticket-facts",
+    "\n.qr-image",
+    "\na.download",
+    "\n.qr {",
+    "\n.feedback",
+    "\n.problems",
+    "\n.meta {",
+  ]) {
     assert.equal(
       css.includes(selector),
       false,
       `globals.css still carries the ${selector.trim()} rule, and no remaining screen uses it`,
     );
   }
-  // The rules the administration screens still need stay where they are.
-  for (const selector of [".feedback", ".card {", ".problems", ".meta {"]) {
+  // The rules that still have a screen stay where they are: the hand-written Card the home
+  // page renders, the home page's notice, and the page header every page shows.
+  for (const selector of [".card {", ".notice", ".page-header__title"]) {
     assert.equal(
       css.includes(selector),
       true,
-      `globals.css must keep ${selector}: administration still needs it`,
+      `globals.css must keep ${selector}: a remaining screen still uses it`,
     );
   }
 });
