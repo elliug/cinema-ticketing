@@ -15,9 +15,11 @@
 --     status = 'published' and freezes the geometry of a published one, so the
 --     publish step must be the last write and must match status = 'draft'.
 --
--- The file is development-only. `make seed-dev` refuses to run unless
--- API_ENV=development is explicitly set, and the guard below repeats that rule so
--- applying the file with psql directly cannot seed a database by accident.
+-- The file is development-only, and two guards say so. `make seed-dev` refuses to run
+-- unless API_ENV=development is explicitly set, and the guard below repeats that rule so
+-- applying the file with psql directly cannot seed a database by accident. That rule alone
+-- is a string the caller supplies, which is why a second guard requires the connection to
+-- be local: see the block below for exactly what the pair does and does not prevent.
 --
 -- Prices arrive with the checkout schema (T2) and are repaired on every run: see
 -- the price statements at the end of the file.
@@ -35,10 +37,37 @@ BEGIN;
 
 SET cinema.seed_env = :'api_env';
 
+-- Two guards, because the first one is a string the caller supplies.
+--
+--   * `API_ENV=development`, which `make seed-dev` also requires before it connects.
+--   * A local connection. `inet_server_addr()` is the address the server accepted this
+--     connection on: NULL for a unix socket (which is how `make seed-dev` applies this
+--     file, with psql inside the postgres container), the loopback address for
+--     `psql -h 127.0.0.1`, and the server's own network address for anything else. A
+--     loopback address cannot belong to a shared server, so "non-loopback" is the case
+--     worth refusing.
+--
+-- What the pair prevents: "export API_ENV=development and seed the shared database". That
+-- database answers the connection on its own address rather than on loopback, so the seed
+-- stops before writing a single row.
+--
+-- What neither prevents: somebody deliberately seeding a database that is local to them,
+-- whether over the socket or over loopback. That is a development database by definition,
+-- and nothing inside this file can tell an intentional seed from an accidental one once
+-- both point at the same local server.
 DO $$
+DECLARE
+  server_address inet := inet_server_addr();
 BEGIN
   IF current_setting('cinema.seed_env', true) IS DISTINCT FROM 'development' THEN
     RAISE EXCEPTION 'refusing to seed: this file is development-only and must be applied through make seed-dev with API_ENV=development'
+      USING ERRCODE = '42501';
+  END IF;
+  -- A unix socket answers nothing here and a loopback connection answers 127.0.0.0/8 or
+  -- ::1; both are this machine. Anything else was applied across a network.
+  IF server_address IS NOT NULL
+     AND NOT (server_address << '127.0.0.0/8'::inet OR host(server_address) = '::1') THEN
+    RAISE EXCEPTION 'refusing to seed: this server answered the connection on %, which is not loopback, so it is not a local database; the development seed runs only against a database on this machine', host(server_address)
       USING ERRCODE = '42501';
   END IF;
 END $$;

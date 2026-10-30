@@ -119,17 +119,17 @@ func (h *Handler) getReservation(w http.ResponseWriter, r *http.Request) {
 		// the charge is whatever the payment answer reports.
 		"amountDueCents":   dueCents,
 		"amountDueDisplay": dueDisplay,
-		"seats":         seats,
-		"ticketIds":     ticketIDs,
+		"seats":            seats,
+		"ticketIds":        ticketIDs,
 		// The screening, so a reloaded confirmation says what is being bought and when.
 		// Both time forms are answered for the same reason the catalogue answers both: the
 		// instant for comparison, the venue's local form for reading, computed server side
 		// so the browser never has to know the venue's zone.
-		"eventId":     detail.EventID,
-		"filmTitle":   detail.FilmTitle,
-		"cinemaName":  detail.CinemaName,
-		"roomName":    detail.RoomName,
-		"startsAt":    detail.StartsAt.UTC(),
+		"eventId":       detail.EventID,
+		"filmTitle":     detail.FilmTitle,
+		"cinemaName":    detail.CinemaName,
+		"roomName":      detail.RoomName,
+		"startsAt":      detail.StartsAt.UTC(),
 		"startsAtLocal": localStartsAt,
 	})
 }

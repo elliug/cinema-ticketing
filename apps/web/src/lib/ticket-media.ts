@@ -12,16 +12,14 @@
 // The PDF is forwarded as an attachment whose filename this side declares, matching the
 // disposition the API would have set, so a download is named after its ticket whichever
 // door the browser came through.
-import { DEFAULT_PUBLIC_BASE_URL, PUBLIC_BASE_URL_ENV } from "./public-api.ts";
+import {
+  DEFAULT_PUBLIC_BASE_URL,
+  PUBLIC_BASE_URL_ENV,
+  PUBLIC_PATH_PREFIX,
+} from "./public-api.ts";
 
 /** The path prefix this application serves ticket media under. */
 export const TICKET_MEDIA_PREFIX = "/api/tickets";
-
-/**
- * The API's public prefix. Mirrored rather than imported because the forwarded address is
- * built in one place and that place is here.
- */
-const API_PUBLIC_PATH_PREFIX = "/api/v1";
 
 /** The same-origin address of a ticket's QR image. */
 export function ticketQRImageUrl(ticketID: string): string {
@@ -113,7 +111,7 @@ function apiMediaUrl(
   const configured = (env[PUBLIC_BASE_URL_ENV] ?? "").trim();
   const base = (configured === "" ? DEFAULT_PUBLIC_BASE_URL : configured).replace(/\/+$/, "");
   const id = encodeURIComponent(ticketID.trim());
-  return `${base}${API_PUBLIC_PATH_PREFIX}/tickets/${id}/${kind}`;
+  return `${base}${PUBLIC_PATH_PREFIX}/tickets/${id}/${kind}`;
 }
 
 function plainResponse(body: string, status: number): Response {

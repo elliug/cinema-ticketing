@@ -35,7 +35,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 unique="$$"
 db="cinema_m3_verify_$unique"
 bucket="cinema-m3-verify-$unique"
-redis_db="${M3_REDIS_DB:-9}"
+# A database index of its own, distinct from `make verify-m2`'s default (9), so the two gates
+# no longer refuse each other over one shared index: M3_REDIS_DB overrides it.
+redis_db="${M3_REDIS_DB:-10}"
 s3_endpoint="${M3_S3_ENDPOINT:-http://127.0.0.1:4566}"
 s3_endpoint="${s3_endpoint%/}"
 admin_token="m3-verify-admin-$unique"

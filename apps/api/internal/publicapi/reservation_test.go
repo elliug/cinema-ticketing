@@ -119,21 +119,21 @@ type reservationSeatBody struct {
 // nullable on purpose: an unpaid order has no charge, and printing 0.00 would claim
 // money was taken when none was.
 type reservationBody struct {
-	ReservationID string                `json:"reservationId"`
-	Status        string                `json:"status"`
-	ExpiresAt     string                `json:"expiresAt"`
-	AmountCents    *int64              `json:"amountCents"`
-	AmountDisplay  *string             `json:"amountDisplay"`
-	AmountDueCents   *int64            `json:"amountDueCents"`
-	AmountDueDisplay *string           `json:"amountDueDisplay"`
-	Seats         []reservationSeatBody `json:"seats"`
-	TicketIDs     []string              `json:"ticketIds"`
-	EventID       string                `json:"eventId"`
-	FilmTitle     string                `json:"filmTitle"`
-	CinemaName    string                `json:"cinemaName"`
-	RoomName      string                `json:"roomName"`
-	StartsAt      string                `json:"startsAt"`
-	StartsAtLocal string                `json:"startsAtLocal"`
+	ReservationID    string                `json:"reservationId"`
+	Status           string                `json:"status"`
+	ExpiresAt        string                `json:"expiresAt"`
+	AmountCents      *int64                `json:"amountCents"`
+	AmountDisplay    *string               `json:"amountDisplay"`
+	AmountDueCents   *int64                `json:"amountDueCents"`
+	AmountDueDisplay *string               `json:"amountDueDisplay"`
+	Seats            []reservationSeatBody `json:"seats"`
+	TicketIDs        []string              `json:"ticketIds"`
+	EventID          string                `json:"eventId"`
+	FilmTitle        string                `json:"filmTitle"`
+	CinemaName       string                `json:"cinemaName"`
+	RoomName         string                `json:"roomName"`
+	StartsAt         string                `json:"startsAt"`
+	StartsAtLocal    string                `json:"startsAtLocal"`
 }
 
 // S5: reloading the confirmation of a paid order answers everything the screen shows,
@@ -209,15 +209,15 @@ func TestReservationRouteKeepsAnUnpaidAmountNull(t *testing.T) {
 	unpaid := catalog.ReservationDetail{
 		ID:             "00000000-0000-0000-0000-00000000f2c1",
 		AmountDueCents: &due,
-		Status:     "held",
-		ExpiresAt:  reservationFixtureExpiry,
-		EventID:    "00000000-0000-0000-0000-00000000f2e1",
-		FilmTitle:  "La película de la confirmación",
-		CinemaName: "Cine Confirmación",
-		RoomName:   "Sala 2",
-		StartsAt:   reservationFixtureStart,
-		Timezone:   "Europe/Madrid",
-		Seats:      []catalog.Seat{{EventSeatID: 30, RowLabel: "B", SeatNumber: "4"}},
+		Status:         "held",
+		ExpiresAt:      reservationFixtureExpiry,
+		EventID:        "00000000-0000-0000-0000-00000000f2e1",
+		FilmTitle:      "La película de la confirmación",
+		CinemaName:     "Cine Confirmación",
+		RoomName:       "Sala 2",
+		StartsAt:       reservationFixtureStart,
+		Timezone:       "Europe/Madrid",
+		Seats:          []catalog.Seat{{EventSeatID: 30, RowLabel: "B", SeatNumber: "4"}},
 	}
 	response := getReservation(t, mountedReservationReadServer(t, &fakeReservationReader{detail: unpaid}), unpaid.ID)
 	if response.StatusCode != http.StatusOK {

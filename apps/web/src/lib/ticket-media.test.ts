@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { PUBLIC_PATH_PREFIX } from "./public-api.ts";
 import {
   ticketMedia,
   ticketMediaAttachment,
@@ -92,6 +93,17 @@ test("the QR image and the PDF are addressed on this application's own origin", 
   // An identifier is escaped and trimmed exactly as the API would receive it.
   assert.equal(ticketPDFUrl("  ticket/1  "), `${TICKET_MEDIA_PREFIX}/ticket%2F1/pdf`);
   assert.equal(ticketQRImageUrl("ticket 1"), `${TICKET_MEDIA_PREFIX}/ticket%201/qr.svg`);
+});
+
+// The forward's address is built on the public client's prefix, not on a second copy of it
+// (review finding R3-001). A copy is invisible until the API's prefix changes and only one of
+// the two follows, which is a defect nobody would look for in this file.
+test("the forwarded address is built on the public client's own path prefix", async () => {
+  const { requests, fetchImpl } = recorder(new Response("<svg/>", { status: 200 }));
+  await ticketMedia("qr.svg", "ticket-1", { env: ENV, fetchImpl });
+
+  assert.equal(PUBLIC_PATH_PREFIX, "/api/v1", "the prefix the API serves");
+  assert.equal(requests[0]?.url, `${API}${PUBLIC_PATH_PREFIX}/tickets/ticket-1/qr.svg`);
 });
 
 test("the declared filename is the ticket's own, in the API's own words", () => {

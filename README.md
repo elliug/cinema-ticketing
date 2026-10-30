@@ -53,6 +53,14 @@ API_LOCAL_ADMIN_TOKEN=change_me_in_local pnpm web:dev
 
 Open `http://localhost:3000` to buy, and `http://localhost:3000/admin/venues` to administer. `change_me_in_local` is a placeholder you choose: any value works locally, as long as **both** processes are started with the same one.
 
+The browser gate drives Chromium and Firefox, so install both once:
+
+```sh
+pnpm --dir apps/web exec playwright install --with-deps chromium firefox
+```
+
+`make verify-m35` owns the stack and needs nothing else. `make verify-e2e` runs the same suite against a server you already have, and it needs `WEB_BASE_URL` pointed at a **non-loopback** address: `e2e/insecure-origin.spec.ts` fails on loopback by design, because loopback is a secure context.
+
 Health endpoints:
 
 | Service | Endpoint | Purpose |
@@ -173,8 +181,12 @@ make bootstrap
 
 The seed is **development-only**. `make seed-dev` refuses to run unless
 `API_ENV=development` is explicitly set, and the seed file repeats the guard so
-that applying it with `psql` directly cannot seed a database by accident. Never
-run it against a shared or production database.
+that applying it with `psql` directly cannot seed a database by accident. That
+first guard is a string the caller supplies, so the file adds a second one: it
+reads the address the server answered the connection on, and refuses when that
+address is not loopback, which a shared database's own address never is. What it
+does not cover is someone seeding a database local to them on purpose. Never run
+it against a shared or production database.
 
 The idempotence of both the migration runner and the seed is proven against a
 throwaway database that each script creates and drops:
@@ -289,8 +301,11 @@ Three things are worth knowing before relying on it:
 `make verify-m3` proves the milestone against the running stack and runs in CI as its own
 job: it holds seats, pays, fetches the ticket, verifies the code, downloads the PDF through
 its redirect, and shows the artefact survives a Floci restart and a container recreation.
-Two gates share Redis logical database 9 by default (`verify-m2`, `verify-m3`) and refuse
-to run concurrently rather than flushing each other.
+Two gates used to share Redis logical database 9 and refuse to run concurrently. Each now
+takes its own index by default — `verify-m2` index 9, `verify-m3` index 10, with
+`M2_REDIS_DB` and `M3_REDIS_DB` to change either — so neither blocks the other. Each still
+refuses to start on an index that already holds keys rather than flushing work that is not
+its own.
 
 ## M3.5 the product web
 
@@ -312,6 +327,8 @@ Two things this build is honest about:
 `make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
 
 The gate drives an origin the browser does **not** treat as secure: it serves the web on the machine's primary non-loopback IPv4 address and refuses to fall back to loopback, because loopback is a secure context and a gate pointed at one cannot see anything the browser decides by origin — which is how `crypto.randomUUID` and an absolute ticket link both escaped a green build. A spec asserts `window.isSecureContext === false` and `typeof crypto.randomUUID === "undefined"` inside the browser, so pointing the gate at a secure origin fails with a message naming the reason instead of passing quietly.
+
+Its run scope is enforced rather than assumed. `M35_REDIS_DB=0` (the development keyspace) and an `M35_S3_ENDPOINT` that is not loopback are both refused by name, with the value that makes them safe, because the gate flushes the Redis index it uses and creates and deletes a bucket in the store it is pointed at. CI uses the defaults.
 
 ## What this build does not do
 
