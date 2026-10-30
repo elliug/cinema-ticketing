@@ -222,6 +222,14 @@ and gets one ticket per seat — `GET /api/v1/tickets/{id}` for the detail,
 redirect to a short-lived pre-signed URL of the stored PDF. The web app walks the same
 path: `/reservations/{id}` to pay, `/tickets/{id}` to show the ticket.
 
+The web app does **not** link those two binary API routes directly. It serves them itself
+at `/api/tickets/{id}/qr.svg` and `/api/tickets/{id}/pdf`, forwarding to the API from the
+server, because the API's absolute address only means something on the machine running it:
+opened from a phone or a second laptop, a link at `http://127.0.0.1:8080/...` would point
+each device at itself — a blank code and a "page not found" download, both silent. The
+forwarded PDF keeps its declared `Content-Disposition`, so the download is still named
+after its ticket.
+
 Three things are worth knowing before relying on it:
 
 - **The payment key belongs to the reservation.** A reservation with an open payment

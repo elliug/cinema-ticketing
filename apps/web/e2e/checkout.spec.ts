@@ -16,7 +16,6 @@ import { readFile, stat } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 import {
-  API_BASE_URL,
   collectProblems,
   createAndPublishScreening,
   expectNoProblems,
@@ -64,7 +63,7 @@ test.describe("purchase", () => {
     await expect(qr).toBeVisible();
     await expect(qr).toHaveAttribute(
       "src",
-      new RegExp(`^${escapeRegExp(API_BASE_URL)}/api/v1/tickets/${ticketId}/qr\\.svg$`),
+      new RegExp(`^/api/tickets/${ticketId}/qr\\.svg$`),
     );
     expect(qrResponses, "the browser fetched the entry code once").toHaveLength(1);
     expect(qrResponses[0]?.status(), "the entry code's status").toBe(200);
@@ -99,13 +98,15 @@ test.describe("purchase", () => {
     // The attachment is *declared*, not decided by the browser. Chromium downloads the
     // document whether or not the route says so — a headless browser has no PDF viewer —
     // so the download event above cannot tell a declared attachment from one the browser
-    // chose on its own. Following the same route with an HTTP request and reading what
-    // the object store answered is what proves the link's own words: `Content-Disposition:
-    // attachment`, with the file named after the ticket.
-    const delivered = await page.request.get(
-      `${API_BASE_URL}/api/v1/tickets/${ticketId}/pdf`,
-    );
-    expect(delivered.status(), "the PDF route, followed to the object store").toBe(200);
+    // chose on its own. Following the ticket's own link with an HTTP request and reading
+    // what came back is what proves the link's words: `Content-Disposition: attachment`,
+    // with the file named after the ticket, served by this application's own origin.
+    //
+    // By this address and not the API's: the page is opened from wherever the buyer is,
+    // so a link at the API base would point each device at itself. Following the
+    // same-origin route also proves the forwarding — the API's pre-signed redirect is
+    // consumed on the server and the browser only ever sees the document.
+    const delivered = await page.request.get(`/api/tickets/${ticketId}/pdf`);
     const headers = delivered.headers();
     expect(headers["content-type"], "the delivered media type").toContain(
       "application/pdf",
@@ -127,8 +128,3 @@ test.describe("purchase", () => {
     expectNoProblems(problems);
   });
 });
-
-/** Escapes one string for a regular expression, so a URL can be compared literally. */
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}

@@ -46,7 +46,6 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PublicProblem, PublicReservation } from "@/lib/public-api";
-import { resolvePublicConfig } from "@/lib/public-api";
 import type { HoldWindowView } from "@/lib/payment-key";
 import { describeHoldWindow, describeOrderAmount } from "@/lib/payment-key";
 import { loadReservation, payReservationAction } from "./actions";
@@ -91,8 +90,6 @@ async function Order({ reservationId }: { reservationId: string }) {
   const renderedAt = Date.now();
   const window = describeHoldWindow(order, renderedAt);
   // Resolved server side and required by no credential: it only builds the ticket links.
-  const config = resolvePublicConfig(process.env);
-  const apiBaseUrl = config.ok ? config.value.baseUrl : "";
 
   return (
     <>
@@ -105,12 +102,11 @@ async function Order({ reservationId }: { reservationId: string }) {
       <OrderSummary order={order} window={window} />
 
       {window.kind === "paid" ? (
-        <PaidOrder order={order} apiBaseUrl={apiBaseUrl} />
+        <PaidOrder order={order} />
       ) : (
         <PaymentPanel
           reservation={order}
           renderedAt={renderedAt}
-          apiBaseUrl={apiBaseUrl}
           payReservation={payReservationAction}
           loadReservation={loadReservation}
         />
@@ -203,10 +199,8 @@ function OrderSummary({
  */
 function PaidOrder({
   order,
-  apiBaseUrl,
 }: {
   order: PublicReservation;
-  apiBaseUrl: string;
 }) {
   return (
     <Card aria-labelledby="paid-order">
@@ -230,7 +224,7 @@ function PaidOrder({
             this page once, and contact the box office if it stays empty.
           </p>
         ) : (
-          <IssuedTickets ticketIds={order.ticketIds} apiBaseUrl={apiBaseUrl} />
+          <IssuedTickets ticketIds={order.ticketIds} />
         )}
 
         <p className="m-0 max-w-prose text-sm text-muted-foreground">

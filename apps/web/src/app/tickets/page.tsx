@@ -65,11 +65,6 @@ async function readTicketAction(ticketId: string): Promise<TicketResponse> {
 }
 
 export default function TicketsPage() {
-  // Resolved on the server and required by no credential: it only builds the PDF links
-  // this list prints, exactly as the confirmation page does.
-  const config = resolvePublicConfig(process.env);
-  const apiBaseUrl = config.ok ? config.value.baseUrl : "";
-
   return (
     <main id="main-content" className="foundation">
       <PageHeader
@@ -77,7 +72,7 @@ export default function TicketsPage() {
         title="My tickets"
         description="The ticket ids this browser tab kept from the purchases it made in it — not an account, and not a list the box office keeps. Each one is read from the box office when this screen loads, and a ticket is opened by its own link."
       />
-      <KeptTicketList apiBaseUrl={apiBaseUrl} readTicket={readTicketAction} />
+      <KeptTicketList readTicket={readTicketAction} />
     </main>
   );
 }

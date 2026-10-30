@@ -42,11 +42,10 @@ import { describeKeptTicket } from "@/lib/issued-tickets";
 import {
   createPublicClient,
   resolvePublicConfig,
-  ticketPDFUrl,
-  ticketQRImageUrl,
 } from "@/lib/public-api";
 import type { PublicProblem } from "@/lib/public-api";
 import { TicketView } from "./ticket-view";
+import { ticketPDFUrl, ticketQRImageUrl } from "@/lib/ticket-media";
 
 export const dynamic = "force-dynamic";
 
@@ -115,8 +114,8 @@ async function TicketSurface({ ticketId }: { ticketId: string }) {
       <TicketView
         ticket={ticket}
         checked={checked}
-        qrImageUrl={ticketQRImageUrl(config.value.baseUrl, ticket.ticketId)}
-        pdfUrl={ticketPDFUrl(config.value.baseUrl, ticket.ticketId)}
+        qrImageUrl={ticketQRImageUrl(ticket.ticketId)}
+        pdfUrl={ticketPDFUrl(ticket.ticketId)}
       />
     </>
   );

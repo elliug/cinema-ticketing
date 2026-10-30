@@ -363,7 +363,6 @@ function badgeWord(validity: ValidityView): string {
 
 export interface KeptTicketListProps {
   /** Normalized public API base URL, resolved on the server; used for the PDF links. */
-  apiBaseUrl: string;
   /**
    * Reads one ticket: `GET /api/v1/tickets/{id}`, through the page's server action.
    *
@@ -390,7 +389,7 @@ export interface KeptTicketListProps {
  *      row**, never the list, and only a row the box office does not know offers to be
  *      forgotten — the page never deletes a record it could not read.
  */
-export function KeptTicketList({ apiBaseUrl, readTicket }: KeptTicketListProps) {
+export function KeptTicketList({ readTicket }: KeptTicketListProps) {
   // `null` until the tab's own storage has been read on the client: the server has no
   // access to it, so rendering a list before then would be inventing one.
   const [kept, setKept] = useState<KeptTickets | null>(null);
@@ -534,7 +533,6 @@ export function KeptTicketList({ apiBaseUrl, readTicket }: KeptTicketListProps) 
                 <KeptTicketCard
                   ticketId={ticketId}
                   row={rows[ticketId] ?? { kind: "reading" }}
-                  apiBaseUrl={apiBaseUrl}
                   onRetry={() => void retry(ticketId)}
                   onForget={() => forget(ticketId)}
                 />
@@ -581,13 +579,11 @@ function announceKept(
 function KeptTicketCard({
   ticketId,
   row,
-  apiBaseUrl,
   onRetry,
   onForget,
 }: {
   ticketId: string;
   row: KeptTicketRow;
-  apiBaseUrl: string;
   onRetry: () => void;
   onForget: () => void;
 }) {
@@ -646,7 +642,7 @@ function KeptTicketCard({
         </p>
         {/* The checkout's own link shape: the ticket page and the PDF, printed the same
             way on the confirmation and here. */}
-        <IssuedTickets ticketIds={[ticket.ticketId]} apiBaseUrl={apiBaseUrl} />
+        <IssuedTickets ticketIds={[ticket.ticketId]} />
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
           Whether this ticket still admits you is answered by the box office when it is
           scanned, not by this list. Open it to see the answer for this moment.

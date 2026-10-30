@@ -52,7 +52,8 @@ import type {
   PublicReservation,
   ReservationResponse,
 } from "@/lib/public-api";
-import { newIdempotencyKey, ticketPDFUrl } from "@/lib/public-api";
+import { newIdempotencyKey } from "@/lib/public-api";
+import { ticketPDFUrl } from "@/lib/ticket-media";
 import { TICKET_PDF_LINK_LABEL } from "@/lib/issued-tickets";
 import type { PaymentKeyStorage, PaymentOutcomeView } from "@/lib/payment-key";
 import {
@@ -76,8 +77,6 @@ export interface PaymentPanelProps {
    * keeps the countdown honest without a hydration mismatch.
    */
   renderedAt: number;
-  /** Normalized public API base URL, used to build the ticket links. */
-  apiBaseUrl: string;
   /** Server action: POST /reservations/{id}/payment with this attempt's key. */
   payReservation: (input: {
     reservationId: string;
@@ -117,7 +116,6 @@ function keyStorage(): PaymentKeyStorage | null {
 export function PaymentPanel({
   reservation,
   renderedAt,
-  apiBaseUrl,
   payReservation,
   loadReservation,
 }: PaymentPanelProps) {
@@ -328,7 +326,6 @@ export function PaymentPanel({
                   ? view.payment.ticketIds
                   : []
             }
-            apiBaseUrl={apiBaseUrl}
             seatsHref={seatsHref}
             canRetry={view.outcome.retryable && payable}
             onRetry={handlePay}
@@ -350,7 +347,6 @@ function Outcome({
   outcome,
   amount,
   tickets,
-  apiBaseUrl,
   seatsHref,
   canRetry,
   onRetry,
@@ -358,7 +354,6 @@ function Outcome({
   outcome: PaymentOutcomeView;
   amount: { known: boolean; amountLabel: string | null };
   tickets: readonly string[];
-  apiBaseUrl: string;
   seatsHref: string | null;
   canRetry: boolean;
   onRetry: () => void;
@@ -384,7 +379,7 @@ function Outcome({
           </p>
         ) : null}
         {tickets.length > 0 ? (
-          <IssuedTickets ticketIds={tickets} apiBaseUrl={apiBaseUrl} />
+          <IssuedTickets ticketIds={tickets} />
         ) : null}
         {outcome.kind === "approved" && tickets.length === 0 ? (
           <p className="m-0">
@@ -427,13 +422,7 @@ function Outcome({
  * redirects to a URL that declares `Content-Disposition: attachment`, so the sentence
  * both surfaces print comes from `TICKET_PDF_LINK_LABEL` instead of being written twice.
  */
-export function IssuedTickets({
-  ticketIds,
-  apiBaseUrl,
-}: {
-  ticketIds: readonly string[];
-  apiBaseUrl: string;
-}) {
+export function IssuedTickets({ ticketIds }: { ticketIds: readonly string[] }) {
   return (
     <ul role="list" className="m-0 flex list-none flex-col gap-2 p-0">
       {ticketIds.map((ticketId) => (
@@ -445,7 +434,7 @@ export function IssuedTickets({
             Open ticket <code>{ticketId}</code>
           </Link>
           <a
-            href={ticketPDFUrl(apiBaseUrl, ticketId)}
+            href={ticketPDFUrl(ticketId)}
             className="rounded-sm text-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
           >
             {TICKET_PDF_LINK_LABEL}

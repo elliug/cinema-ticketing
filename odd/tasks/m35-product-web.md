@@ -55,6 +55,9 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
 - T8 — S3, S4 — Administration: venues, rooms, layouts and screenings with price — commit
 - T9 — S7 — Playwright gate `make verify-m35` and its CI job — commit
 - T10 — S8 — Closing documentation, milestone status and evidence — commit
+- T11 — S8 — Ticket QR image and PDF served at the web app's own origin, forwarded to the
+  API on the server, after real use on a second device found both broken by absolute API
+  links — commit
 
 ## Log
 
@@ -421,3 +424,41 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   still green. Still unproven, as the gate's own closing line says: nothing about Firefox or WebKit,
   no real payment provider, no real storage credentials, and no accessibility audit beyond the
   keyboard path, the focus ring, the heading count and `aria-current`.
+
+### L18 — Post-delivery defects found in real use: two origins, one cause
+
+Reported by the human, testing the delivered milestone from a second device over plain HTTP:
+
+> lo que no me funciona es la parte del qr que no se visualiza en la web y el download del
+> pdf que no me sale pone pagina no encotrada pero no me da error
+
+And, before that, on the same origin:
+
+> cuando pulso Hold these seats me sale un issue Runtime TypeError: Runtime TypeError
+> crypto.randomUUID is not a function
+
+Two defects, one lesson. Both came from assuming the browser's machine is the server's
+machine, and **neither was visible to any gate this milestone shipped**.
+
+The first — `crypto.randomUUID` — exists only in a secure context (HTTPS, or loopback). Opened
+by a LAN or VPN address over plain HTTP, the page has `crypto` but not `randomUUID`, so the
+first click of a checkout threw. Fixed in PR #53 by building a v4 UUID from
+`crypto.getRandomValues`, which carries no such restriction. The browser gate could not catch
+it: Playwright navigates to `127.0.0.1`, which **is** a secure context, so the failing branch
+was unreachable there.
+
+The second — the ticket's QR image and PDF — were built as absolute URLs at the configured API
+base (`http://127.0.0.1:8080/...`). From another device that address is the device itself: the
+image had nothing to render and the download answered "page not found", and an `<img>` that
+fails is silent. Fixed in T11 by serving both at this application's own origin
+(`/api/tickets/{id}/qr.svg`, `/api/tickets/{id}/pdf`) and forwarding to the API from the
+server, which also keeps the pre-signed S3 address out of the browser.
+
+Both defects were found by the human using the product, not by 315 tests, not by the browser
+gate, and not by native review. The pattern is worth naming: **a gate that only ever visits
+loopback cannot see anything the browser decides by origin** — `randomUUID`, service workers,
+clipboard, geolocation, `SubtleCrypto`.
+
+Deferred to M4 by the human's decision: make the browser gate exercise an insecure origin
+(start the web server on `0.0.0.0`, navigate to the runner's private address, assert
+`typeof crypto.randomUUID === "undefined"` there before driving the purchase).
