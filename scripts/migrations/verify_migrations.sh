@@ -10,6 +10,7 @@ M1_TEST_FILE="${M1_TEST_FILE:-/workspace/tests/migrations/m1_schema.sql}"
 M2_TEST_FILE="${M2_TEST_FILE:-/workspace/tests/migrations/m2_schema.sql}"
 IDEMPOTENCY_TEST_FILE="${IDEMPOTENCY_TEST_FILE:-/workspace/tests/migrations/m2_idempotency.sql}"
 EXPIRY_TEST_FILE="${EXPIRY_TEST_FILE:-/workspace/tests/migrations/m2_expiry.sql}"
+CHECKOUT_TEST_FILE="${CHECKOUT_TEST_FILE:-/workspace/tests/migrations/m3_checkout.sql}"
 
 log() { printf '[migrations] %s\n' "$*"; }
 fail() { printf '[migrations] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -28,6 +29,9 @@ test -r "$M2_TEST_FILE" || fail "missing M2 schema test"
 test -r "$MIGRATIONS_DIR/0004_idempotency.up.sql" || fail "missing 0004_idempotency.up.sql"
 test -r "$MIGRATIONS_DIR/0004_idempotency.down.sql" || fail "missing 0004_idempotency.down.sql"
 test -r "$IDEMPOTENCY_TEST_FILE" || fail "missing M2 idempotency schema test"
+test -r "$MIGRATIONS_DIR/0005_checkout.up.sql" || fail "missing 0005_checkout.up.sql"
+test -r "$MIGRATIONS_DIR/0005_checkout.down.sql" || fail "missing 0005_checkout.down.sql"
+test -r "$CHECKOUT_TEST_FILE" || fail "missing M3 checkout schema test"
 
 psql_admin() {
   psql -X -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres "$@"
@@ -88,6 +92,22 @@ assert_idempotency_absent() {
   test "$objects" = "6" || fail "the 0003 hold schema must survive a 0004 rollback, got $objects of 6 objects"
 }
 
+assert_checkout_absent() {
+  objects="$(psql_target -tA -c "SELECT count(*) FROM pg_class WHERE relnamespace = 'cinema'::regnamespace AND relname IN ('outbox','tickets','payment_attempts','payment_attempts_captured_per_reservation','payment_attempts_provider_reference','payment_attempts_reservation','outbox_unpublished','tickets_reservation','tickets_event_seat_id_key');")"
+  test "$objects" = "0" || fail "checkout objects must be absent after 0005 rollback, got $objects"
+  columns="$(psql_target -tA -c "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'cinema' AND table_name = 'events' AND column_name = 'price_cents';")"
+  test "$columns" = "0" || fail "events.price_cents must be absent after 0005 rollback, got $columns"
+  columns="$(psql_target -tA -c "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'cinema' AND table_name = 'tickets' AND column_name = 'event_id';")"
+  test "$columns" = "0" || fail "tickets.event_id must be absent after 0005 rollback, got $columns"
+  # The widened reservation status is restored to the 0003 hold lifecycle.
+  statuses="$(psql_target -tA -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'reservations_status_check' AND conrelid = 'cinema.reservations'::regclass;")"
+  test -n "$statuses" || fail "reservations_status_check must survive a 0005 rollback"
+  case "$statuses" in *paid*) fail "the 0005 rollback must restore the narrower reservation status constraint, got $statuses" ;; esac
+  # The 0004 idempotency records and the 0003 hold schema must survive a 0005 rollback untouched.
+  objects="$(psql_target -tA -c "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace = 'cinema'::regnamespace AND relname IN ('idempotency_keys','idempotency_keys_expires_at','reservations','reservation_seats','reservation_seats_active_hold','reservation_seats_event_seat','reservations_expires_at')) + (SELECT count(*) FROM pg_proc WHERE proname = 'release_expired_seat_hold');")"
+  test "$objects" = "8" || fail "the 0003 and 0004 objects must survive a 0005 rollback, got $objects of 8 objects"
+}
+
 log "applying 0001_init"
 psql_target -q -f "$MIGRATIONS_DIR/0001_init.up.sql"
 assert_current
@@ -143,3 +163,19 @@ psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
 psql_target -q -f "$EXPIRY_TEST_FILE"
 assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
 log "M0, M1, M2, M2 idempotency and M2 expiry sweep up/down/up verification passed"
+
+log "applying 0005_checkout"
+psql_target -q -f "$MIGRATIONS_DIR/0005_checkout.up.sql"
+psql_target -q -f "$CHECKOUT_TEST_FILE"
+assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency,0005_checkout'
+log "rolling back 0005_checkout"
+psql_target -q -f "$MIGRATIONS_DIR/0005_checkout.down.sql"
+assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency'
+assert_checkout_absent
+psql_target -q -f "$IDEMPOTENCY_TEST_FILE"
+psql_target -q -f "$EXPIRY_TEST_FILE"
+log "reapplying 0005_checkout"
+psql_target -q -f "$MIGRATIONS_DIR/0005_checkout.up.sql"
+psql_target -q -f "$CHECKOUT_TEST_FILE"
+assert_versions '0001_init,0002_venue_layout,0003_reservation,0004_idempotency,0005_checkout'
+log "M0, M1, M2 and M3 checkout up/down/up verification passed"
