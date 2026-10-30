@@ -179,7 +179,9 @@ function OrderSummary({
           <dd className="m-0 font-medium">
             {amount.known
               ? `${amount.amountLabel} taken`
-              : "Not charged yet"}
+              : order.amountDueDisplay
+                ? `${order.amountDueDisplay} at the current price`
+                : "Not charged yet"}
           </dd>
         </dl>
 
