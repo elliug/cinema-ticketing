@@ -16,7 +16,9 @@
 //
 // The two administrative reads add three names on top of that shape — filmTitle,
 // roomName and cinemaName — because an identifier is not something a scheduling screen
-// can show. The names are a read-only enrichment: the store joins them in the same
+// can show, and startsAtLocal, the start rendered in the venue's own zone, because an
+// operator scheduling a month of screenings cannot convert a UTC hour by hand for every
+// row. The names and the zone are a read-only enrichment: the store joins them in the same
 // statement as the columns, while the responses that follow a write answer the stored
 // columns only (RETURNING cannot join, and a name nobody read is not a name to answer).
 
@@ -71,10 +73,11 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 
 // updateEvent changes the price of one screening, its status, or both, in one request.
 //
-// This route is the only way a screening reaches the catalogue. POST /admin/events stores
-// a screening as a draft, and the public catalogue answers a screening only when its status
-// is on_sale and its start is still ahead, so a screening created in the administration is
-// not for sale until this request publishes it.
+// This route, and a create that names on_sale, are the ways a screening reaches the
+// catalogue. POST /admin/events stores a screening as a draft at no price unless that
+// request names a status or a price, and the public catalogue answers a screening only when
+// its status is on_sale and its start is still ahead, so a screening created in the
+// administration is not for sale until one of the two says it is.
 //
 // What each value of cinema.events.status means for the buyer-facing surface:
 //
@@ -118,10 +121,9 @@ func (h *Handler) updateEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // decodeEventUpdate reads the writable fields from the request body as a field map, so the
-// absence of a field stays distinguishable from a value that looks like a default. Each
-// field that is present is parsed by its own rule, and a value of the wrong JSON type is
-// named by the field that carried it instead of being coerced. The body is bounded like
-// every other administrative body.
+// absence of a field stays distinguishable from a value that looks like a default. The two
+// optional fields are parsed by decodeEventPricing, the parser the create body also uses,
+// and the body is bounded like every other administrative body.
 func decodeEventUpdate(w http.ResponseWriter, r *http.Request) (venue.EventUpdate, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
 	var body map[string]json.RawMessage
@@ -132,22 +134,40 @@ func decodeEventUpdate(w http.ResponseWriter, r *http.Request) (venue.EventUpdat
 		})
 		return venue.EventUpdate{}, false
 	}
-	var update venue.EventUpdate
-	if raw, present := body["priceCents"]; present {
-		priceCents, ok := decodePriceCents(w, raw)
-		if !ok {
-			return venue.EventUpdate{}, false
-		}
-		update.PriceCents = &priceCents
+	priceCents, status, ok := decodeEventPricing(w, body["priceCents"], body["status"])
+	if !ok {
+		return venue.EventUpdate{}, false
 	}
-	if raw, present := body["status"]; present {
-		status, ok := decodeEventStatus(w, raw)
+	return venue.EventUpdate{PriceCents: priceCents, Status: status}, true
+}
+
+// decodeEventPricing reads the two optional writable fields of a screening request. A field
+// the request did not carry is raw nil, and stays a nil pointer: "not sent" must never mean
+// "make it free" or "set it to nothing". Every field that is present is parsed by its own
+// rule, so a value of the wrong JSON type is named by the field that carried it instead of
+// being coerced.
+//
+// It is shared by the create and the update bodies on purpose: what a legal price and a legal
+// status are is one rule (venue.ValidateEventFields), and the JSON that carries them is read
+// once, so the two routes cannot refuse the same bad value in two different words.
+func decodeEventPricing(w http.ResponseWriter, priceCentsRaw, statusRaw json.RawMessage) (*int64, *string, bool) {
+	var priceCents *int64
+	if priceCentsRaw != nil {
+		value, ok := decodePriceCents(w, priceCentsRaw)
 		if !ok {
-			return venue.EventUpdate{}, false
+			return nil, nil, false
 		}
-		update.Status = &status
+		priceCents = &value
 	}
-	return update, true
+	var status *string
+	if statusRaw != nil {
+		value, ok := decodeEventStatus(w, statusRaw)
+		if !ok {
+			return nil, nil, false
+		}
+		status = &value
+	}
+	return priceCents, status, true
 }
 
 // decodePriceCents parses one price value. A JSON string that happens to spell a number
@@ -187,6 +207,12 @@ func decodeEventStatus(w http.ResponseWriter, raw json.RawMessage) (string, bool
 // eventJSON is the wire shape of a screening, shared by every event response so the
 // create, list, show and update write cannot drift apart. The display is
 // tickets.FormatMoney's, never a second formatter.
+//
+// startsAt is the stored instant, always rendered in UTC: it is what every comparison, sort
+// and storage decision uses, and it is the same string in every deployment. The hour a person
+// reads is the venue's own, and it is added beside it by eventReadJSON as startsAtLocal — a
+// presentation of this instant, never a second stored value and never a replacement for it.
+// The two exist together because storage has to be unambiguous and display has to be local.
 func eventJSON(event venue.Event) map[string]any {
 	return map[string]any{
 		"id":              event.ID,
@@ -202,13 +228,23 @@ func eventJSON(event venue.Event) map[string]any {
 
 // eventReadJSON is the shape of the two administrative screening reads: the stored
 // columns eventJSON builds, plus the names of the film, the room and the cinema the store
-// joined in the same statement. It is composed from eventJSON so a read can never lose a
-// stored column the create or the update write still answers.
+// joined in the same statement, plus startsAtLocal. It is composed from eventJSON so a read
+// can never lose a stored column the create or the update write still answers.
+//
+// startsAtLocal is the same instant in the venue's own zone, rendered by the ticket detail's
+// own rule (time.LoadLocation over the stored zone), so the scheduling screen and the ticket
+// cannot disagree about the hour. It is absent when the stored zone does not resolve — a
+// legacy row the timezone backfill has not repaired: a screen that shows a wrong hour is
+// worse than one that shows none, so the API omits the field rather than guess at UTC.
+// startsAt is answered either way, so a caller always has the instant.
 func eventReadJSON(event venue.Event) map[string]any {
 	body := eventJSON(event)
 	body["filmTitle"] = event.FilmTitle
 	body["roomName"] = event.RoomName
 	body["cinemaName"] = event.CinemaName
+	if local, err := event.LocalStartsAt(); err == nil {
+		body["startsAtLocal"] = local
+	}
 	return body
 }
 

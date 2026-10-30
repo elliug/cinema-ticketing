@@ -6,10 +6,11 @@
 // future orders only. A stored attempt and an issued ticket keep the money actually
 // taken.
 //
-// A screening's status decides whether it can be sold at all: POST /admin/events stores
-// one as a draft and the public catalogue answers only an on_sale screening whose start is
-// still ahead, so PATCH /admin/events/{eventId} is the only way a screening reaches the
-// catalogue. What each status means for the buyer-facing surface is documented on that
+// A screening's status decides whether it can be sold at all: POST /admin/events stores one
+// as a draft at no price unless the request names a price or a status, and the public
+// catalogue answers only an on_sale screening whose start is still ahead. So a create that
+// names on_sale, and PATCH /admin/events/{eventId}, are the two ways a screening reaches the
+// catalogue. What each status means for the buyer-facing surface is documented on the update
 // handler, in events.go.
 package adminapi
 
@@ -38,7 +39,7 @@ type VenueService interface {
 	GetLayout(ctx context.Context, layoutID string) (venue.Layout, error)
 	CreateFilm(ctx context.Context, title string, runtimeMinutes int, rating string) (venue.Film, error)
 	ListFilms(ctx context.Context) ([]venue.Film, error)
-	CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time) (venue.Event, error)
+	CreateEvent(ctx context.Context, roomID, filmID, layoutVersionID string, startsAt time.Time, priceCents *int64, status *string) (venue.Event, error)
 	ListEventSeats(ctx context.Context, eventID string) ([]venue.EventSeat, error)
 	ListEvents(ctx context.Context) ([]venue.Event, error)
 	GetEvent(ctx context.Context, eventID string) (venue.Event, error)
@@ -103,11 +104,17 @@ type createFilmRequest struct {
 	Rating         string `json:"rating"`
 }
 
+// createEventRequest is the create body. The three identifiers and the start are required;
+// priceCents and status are optional and are read raw, so a field the request did not send
+// stays distinguishable from one it sent as zero (a free screening) and so a value of the
+// wrong JSON type is refused by the same parser the update uses, naming its field.
 type createEventRequest struct {
-	RoomID          string    `json:"roomId"`
-	FilmID          string    `json:"filmId"`
-	LayoutVersionID string    `json:"layoutVersionId"`
-	StartsAt        time.Time `json:"startsAt"`
+	RoomID          string          `json:"roomId"`
+	FilmID          string          `json:"filmId"`
+	LayoutVersionID string          `json:"layoutVersionId"`
+	StartsAt        time.Time       `json:"startsAt"`
+	PriceCents      json.RawMessage `json:"priceCents"`
+	Status          json.RawMessage `json:"status"`
 }
 
 func (h *Handler) createCinema(w http.ResponseWriter, r *http.Request) {
@@ -262,12 +269,29 @@ func (h *Handler) listFilms(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"films": items})
 }
 
+// createEvent schedules a screening, optionally already priced and on sale, so putting one
+// on sale is one request instead of a create followed by a patch. A body that names neither
+// optional field behaves exactly as it always did — a draft at no price — because that is the
+// request the scheduling form and the gate send today.
+//
+// Both fields are validated by the rule the update applies (venue.ValidateEventFields), and a
+// refusal names its field and happens before the service and SQL, so a refused create stores
+// nothing.
 func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
 	var req createEventRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	event, err := h.svc.CreateEvent(r.Context(), req.RoomID, req.FilmID, req.LayoutVersionID, req.StartsAt)
+	priceCents, status, ok := decodeEventPricing(w, req.PriceCents, req.Status)
+	if !ok {
+		return
+	}
+	if err := venue.ValidateEventFields(priceCents, status); err != nil {
+		writeError(w, err)
+		return
+	}
+	event, err := h.svc.CreateEvent(r.Context(), req.RoomID, req.FilmID, req.LayoutVersionID, req.StartsAt,
+		priceCents, status)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -47,6 +47,10 @@ const (
 	fixtureEarly   = "00000000-0000-0000-0000-0000000008c1"
 	fixtureLate    = "00000000-0000-0000-0000-0000000008c2"
 	fixtureAbsent  = "00000000-0000-0000-0000-0000000008cf"
+	// fixtureCreated and fixtureCreatedDefault are the screenings the one-request create stores:
+	// one that names a price and a status, one that names neither.
+	fixtureCreated        = "00000000-0000-0000-0000-0000000008c3"
+	fixtureCreatedDefault = "00000000-0000-0000-0000-0000000008c4"
 )
 
 var (
@@ -261,9 +265,9 @@ func TestEventUpdateWritesTheStatusAndThePriceInOneGuardedStatement(t *testing.T
 			t.Fatalf("returned event = status %q price %d, want on_sale at 1750", stored.Status, stored.PriceCents)
 		}
 		// RETURNING cannot join, so the write answers the stored columns and no name.
-		if stored.FilmTitle != "" || stored.RoomName != "" || stored.CinemaName != "" {
-			t.Fatalf("names = %q / %q / %q, want the write to answer only the stored columns",
-				stored.FilmTitle, stored.RoomName, stored.CinemaName)
+		if stored.FilmTitle != "" || stored.RoomName != "" || stored.CinemaName != "" || stored.CinemaTimezone != "" {
+			t.Fatalf("names = %q / %q / %q / %q, want the write to answer only the stored columns",
+				stored.FilmTitle, stored.RoomName, stored.CinemaName, stored.CinemaTimezone)
 		}
 		requireStored(t, 1750, venue.EventOnSale)
 	})
@@ -421,7 +425,9 @@ func cleanupEventPriceFixture(pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, `DELETE FROM cinema.events WHERE id = ANY($1::uuid[])`, fixtureEvents())
 }
 
-func fixtureEvents() []string { return []string{fixtureEarly, fixtureLate, fixtureAbsent} }
+func fixtureEvents() []string {
+	return []string{fixtureEarly, fixtureLate, fixtureAbsent, fixtureCreated, fixtureCreatedDefault}
+}
 
 // TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms proves the two things a
 // scheduling screen needs beside an identifier: the film, the room and the cinema every
@@ -449,6 +455,11 @@ func TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms(t *testing.T) {
 			t.Fatalf("names = %q / %q / %q, want the film, the room and the cinema that were stored",
 				early.FilmTitle, early.RoomName, early.CinemaName)
 		}
+		// The venue's zone is joined too: it is what the administrative read renders the
+		// screening's own hour from, and an identifier-less hour needs no second query.
+		if early.CinemaTimezone != "UTC" {
+			t.Fatalf("timezone = %q, want the venue's stored UTC", early.CinemaTimezone)
+		}
 		// The names are additions: every stored column is still answered beside them.
 		if early.ID != fixtureEarly || early.RoomID != fixtureRoom || early.FilmID != fixtureFilm ||
 			early.LayoutVersionID != fixtureLayout || !early.StartsAt.Equal(fixtureEarlyAt) ||
@@ -472,7 +483,8 @@ func TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms(t *testing.T) {
 			t.Fatalf("the administrative list did not answer %s", fixtureEarly)
 		}
 		if listed.FilmTitle != early.FilmTitle || listed.RoomName != early.RoomName ||
-			listed.CinemaName != early.CinemaName || listed.RoomID != early.RoomID ||
+			listed.CinemaName != early.CinemaName || listed.CinemaTimezone != early.CinemaTimezone ||
+			listed.RoomID != early.RoomID ||
 			listed.FilmID != early.FilmID || listed.PriceCents != early.PriceCents ||
 			!listed.StartsAt.Equal(early.StartsAt) {
 			t.Fatalf("the list entry %+v is not the single read %+v", listed, early)
@@ -521,4 +533,68 @@ func TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms(t *testing.T) {
 				stored.FilmTitle, stored.RoomName, stored.CinemaName)
 		}
 	})
+}
+
+// TestEventCreateStoresThePriceAndTheStatusInOneRow proves what only PostgreSQL can about
+// the create the administration now sends in one request: the insert carries the price and
+// the status it was given, the create that names neither still stores the draft at no price,
+// and the administrative read names the venue zone the screening's own hour is rendered from.
+func TestEventCreateStoresThePriceAndTheStatusInOneRow(t *testing.T) {
+	ctx := context.Background()
+	pool, url := venueTestPool(t, ctx)
+
+	seedEventPriceFixture(t, ctx, pool)
+	t.Cleanup(func() { cleanupEventPriceFixture(pool) })
+
+	store, err := venue.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open the venue store: %v", err)
+	}
+	defer store.Close()
+
+	// The screening the create names with a price and a status: one row, one request.
+	if err := store.CreateEvent(ctx, venue.Event{
+		ID: fixtureCreated, RoomID: fixtureRoom, FilmID: fixtureFilm, LayoutVersionID: fixtureLayout,
+		StartsAt: fixtureEarlyAt, Status: venue.EventOnSale, PriceCents: 1400,
+	}); err != nil {
+		t.Fatalf("CreateEvent(on sale at 1400) = unexpected error %v", err)
+	}
+	read, err := store.GetEvent(ctx, fixtureCreated)
+	if err != nil {
+		t.Fatalf("GetEvent() = unexpected error %v", err)
+	}
+	if read.Status != venue.EventOnSale || read.PriceCents != 1400 {
+		t.Fatalf("stored event = status %q price %d, want on_sale at 1400", read.Status, read.PriceCents)
+	}
+	if !read.StartsAt.Equal(fixtureEarlyAt) || read.RoomID != fixtureRoom || read.FilmID != fixtureFilm ||
+		read.LayoutVersionID != fixtureLayout {
+		t.Fatalf("the create wrote more than the price and the status: %+v", read)
+	}
+	// The read names the venue's own zone, and the hour rendered from it is the venue's.
+	if read.CinemaTimezone != "UTC" {
+		t.Fatalf("timezone = %q, want the venue's stored UTC", read.CinemaTimezone)
+	}
+	local, err := read.LocalStartsAt()
+	if err != nil {
+		t.Fatalf("LocalStartsAt() = unexpected error %v", err)
+	}
+	if local != "2040-03-01T18:00:00+00:00" {
+		t.Fatalf("LocalStartsAt() = %q, want the venue's own hour", local)
+	}
+
+	// The create that names neither field stores what it always stored: a draft at no price.
+	if err := store.CreateEvent(ctx, venue.Event{
+		ID: fixtureCreatedDefault, RoomID: fixtureRoom, FilmID: fixtureFilm, LayoutVersionID: fixtureLayout,
+		StartsAt: fixtureLateAt, Status: venue.EventDraft,
+	}); err != nil {
+		t.Fatalf("CreateEvent(no price, no status) = unexpected error %v", err)
+	}
+	readDefault, err := store.GetEvent(ctx, fixtureCreatedDefault)
+	if err != nil {
+		t.Fatalf("GetEvent() = unexpected error %v", err)
+	}
+	if readDefault.Status != venue.EventDraft || readDefault.PriceCents != 0 {
+		t.Fatalf("stored event = status %q price %d, want the default draft at no price",
+			readDefault.Status, readDefault.PriceCents)
+	}
 }
