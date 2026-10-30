@@ -1,12 +1,14 @@
-// PostgreSQL-only tests for the administrative screening read and price write. They
-// need a migrated isolated database and are gated on M3_CHECKOUT_DATABASE_URL, so the
-// default unit suite needs no database at all.
+// PostgreSQL-only tests for the administrative screening and film reads and the price
+// write. They need a migrated isolated database and are gated on M3_CHECKOUT_DATABASE_URL,
+// so the default unit suite needs no database at all.
 //
 // What only PostgreSQL can prove is here: that the price write is one statement whose
 // guard is in WHERE (an unknown event is not found instead of an invented success), that
 // the stored event comes back as the database holds it, that the column refuses a
-// negative value even when the application validation is bypassed, and that changing a
-// price leaves the event's room, film, layout, start and status untouched.
+// negative value even when the application validation is bypassed, that changing a price
+// leaves the event's room, film, layout, start and status untouched, that both
+// administrative screening reads name the film, the room and the cinema in the same
+// statement, and that the film list answers the stored films in title order.
 package venue_test
 
 import (
@@ -38,9 +40,12 @@ const (
 	fixtureRow    = "00000000-0000-0000-0000-0000000008a4"
 	fixtureSeat   = "00000000-0000-0000-0000-0000000008a5"
 	fixtureFilm   = "00000000-0000-0000-0000-0000000008b1"
-	fixtureEarly  = "00000000-0000-0000-0000-0000000008c1"
-	fixtureLate   = "00000000-0000-0000-0000-0000000008c2"
-	fixtureAbsent = "00000000-0000-0000-0000-0000000008cf"
+	// fixtureFilmAlt is the second film: its title sorts before the first one's, so a list
+	// that answered insertion order or identifier order would be wrong here.
+	fixtureFilmAlt = "00000000-0000-0000-0000-0000000008b2"
+	fixtureEarly   = "00000000-0000-0000-0000-0000000008c1"
+	fixtureLate    = "00000000-0000-0000-0000-0000000008c2"
+	fixtureAbsent  = "00000000-0000-0000-0000-0000000008cf"
 )
 
 var (
@@ -53,22 +58,7 @@ var (
 // a negative value, an unknown event is not found, and the other columns are untouched.
 func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 	ctx := context.Background()
-	url := strings.TrimSpace(os.Getenv(venueDatabaseURLEnv))
-	if url == "" {
-		t.Skipf("%s is not set: this test needs a migrated isolated database", venueDatabaseURLEnv)
-	}
-	requireIsolatedVenueDatabase(t, url)
-
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("open %s pool: %v", venueDatabaseURLEnv, err)
-	}
-	// Register the close first so it runs last: the fixture cleanup below needs the
-	// pool, and a closed pool would silently leave the fixture rows behind.
-	t.Cleanup(func() { pool.Close() })
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("%s is not reachable: %v", venueDatabaseURLEnv, err)
-	}
+	pool, url := venueTestPool(t, ctx)
 
 	seedEventPriceFixture(t, ctx, pool)
 	t.Cleanup(func() { cleanupEventPriceFixture(pool) })
@@ -199,6 +189,29 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 	})
 }
 
+// venueTestPool opens the gated isolated database, skipping the default unit suite and
+// refusing a URL that names the development database.
+func venueTestPool(t *testing.T, ctx context.Context) (*pgxpool.Pool, string) {
+	t.Helper()
+	url := strings.TrimSpace(os.Getenv(venueDatabaseURLEnv))
+	if url == "" {
+		t.Skipf("%s is not set: this test needs a migrated isolated database", venueDatabaseURLEnv)
+	}
+	requireIsolatedVenueDatabase(t, url)
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("open %s pool: %v", venueDatabaseURLEnv, err)
+	}
+	// Register the close first so it runs last: the fixture cleanups below need the
+	// pool, and a closed pool would silently leave the fixture rows behind.
+	t.Cleanup(func() { pool.Close() })
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("%s is not reachable: %v", venueDatabaseURLEnv, err)
+	}
+	return pool, url
+}
+
 // requireIsolatedVenueDatabase refuses the development database. The test writes real
 // rows, so the name has to say it is disposable.
 func requireIsolatedVenueDatabase(t *testing.T, url string) {
@@ -246,10 +259,12 @@ func seedEventPriceFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 		}
 	}
 
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO cinema.films (id, title, runtime_minutes, rating) VALUES ($1,'Admin Fixture',90,'PG') ON CONFLICT DO NOTHING`,
-		fixtureFilm); err != nil {
-		t.Fatalf("seed film: %v", err)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO cinema.films (id, title, runtime_minutes, rating) VALUES
+ ($1,'Admin Fixture',90,'PG'),
+ ($2,'Aardvark Fixture',77,'12')
+ON CONFLICT DO NOTHING`, fixtureFilm, fixtureFilmAlt); err != nil {
+		t.Fatalf("seed films: %v", err)
 	}
 
 	for _, screening := range []struct {
@@ -281,3 +296,103 @@ func cleanupEventPriceFixture(pool *pgxpool.Pool) {
 }
 
 func fixtureEvents() []string { return []string{fixtureEarly, fixtureLate, fixtureAbsent} }
+
+// TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms proves the two things a
+// scheduling screen needs beside an identifier: the film, the room and the cinema every
+// screening is against, and the films it may schedule one against. Both are read in one
+// statement each, so a film list of n entries costs one query and never an n+1 of films.
+func TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms(t *testing.T) {
+	ctx := context.Background()
+	pool, url := venueTestPool(t, ctx)
+
+	seedEventPriceFixture(t, ctx, pool)
+	t.Cleanup(func() { cleanupEventPriceFixture(pool) })
+
+	store, err := venue.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open the venue store: %v", err)
+	}
+	defer store.Close()
+
+	t.Run("both screening reads name the film, the room and the cinema", func(t *testing.T) {
+		early, err := store.GetEvent(ctx, fixtureEarly)
+		if err != nil {
+			t.Fatalf("GetEvent() = unexpected error %v", err)
+		}
+		if early.FilmTitle != "Admin Fixture" || early.RoomName != "Sala Admin" || early.CinemaName != "Cine Admin" {
+			t.Fatalf("names = %q / %q / %q, want the film, the room and the cinema that were stored",
+				early.FilmTitle, early.RoomName, early.CinemaName)
+		}
+		// The names are additions: every stored column is still answered beside them.
+		if early.ID != fixtureEarly || early.RoomID != fixtureRoom || early.FilmID != fixtureFilm ||
+			early.LayoutVersionID != fixtureLayout || !early.StartsAt.Equal(fixtureEarlyAt) ||
+			early.Status != "draft" {
+			t.Fatalf("event = %+v, want the stored screening and its names", early)
+		}
+
+		// The list entry is the single read's answer: the two reads share one projection,
+		// so a second query or a second scan would show up here as a difference.
+		events, err := store.ListEvents(ctx)
+		if err != nil {
+			t.Fatalf("ListEvents() = unexpected error %v", err)
+		}
+		var listed venue.Event
+		for _, event := range events {
+			if event.ID == fixtureEarly {
+				listed = event
+			}
+		}
+		if listed.ID != fixtureEarly {
+			t.Fatalf("the administrative list did not answer %s", fixtureEarly)
+		}
+		if listed.FilmTitle != early.FilmTitle || listed.RoomName != early.RoomName ||
+			listed.CinemaName != early.CinemaName || listed.RoomID != early.RoomID ||
+			listed.FilmID != early.FilmID || listed.PriceCents != early.PriceCents ||
+			!listed.StartsAt.Equal(early.StartsAt) {
+			t.Fatalf("the list entry %+v is not the single read %+v", listed, early)
+		}
+	})
+
+	t.Run("the film list answers the stored films in title order", func(t *testing.T) {
+		films, err := store.ListFilms(ctx)
+		if err != nil {
+			t.Fatalf("ListFilms() = unexpected error %v", err)
+		}
+		// The database is shared with the other gated suites, so the fixture's own films
+		// are what this test decides about; another suite's film is not its business.
+		order := make([]string, 0, 2)
+		stored := make(map[string]venue.Film, 2)
+		for _, film := range films {
+			if film.ID == fixtureFilm || film.ID == fixtureFilmAlt {
+				order = append(order, film.ID)
+				stored[film.ID] = film
+			}
+		}
+		if len(order) != 2 || order[0] != fixtureFilmAlt || order[1] != fixtureFilm {
+			t.Fatalf("the film list answered the fixture's films in the order %v, want [%s %s] by title",
+				order, fixtureFilmAlt, fixtureFilm)
+		}
+		if film := stored[fixtureFilm]; film.Title != "Admin Fixture" || film.RuntimeMinutes != 90 || film.Rating != "PG" {
+			t.Fatalf("film = %+v, want the stored title, runtime and rating", film)
+		}
+		if film := stored[fixtureFilmAlt]; film.RuntimeMinutes != 77 || film.Rating != "12" {
+			t.Fatalf("film = %+v, want the stored title, runtime and rating", film)
+		}
+	})
+
+	t.Run("the price write still answers the stored columns without a name", func(t *testing.T) {
+		stored, err := store.SetEventPrice(ctx, fixtureEarly, 1250)
+		if err != nil {
+			t.Fatalf("SetEventPrice() = unexpected error %v", err)
+		}
+		if stored.PriceCents != 1250 {
+			t.Fatalf("returned price = %d, want 1250", stored.PriceCents)
+		}
+		// RETURNING cannot join, so the write answers the row and the read names it. A
+		// name here would be a value nobody read.
+		if stored.FilmTitle != "" || stored.RoomName != "" || stored.CinemaName != "" {
+			t.Fatalf("names = %q / %q / %q, want the write to answer only the stored columns",
+				stored.FilmTitle, stored.RoomName, stored.CinemaName)
+		}
+	})
+}

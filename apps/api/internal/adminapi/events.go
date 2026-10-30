@@ -3,7 +3,7 @@
 // The price is the one field of a screening the administration may change after it is
 // scheduled; the date, room, film and status are not writable here. The read is part of
 // the same task because the screen that edits a price has to see the price the event
-// currently carries.
+// currently carries, and the screen that lists screenings has to know what each one is.
 //
 // The wire shape is shared by every event response, so the create, list, show and price
 // write cannot drift apart:
@@ -13,6 +13,12 @@
 //   - priceCents is the stored price in minor units;
 //   - priceDisplay is the same amount spelled by tickets.FormatMoney ("12.50"), the one
 //     money spelling the public catalogue and the ticket detail already use.
+//
+// The two administrative reads add three names on top of that shape — filmTitle,
+// roomName and cinemaName — because an identifier is not something a scheduling screen
+// can show. The names are a read-only enrichment: the store joins them in the same
+// statement as the columns, while the responses that follow a write answer the stored
+// columns only (RETURNING cannot join, and a name nobody read is not a name to answer).
 
 package adminapi
 
@@ -31,7 +37,8 @@ import (
 // every other administrative route: one mebibyte, refused before any work.
 const maxAdminBodyBytes = 1 << 20
 
-// listEvents answers every screening in start order, with the price it currently carries.
+// listEvents answers every screening in start order, with the price it currently carries
+// and the names of what it is scheduled against.
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := h.svc.ListEvents(r.Context())
 	if err != nil {
@@ -40,14 +47,14 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(events))
 	for _, event := range events {
-		items = append(items, eventJSON(event))
+		items = append(items, eventReadJSON(event))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": items})
 }
 
-// getEvent answers one screening. The identifier is validated before the service and
-// the store, so a value that cannot name an event is a rejected field rather than a
-// cast failure.
+// getEvent answers one screening, named the same way the list names it. The identifier is
+// validated before the service and the store, so a value that cannot name an event is a
+// rejected field rather than a cast failure.
 func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 	eventID := r.PathValue("eventId")
 	if err := venue.ValidateEventID(eventID); err != nil {
@@ -59,7 +66,7 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		writeEventError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, eventJSON(event))
+	writeJSON(w, http.StatusOK, eventReadJSON(event))
 }
 
 // setEventPrice changes only the price of one screening.
@@ -138,6 +145,18 @@ func eventJSON(event venue.Event) map[string]any {
 		"priceCents":      event.PriceCents,
 		"priceDisplay":    tickets.FormatMoney(event.PriceCents),
 	}
+}
+
+// eventReadJSON is the shape of the two administrative screening reads: the stored
+// columns eventJSON builds, plus the names of the film, the room and the cinema the store
+// joined in the same statement. It is composed from eventJSON so a read can never lose a
+// stored column the create or the price write still answers.
+func eventReadJSON(event venue.Event) map[string]any {
+	body := eventJSON(event)
+	body["filmTitle"] = event.FilmTitle
+	body["roomName"] = event.RoomName
+	body["cinemaName"] = event.CinemaName
+	return body
 }
 
 // writeEventError maps the screening reads and the price write to problem details. An

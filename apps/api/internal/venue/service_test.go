@@ -16,6 +16,7 @@ type fakeStore struct {
 	cinemas        []venue.Cinema
 	rooms          []venue.Room
 	events         []venue.Event
+	films          []venue.Film
 	seats          []venue.EventSeat
 	calls          []string
 	failWith       error
@@ -89,6 +90,11 @@ func (f *fakeStore) CreateEvent(_ context.Context, event venue.Event) error {
 func (f *fakeStore) ListEventSeats(_ context.Context, _ string) ([]venue.EventSeat, error) {
 	f.record("ListEventSeats")
 	return f.seats, f.failWith
+}
+
+func (f *fakeStore) ListFilms(_ context.Context) ([]venue.Film, error) {
+	f.record("ListFilms")
+	return f.films, f.failWith
 }
 
 func (f *fakeStore) ListEvents(_ context.Context) ([]venue.Event, error) {
@@ -414,5 +420,59 @@ func TestListEventsPropagatesReadFailure(t *testing.T) {
 	svc := venue.NewService(&fakeStore{failWith: errors.New("database unreachable")})
 	if _, err := svc.ListEvents(context.Background()); err == nil {
 		t.Fatal("ListEvents returned no error for a failed read")
+	}
+}
+
+// The administration schedules a screening against a film it picked from this list, so
+// the read is a pass-through of everything stored, in the store's own order: the service
+// has nothing to validate in a read that takes no argument.
+func TestListFilmsReturnsEveryStoredFilm(t *testing.T) {
+	store := &fakeStore{films: []venue.Film{
+		{ID: "film-1", Title: "Aardvark", RuntimeMinutes: 88, Rating: "PG"},
+		{ID: "film-2", Title: "Zulu", RuntimeMinutes: 121, Rating: "18"},
+	}}
+	svc := venue.NewService(store)
+	films, err := svc.ListFilms(context.Background())
+	if err != nil {
+		t.Fatalf("ListFilms returned error: %v", err)
+	}
+	if len(films) != 2 || films[0].Title != "Aardvark" || films[1].Title != "Zulu" {
+		t.Fatalf("films = %+v, want both stored films in the order the store answered", films)
+	}
+	if films[0].RuntimeMinutes != 88 || films[0].Rating != "PG" || films[0].ID != "film-1" {
+		t.Fatalf("film = %+v, want the stored columns unchanged", films[0])
+	}
+	if len(store.calls) != 1 || store.calls[0] != "ListFilms" {
+		t.Fatalf("store calls = %v, want exactly ListFilms", store.calls)
+	}
+}
+
+func TestListFilmsPropagatesReadFailure(t *testing.T) {
+	svc := venue.NewService(&fakeStore{failWith: errors.New("database unreachable")})
+	if _, err := svc.ListFilms(context.Background()); err == nil {
+		t.Fatal("ListFilms returned no error for a failed read")
+	}
+}
+
+// The names of what a screening is scheduled against travel with it through the
+// service, so the administrative read answers what the store projected instead of an
+// entry the service filled in.
+func TestListEventsAndGetEventKeepTheNamesTheStoreProjected(t *testing.T) {
+	event := venue.Event{ID: serviceEventID, FilmTitle: "The Quiet Cartographer", RoomName: "Sala 2", CinemaName: "Cine Central"}
+	store := &fakeStore{events: []venue.Event{event}}
+	svc := venue.NewService(store)
+	events, err := svc.ListEvents(context.Background())
+	if err != nil {
+		t.Fatalf("ListEvents returned error: %v", err)
+	}
+	if len(events) != 1 || events[0].FilmTitle != "The Quiet Cartographer" || events[0].RoomName != "Sala 2" || events[0].CinemaName != "Cine Central" {
+		t.Fatalf("events = %+v, want the store's names kept", events)
+	}
+	single, err := svc.GetEvent(context.Background(), serviceEventID)
+	if err != nil {
+		t.Fatalf("GetEvent returned error: %v", err)
+	}
+	if single.FilmTitle != "The Quiet Cartographer" || single.RoomName != "Sala 2" || single.CinemaName != "Cine Central" {
+		t.Fatalf("event = %+v, want the store's names kept", single)
 	}
 }

@@ -31,6 +31,42 @@ func eventFixture() venue.Event {
 	}
 }
 
+// namedEventFixture is a screening as the administrative read answers it: the stored
+// columns plus the names of the film, the room and the cinema the store joined.
+func namedEventFixture() venue.Event {
+	event := eventFixture()
+	event.PriceCents = 1250
+	event.FilmTitle = "The Quiet Cartographer"
+	event.RoomName = "Sala 2"
+	event.CinemaName = "Cine Central"
+	return event
+}
+
+// storedEventKeys is the shape a screening answered before the administrative reads
+// named what it is. It is what the create and the price write still answer.
+var storedEventKeys = []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"}
+
+// eventReadKeys is the administrative read's shape: the stored keys plus the three
+// names, and nothing else.
+var eventReadKeys = []string{
+	"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay",
+	"filmTitle", "roomName", "cinemaName",
+}
+
+// requireKeys proves an answer carries exactly the given keys: an administrative screen
+// pins what it reads, so a key that appears or disappears is a change, not a detail.
+func requireKeys(t *testing.T, what string, body map[string]any, keys []string) {
+	t.Helper()
+	if len(body) != len(keys) {
+		t.Fatalf("%s = %v, want exactly the keys %v", what, body, keys)
+	}
+	for _, key := range keys {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("%s is missing key %q: %v", what, key, body)
+		}
+	}
+}
+
 func TestListEventsCarriesPriceAndDisplay(t *testing.T) {
 	early := eventFixture()
 	early.StartsAt = testStartsAt.Add(-24 * time.Hour)
@@ -51,16 +87,72 @@ func TestListEventsCarriesPriceAndDisplay(t *testing.T) {
 		t.Fatalf("events = %v, want both screenings", body["events"])
 	}
 	first, _ := events[0].(map[string]any)
-	for _, key := range []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"} {
-		if _, ok := first[key]; !ok {
-			t.Fatalf("event is missing key %q: %v", key, first)
-		}
-	}
+	requireKeys(t, "listed event", first, eventReadKeys)
 	if first["priceCents"] != float64(1250) || first["priceDisplay"] != "12.50" {
 		t.Fatalf("price = %v / %v, want 1250 and 12.50", first["priceCents"], first["priceDisplay"])
 	}
 	if len(svc.calls) != 1 || svc.calls[0] != "ListEvents" {
 		t.Fatalf("calls = %v, want exactly ListEvents", svc.calls)
+	}
+}
+
+// The list a scheduling screen renders has to name what each row is, or the row is an
+// identifier nobody can read.
+func TestListEventsNamesTheFilmTheRoomAndTheCinema(t *testing.T) {
+	svc := &fakeService{events: []venue.Event{namedEventFixture()}}
+	w := do(t, svc, http.MethodGet, "/events", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	events, ok := decodeBody(t, w)["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("events = %v, want the one screening", events)
+	}
+	entry, _ := events[0].(map[string]any)
+	requireKeys(t, "listed event", entry, eventReadKeys)
+	if entry["filmTitle"] != "The Quiet Cartographer" || entry["roomName"] != "Sala 2" || entry["cinemaName"] != "Cine Central" {
+		t.Fatalf("names = %v / %v / %v, want the film, the room and the cinema",
+			entry["filmTitle"], entry["roomName"], entry["cinemaName"])
+	}
+	// The identifiers the screen addresses the row with are still answered beside them.
+	if entry["id"] != testEventID || entry["filmId"] != "film-1" || entry["roomId"] != "room-1" {
+		t.Fatalf("identifiers = %v, want id, filmId and roomId kept", entry)
+	}
+}
+
+func TestGetEventNamesTheFilmTheRoomAndTheCinema(t *testing.T) {
+	svc := &fakeService{event: namedEventFixture()}
+	w := do(t, svc, http.MethodGet, "/events/"+testEventID, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	body := decodeBody(t, w)
+	requireKeys(t, "event", body, eventReadKeys)
+	if body["filmTitle"] != "The Quiet Cartographer" || body["roomName"] != "Sala 2" || body["cinemaName"] != "Cine Central" {
+		t.Fatalf("names = %v / %v / %v, want the film, the room and the cinema",
+			body["filmTitle"], body["roomName"], body["cinemaName"])
+	}
+	if body["priceCents"] != float64(1250) || body["priceDisplay"] != "12.50" {
+		t.Fatalf("price = %v / %v, want 1250 and 12.50", body["priceCents"], body["priceDisplay"])
+	}
+	if svc.lastEventID != testEventID {
+		t.Fatalf("event id = %q, want %q", svc.lastEventID, testEventID)
+	}
+}
+
+// The two administrative writes answer the stored columns only. Naming a film in a
+// response that never read its title would be a shape claiming a join it did not make,
+// so the enrichment belongs to the reads and the write keeps the shape it had.
+func TestEventWriteResponsesKeepTheStoredColumnsOnly(t *testing.T) {
+	created := decodeBody(t, do(t, &fakeService{}, http.MethodPost, "/events",
+		`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z"}`))
+	requireKeys(t, "created event", created, storedEventKeys)
+
+	// The fake holds the names, so the price write can only lose them by choosing to.
+	updated := decodeBody(t, do(t, &fakeService{event: namedEventFixture()}, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1250}`))
+	requireKeys(t, "updated event", updated, storedEventKeys)
+	if updated["priceCents"] != float64(1250) || updated["priceDisplay"] != "12.50" {
+		t.Fatalf("price = %v / %v, want 1250 and 12.50", updated["priceCents"], updated["priceDisplay"])
 	}
 }
 
@@ -84,11 +176,7 @@ func TestGetEventCarriesPriceAndDisplay(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
 	}
 	body := decodeBody(t, w)
-	for _, key := range []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"} {
-		if _, ok := body[key]; !ok {
-			t.Fatalf("event is missing key %q: %v", key, body)
-		}
-	}
+	requireKeys(t, "event", body, eventReadKeys)
 	if body["priceCents"] != float64(1250) || body["priceDisplay"] != "12.50" {
 		t.Fatalf("price = %v / %v, want 1250 and 12.50", body["priceCents"], body["priceDisplay"])
 	}
@@ -285,11 +373,7 @@ func TestCreateEventResponseKeepsItsShapeAndAddsPrice(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (%s)", w.Code, w.Body)
 	}
 	body := decodeBody(t, w)
-	for _, key := range []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"} {
-		if _, ok := body[key]; !ok {
-			t.Fatalf("created event is missing key %q: %v", key, body)
-		}
-	}
+	requireKeys(t, "created event", body, storedEventKeys)
 	if body["priceCents"] != float64(0) || body["priceDisplay"] != "0.00" {
 		t.Fatalf("price = %v / %v, want the default zero", body["priceCents"], body["priceDisplay"])
 	}

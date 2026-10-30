@@ -20,6 +20,7 @@ type Store interface {
 	CloneLayout(ctx context.Context, sourceID, targetID string) (Layout, error)
 	GetLayout(ctx context.Context, layoutID string) (Layout, error)
 	CreateFilm(ctx context.Context, film Film) error
+	ListFilms(ctx context.Context) ([]Film, error)
 	CreateEvent(ctx context.Context, event Event) error
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
 	ListEvents(ctx context.Context) ([]Event, error)
@@ -173,6 +174,13 @@ func (s *Service) CreateFilm(ctx context.Context, title string, runtimeMinutes i
 		return Film{}, err
 	}
 	return film, nil
+}
+
+// ListFilms returns every catalog entry the administration may schedule a screening
+// against, in the store's own order (title, then identifier). The read takes no argument
+// and has nothing to validate, so it is the store's answer, unabridged.
+func (s *Service) ListFilms(ctx context.Context) ([]Film, error) {
+	return s.store.ListFilms(ctx)
 }
 
 // CreateEvent schedules a screening; PostgreSQL materializes exactly one

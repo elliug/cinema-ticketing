@@ -287,6 +287,27 @@ func (s *PostgresStore) CreateFilm(ctx context.Context, film Film) error {
 	return classifyError(err)
 }
 
+// ListFilms reads every catalog entry, ordered by title with the identifier as the
+// tiebreaker so two films with one title cannot swap places between two reads, the same
+// rule the cinema, room and screening lists follow.
+func (s *PostgresStore) ListFilms(ctx context.Context) ([]Film, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, title, runtime_minutes, rating FROM cinema.films ORDER BY title, id`)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	defer rows.Close()
+	films := []Film{}
+	for rows.Next() {
+		var film Film
+		if err := rows.Scan(&film.ID, &film.Title, &film.RuntimeMinutes, &film.Rating); err != nil {
+			return nil, classifyError(err)
+		}
+		films = append(films, film)
+	}
+	return films, classifyError(rows.Err())
+}
+
 // CreateEvent inserts the event; the database materializes its seats in the
 // same transaction, so a failure leaves no event and no partial seats.
 func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
@@ -297,15 +318,47 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
 	return classifyError(err)
 }
 
-// eventColumns is the read shape of a screening. Every screening read selects the same
-// columns so the list, the show and the price write's RETURNING cannot drift apart.
+// eventColumns is the stored-column shape of a screening. The price write selects it so
+// its RETURNING and the reads below cannot drift apart; RETURNING cannot join, so the
+// administrative reads project the names separately in eventReadColumns.
 const eventColumns = `id, room_id, film_id, layout_version_id, starts_at, status, price_cents`
 
+// eventReadColumns is the administrative read's projection: the stored columns of a
+// screening plus the names of what it is scheduled against. The names come from the same
+// statement, so a list of screenings is one query and never an n+1 of films, rooms and
+// cinemas.
+const eventReadColumns = `e.id, e.room_id, e.film_id, e.layout_version_id, e.starts_at, e.status,
+       e.price_cents, f.title, r.name, c.name`
+
+// eventReadFrom is the FROM clause and the joins every administrative screening read
+// walks. All three joins are inner ones because cinema.events references a film and a room
+// and a room belongs to exactly one cinema, so a stored screening always has the three
+// names.
+const eventReadFrom = `
+FROM cinema.events e
+JOIN cinema.films f ON f.id = e.film_id
+JOIN cinema.rooms r ON r.id = e.room_id
+JOIN cinema.cinemas c ON c.id = r.cinema_id`
+
+// eventTargets is the scan destinations of eventColumns, shared by the price write.
+func eventTargets(event *Event) []any {
+	return []any{&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
+		&event.StartsAt, &event.Status, &event.PriceCents}
+}
+
+// eventReadTargets is eventTargets plus the three names eventReadColumns projects, in the
+// order that projection selects them.
+func eventReadTargets(event *Event) []any {
+	return append(eventTargets(event), &event.FilmTitle, &event.RoomName, &event.CinemaName)
+}
+
 // ListEvents reads every screening in start order, with the identifier as the
-// tiebreaker so two screenings at the same minute cannot swap places between two reads.
+// tiebreaker so two screenings at the same minute cannot swap places between two reads,
+// and names the film, the room and the cinema each one is against.
 func (s *PostgresStore) ListEvents(ctx context.Context) ([]Event, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+eventColumns+` FROM cinema.events ORDER BY starts_at, id`)
+		`SELECT `+eventReadColumns+eventReadFrom+`
+ORDER BY e.starts_at, e.id`)
 	if err != nil {
 		return nil, classifyError(err)
 	}
@@ -313,8 +366,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context) ([]Event, error) {
 	events := []Event{}
 	for rows.Next() {
 		var event Event
-		if err := rows.Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
-			&event.StartsAt, &event.Status, &event.PriceCents); err != nil {
+		if err := rows.Scan(eventReadTargets(&event)...); err != nil {
 			return nil, classifyError(err)
 		}
 		events = append(events, event)
@@ -322,13 +374,13 @@ func (s *PostgresStore) ListEvents(ctx context.Context) ([]Event, error) {
 	return events, classifyError(rows.Err())
 }
 
-// GetEvent reads one screening with its stored price. A missing row is not found.
+// GetEvent reads one screening with its stored price and the names of what it is against.
+// A missing row is not found.
 func (s *PostgresStore) GetEvent(ctx context.Context, eventID string) (Event, error) {
 	var event Event
 	err := s.pool.QueryRow(ctx,
-		`SELECT `+eventColumns+` FROM cinema.events WHERE id = $1`, eventID).
-		Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
-			&event.StartsAt, &event.Status, &event.PriceCents)
+		`SELECT `+eventReadColumns+eventReadFrom+`
+WHERE e.id = $1`, eventID).Scan(eventReadTargets(&event)...)
 	if err != nil {
 		return Event{}, classifyError(err)
 	}
@@ -344,8 +396,7 @@ func (s *PostgresStore) SetEventPrice(ctx context.Context, eventID string, price
 	err := s.pool.QueryRow(ctx,
 		`UPDATE cinema.events SET price_cents = $2 WHERE id = $1 RETURNING `+eventColumns,
 		eventID, priceCents).
-		Scan(&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
-			&event.StartsAt, &event.Status, &event.PriceCents)
+		Scan(eventTargets(&event)...)
 	if err != nil {
 		return Event{}, classifyError(err)
 	}

@@ -91,6 +91,15 @@ type Event struct {
 	// PriceCents is the price of one seat, in minor units, from
 	// cinema.events.price_cents. Zero is a legal free screening.
 	PriceCents int64 `json:"priceCents"`
+
+	// FilmTitle, RoomName and CinemaName are the names of what the screening is
+	// stored against. The administrative reads project them in the same statement as
+	// the columns above, so a list of screenings is one query and never an n+1 of
+	// films, rooms and cinemas. A write answers the stored columns only and leaves
+	// these empty: a name nobody read is not a name to answer.
+	FilmTitle  string `json:"filmTitle,omitempty"`
+	RoomName   string `json:"roomName,omitempty"`
+	CinemaName string `json:"cinemaName,omitempty"`
 }
 
 // EventSeat is the sale state of one layout seat for one event.
