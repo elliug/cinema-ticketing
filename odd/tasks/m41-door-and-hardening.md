@@ -204,3 +204,30 @@ still proves a write, not only two refusals.
 One coverage trade, recorded: the draft create is no longer driven by the browser gate, because
 the same scenario would need a second screening. It stays pinned by unit tests, by the API's
 tests, and by `verify-m1`, which creates a draft over HTTP against an M1-only schema.
+
+### L8 — T4 delivered, and the slice that got away from me
+
+`POST /reservations/{id}/cancel` exists and works: a guarded transition, seats released, the
+read's own answer shape, paid refused `409 already_paid`, twice not an error, lapsed holds
+answered as expired, unknown and malformed ids refused. `ARCHITECTURE.md`'s row stopped claiming
+a route nobody could call.
+
+**It came to 1447 authored lines**, the largest slice of the milestone and roughly three and a
+half times the boundary this document set. Nothing here is padding — five new files, the
+PostgreSQL-gated tests among them, and the commentary this codebase asks for — but a number that
+size is a review problem whatever its cause. The mitigation is the PR body: it is written in
+layers (store transition → service → route and wiring → docs) so a reviewer can stop between
+them. The honest conclusion for the next slices: **splitting the service from the route into two
+sequential PRs is the right shape**, and this one is the counter-example that proves it.
+
+Verified by the parent, not taken on the writer's word: the five PostgreSQL-gated tests had not
+been run at all (no database URL), so I created a throwaway `cinema_m3…` database, brought it to
+`0006` with the project's own runner, and ran them — the release and re-claim, the paid refusal,
+the lapsed hold, the unknown id, and **the two racing cancels three times**. All green, database
+dropped afterwards. That is the second time in this milestone that a writer's unrun gated tests
+were the only untested part of a slice, and the second time they passed once actually run.
+
+**Found, deliberately not fixed:** a cancel can now take a live hold out from under an in-flight
+capture, leaving the capture to fail with the provider having already taken the money. Expiry
+carries the same window today; this change neither widens nor closes it. Recorded as T13 rather
+than absorbed into a slice about cancelling.
