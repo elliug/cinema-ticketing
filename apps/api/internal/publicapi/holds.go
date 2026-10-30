@@ -1,14 +1,15 @@
 // Package publicapi exposes the customer facing HTTP surface: the M2 hold
 // creation endpoint, the event seat availability read, the M3 checkout route that
-// pays a held reservation, and the M3 ticket detail route that the confirmation
-// page and the PDF both read.
+// pays a held reservation, the M3 ticket detail route that the confirmation page
+// and the PDF both read, and the M3 ticket verification route a door scanner calls
+// with a presented signed code.
 //
 // Routes here are public application routes. They are mounted outside the
-// administrative guard, because a customer selecting seats, paying for them and
-// then showing the ticket has no administrative token; see
-// httpserver.Server.WithPublic. The ticket route is public for a further reason
-// the tickets package documents: in v1 the ticket identifier is the capability,
-// because guest checkout has no account that could prove who owns a ticket.
+// administrative guard, because a customer selecting seats, paying for them, showing
+// the ticket and scanning that ticket at the door has no administrative token; see
+// httpserver.Server.WithPublic. The ticket routes are public for a further reason the
+// tickets package documents: in v1 the ticket identifier is the capability, because
+// guest checkout has no account that could prove who owns a ticket.
 package publicapi
 
 import (
@@ -52,6 +53,10 @@ func (h *Handler) Mux() *http.ServeMux {
 	}
 	if h.tickets != nil {
 		mux.HandleFunc(ticketRoute, h.getTicket)
+		// The verification route is mounted with the ticket route: it checks the code
+		// that route serves, so mounting one without the other would advertise half a
+		// capability.
+		mux.HandleFunc(verifyTicketRoute, h.verifyTicket)
 	}
 	return mux
 }

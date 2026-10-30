@@ -23,6 +23,10 @@ import (
 
 const adminTestURL = "postgres://cinema:s3cr3t-pw@127.0.0.1:5432/cinema?sslmode=disable"
 
+// testTicketQRKey is the throwaway signing key the mount tests configure: long
+// enough for the documented minimum, and never the development default.
+const testTicketQRKey = "mount-test-ticket-qr-key-0123456789abcdef"
+
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(discard{}, nil)) }
 
 type discard struct{}
@@ -185,6 +189,8 @@ func TestMountReservationMountsThePublicSurface(t *testing.T) {
 		HoldTTL:        30 * time.Second,
 		ExpiryInterval: 5 * time.Second,
 		ExpiryBatch:    25,
+		// The ticket surface this process can serve needs its signing key.
+		TicketQRKey: testTicketQRKey,
 	}
 	srv := testServer()
 	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
@@ -282,6 +288,7 @@ func TestMountReservationMountsTheCheckoutRoute(t *testing.T) {
 		HoldTTL:        30 * time.Second,
 		ExpiryInterval: 5 * time.Second,
 		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
 	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
@@ -313,6 +320,8 @@ func TestMountReservationSkipsTheCheckoutRouteWithoutItsSchema(t *testing.T) {
 		HoldTTL:        30 * time.Second,
 		ExpiryInterval: 5 * time.Second,
 		ExpiryBatch:    25,
+		// The ticket schema is present here, so the ticket routes still need the key.
+		TicketQRKey: testTicketQRKey,
 	}
 	srv := testServer()
 	var logged bytes.Buffer
@@ -394,6 +403,7 @@ func TestMountReservationMountsTheTicketRoute(t *testing.T) {
 		HoldTTL:        30 * time.Second,
 		ExpiryInterval: 5 * time.Second,
 		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
 	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
@@ -556,5 +566,94 @@ func TestMountReservationFailsWhenTheProbeCannotAnswer(t *testing.T) {
 	}
 	if reservationRouted(srv) {
 		t.Fatal("the public surface was mounted although the schema state is unknown")
+	}
+}
+
+// ticketVerificationRouted reports whether the ticket verification route is mounted,
+// i.e. whether a scan reaches the handler instead of a 404. The probe sends an empty
+// body, which the transport rejects before any read, so it needs no database.
+func ticketVerificationRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/tickets/verify", strings.NewReader("")))
+	return w.Code != http.StatusNotFound
+}
+
+// T5 (S4): the verification endpoint the door scanner calls is public, like the ticket
+// route beside it — a scanner has no administrative token — and it is mounted with
+// the ticket service, because the code it checks is the code that service signs.
+func TestMountReservationMountsTheTicketVerificationRoute(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if !ticketVerificationRouted(srv) {
+		t.Fatal("the ticket verification route was not mounted although its schema is present")
+	}
+	if !ticketRouted(srv) || !paymentRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("mounting the verification route dropped a route next to it")
+	}
+	if adminRouted(srv) {
+		t.Fatal("the verification route is behind the administrative guard, but a door scanner has no admin token")
+	}
+}
+
+// T5 (S4): a process that can serve tickets cannot sign them without a usable key, so
+// it refuses to start instead of mounting a ticket route that would print codes
+// nobody can trust — or, worse, codes signed with a key that ships in a repository.
+// The refusal names the variable and never echoes a key.
+func TestMountReservationRequiresAUsableTicketQRKey(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"no key at all", ""},
+		{"a key below the documented minimum", "short-ticket-qr-key"},
+		{"a blank key", strings.Repeat(" ", 40)},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := config.Config{
+				DatabaseURL:    adminTestURL,
+				RedisURL:       "redis://127.0.0.1:6379/0",
+				HoldTTL:        30 * time.Second,
+				ExpiryInterval: 5 * time.Second,
+				ExpiryBatch:    25,
+				TicketQRKey:    testCase.key,
+			}
+			srv := testServer()
+			proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+			if err == nil {
+				proc.Close()
+				t.Fatal("mountReservation mounted a ticket surface without a usable signing key")
+			}
+			if proc != nil {
+				proc.Close()
+				t.Fatal("a refused configuration returned a process")
+			}
+			if !strings.Contains(err.Error(), "API_TICKET_QR_KEY") && !strings.Contains(err.Error(), "signing key") {
+				t.Fatalf("error = %q, want it to name the signing key setting", err)
+			}
+			if testCase.key != "" && strings.Contains(err.Error(), testCase.key) {
+				t.Fatalf("error leaked the key: %v", err)
+			}
+			if ticketRouted(srv) || ticketVerificationRouted(srv) {
+				t.Fatal("a refused configuration still mounted a ticket route")
+			}
+		})
 	}
 }

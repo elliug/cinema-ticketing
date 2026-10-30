@@ -29,9 +29,11 @@ import (
 	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
-// fakeTicketService answers the projection the test configures and records what the
-// transport forwarded.
-type fakeTicketService struct {
+// fakeTicketReader is the projection reader the real ticket service is wrapped
+// around, so the route tests exercise the wiring a deployment builds: the store, the
+// signer and the service that attaches the code. It answers one configured detail and
+// records what the transport forwarded.
+type fakeTicketReader struct {
 	detail tickets.TicketDetail
 	err    error
 
@@ -39,10 +41,29 @@ type fakeTicketService struct {
 	ticketID string
 }
 
-func (f *fakeTicketService) Detail(_ context.Context, ticketID string) (tickets.TicketDetail, error) {
+func (f *fakeTicketReader) Detail(_ context.Context, ticketID string) (tickets.TicketDetail, error) {
 	f.calls++
 	f.ticketID = ticketID
-	return f.detail, f.err
+	if f.err != nil {
+		return tickets.TicketDetail{}, f.err
+	}
+	return f.detail, nil
+}
+
+// ticketRouteQRKey is the throwaway signing key the route tests mount the service
+// with. It is longer than the documented minimum and distinct from the production
+// development default on purpose.
+const ticketRouteQRKey = "ticket-route-test-qr-key-0123456789ab"
+
+// signedTicketService builds the service a deployment mounts: the projection reader
+// wrapped in a signer, so every served detail carries its own signed code.
+func signedTicketService(t *testing.T, reader *fakeTicketReader) publicapi.TicketService {
+	t.Helper()
+	signer, err := tickets.NewSigner(ticketRouteQRKey)
+	if err != nil {
+		t.Fatalf("NewSigner() = unexpected error %v", err)
+	}
+	return tickets.NewService(reader, signer)
 }
 
 // mountedTicketServer wires the public subtree exactly as cmd/api does: the ticket
@@ -133,6 +154,8 @@ type ticketBody struct {
 	// two-seat order look like a very expensive single seat.
 	OrderAmountCents   int64  `json:"orderAmountCents"`
 	OrderAmountDisplay string `json:"orderAmountDisplay"`
+	// QRToken is the opaque signed code of this ticket, the same one the PDF prints.
+	QRToken string `json:"qrToken"`
 }
 
 // equalKeys reports whether two key sets are identical.
@@ -208,16 +231,16 @@ func objectKeys(t *testing.T, raw []byte) []string {
 // both time forms are all served to the confirmation page, which renders exactly
 // what the PDF will render.
 func TestTicketRouteServesTheDetailProjection(t *testing.T) {
-	svc := &fakeTicketService{detail: fixtureTicket()}
-	ts := mountedTicketServer(t, svc)
+	reader := &fakeTicketReader{detail: fixtureTicket()}
+	ts := mountedTicketServer(t, signedTicketService(t, reader))
 
 	response := getTicket(t, ts, fixtureTicket().TicketID)
 	if response.StatusCode != http.StatusOK {
 		body := readBody(t, response)
 		t.Fatalf("GET ticket status = %d, want 200 (body %s)", response.StatusCode, body)
 	}
-	if svc.calls != 1 || svc.ticketID != fixtureTicket().TicketID {
-		t.Fatalf("forwarded ticket %q in %d calls, want %q once", svc.ticketID, svc.calls, fixtureTicket().TicketID)
+	if reader.calls != 1 || reader.ticketID != fixtureTicket().TicketID {
+		t.Fatalf("forwarded ticket %q in %d calls, want %q once", reader.ticketID, reader.calls, fixtureTicket().TicketID)
 	}
 
 	raw := readBody(t, response)
@@ -262,11 +285,34 @@ func TestTicketRouteServesTheDetailProjection(t *testing.T) {
 		t.Fatalf("seat = %+v, want %+v", body.Seats[0], want)
 	}
 
+	// The code the page and the PDF print is the served detail's own: opaque, and it
+	// verifies to this ticket, its event and its seat.
+	if body.QRToken == "" {
+		t.Fatal("the served detail carries no qrToken")
+	}
+	if strings.Contains(body.QRToken, body.TicketID) || strings.Contains(body.QRToken, body.Event.ID) {
+		t.Fatalf("the qrToken carries an identifier in the clear: %q", body.QRToken)
+	}
+	signer, err := tickets.NewSigner(ticketRouteQRKey)
+	if err != nil {
+		t.Fatalf("NewSigner() = unexpected error %v", err)
+	}
+	claims, err := signer.Verify(body.QRToken)
+	if err != nil {
+		t.Fatalf("Verify(served qrToken) = unexpected error %v", err)
+	}
+	if claims.TicketID != body.TicketID || claims.EventID != body.Event.ID {
+		t.Fatalf("claims = %+v, want ticket %q event %q", claims, body.TicketID, body.Event.ID)
+	}
+	if len(claims.SeatIDs) != 1 || claims.SeatIDs[0] != body.Seats[0].EventSeatID {
+		t.Fatalf("claim seats = %v, want the served seat %d", claims.SeatIDs, body.Seats[0].EventSeatID)
+	}
+
 	// The key names are part of the contract, so they are pinned as a set: an
 	// added, renamed or dropped key is a change the web page and the PDF would
 	// notice.
 	if got := objectKeys(t, raw); !equalKeys(got, []string{
-		"event", "issuedAt", "orderAmountCents", "orderAmountDisplay", "reservationId",
+		"event", "issuedAt", "orderAmountCents", "orderAmountDisplay", "qrToken", "reservationId",
 		"seats", "status", "ticketId", "valid",
 	}) {
 		t.Fatalf("ticket keys = %v, want the documented ticket fields", got)
@@ -300,7 +346,7 @@ func TestTicketRouteRendersLocalTimeFromTheVenueTimezone(t *testing.T) {
 	for _, testCase := range cases {
 		detail := fixtureTicket()
 		detail.Event.Timezone = testCase.timezone
-		response := getTicket(t, mountedTicketServer(t, &fakeTicketService{detail: detail}), detail.TicketID)
+		response := getTicket(t, mountedTicketServer(t, signedTicketService(t, &fakeTicketReader{detail: detail})), detail.TicketID)
 		if response.StatusCode != http.StatusOK {
 			body := readBody(t, response)
 			t.Fatalf("GET ticket in %s status = %d, want 200 (body %s)", testCase.timezone, response.StatusCode, body)
@@ -358,7 +404,7 @@ func TestTicketRouteAnswersAWithdrawnTicketAndACancelledScreening(t *testing.T) 
 		t.Run(testCase.name, func(t *testing.T) {
 			detail := fixtureTicket()
 			testCase.mutate(&detail)
-			response := getTicket(t, mountedTicketServer(t, &fakeTicketService{detail: detail}), detail.TicketID)
+			response := getTicket(t, mountedTicketServer(t, signedTicketService(t, &fakeTicketReader{detail: detail})), detail.TicketID)
 			if response.StatusCode != http.StatusOK {
 				body := readBody(t, response)
 				t.Fatalf("status = %d, want 200 (body %s)", response.StatusCode, body)
@@ -390,8 +436,8 @@ func TestTicketRouteAnswersAWithdrawnTicketAndACancelledScreening(t *testing.T) 
 // and an identifier that never existed answer identically.
 func TestTicketRouteAnswersAnUnknownTicketWith404(t *testing.T) {
 	// The error is wrapped, so the mapping is errors.Is and not string matching.
-	svc := &fakeTicketService{err: fmt.Errorf("%w: %s", tickets.ErrNotFound, "00000000-0000-0000-0000-00000000ffff")}
-	response := getTicket(t, mountedTicketServer(t, svc), "00000000-0000-0000-0000-00000000ffff")
+	reader := &fakeTicketReader{err: fmt.Errorf("%w: %s", tickets.ErrNotFound, "00000000-0000-0000-0000-00000000ffff")}
+	response := getTicket(t, mountedTicketServer(t, signedTicketService(t, reader)), "00000000-0000-0000-0000-00000000ffff")
 	if response.StatusCode != http.StatusNotFound {
 		body := readBody(t, response)
 		t.Fatalf("status = %d, want 404 (body %s)", response.StatusCode, body)
@@ -417,17 +463,17 @@ func TestTicketRouteAnswersAServiceFailureWith503(t *testing.T) {
 	unresolvable.Event.Timezone = "Mars/Olympus"
 
 	cases := []struct {
-		name string
-		svc  *fakeTicketService
+		name   string
+		reader *fakeTicketReader
 	}{
-		{"a storage failure", &fakeTicketService{err: fmt.Errorf("%w: conn closed", tickets.ErrUnavailable)}},
-		{"an unclassified failure", &fakeTicketService{err: errors.New("unexpected")}},
-		{"a venue timezone that cannot be resolved", &fakeTicketService{detail: unresolvable}},
+		{"a storage failure", &fakeTicketReader{err: fmt.Errorf("%w: conn closed", tickets.ErrUnavailable)}},
+		{"an unclassified failure", &fakeTicketReader{err: errors.New("unexpected")}},
+		{"a venue timezone that cannot be resolved", &fakeTicketReader{detail: unresolvable}},
 	}
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			response := getTicket(t, mountedTicketServer(t, testCase.svc), fixtureTicket().TicketID)
+			response := getTicket(t, mountedTicketServer(t, signedTicketService(t, testCase.reader)), fixtureTicket().TicketID)
 			if response.StatusCode != http.StatusServiceUnavailable {
 				body := readBody(t, response)
 				t.Fatalf("status = %d, want 503 (body %s)", response.StatusCode, body)

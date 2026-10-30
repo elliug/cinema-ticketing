@@ -355,7 +355,25 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 
 	var ticketDetails publicapi.TicketService
 	if ticketPresent {
-		ticketDetails = ticketStore
+		// The ticket surface signs the code the web page and the PDF both print, so it
+		// cannot be mounted without a usable key: a ticket route that could not sign
+		// would either refuse every ticket or (worse) print codes nobody can trust.
+		// config.LoadFrom validates the key for a serving process; this guards a
+		// programmatically built Config, the same way the hold window is guarded above.
+		signer, signerErr := tickets.NewSigner(cfg.TicketQRKey)
+		if signerErr != nil {
+			ticketStore.Close()
+			if checkoutStore != nil {
+				checkoutStore.Close()
+			}
+			_ = client.Close()
+			store.Close()
+			return nil, fmt.Errorf("configure the ticket QR signing key (API_TICKET_QR_KEY): %w", signerErr)
+		}
+		// The service wraps the store, so the signed code belongs to the served detail:
+		// the confirmation page (T7) and the PDF (T6) read it from the projection instead
+		// of each minting a code of their own.
+		ticketDetails = tickets.NewService(ticketStore, signer)
 	} else {
 		ticketStore.Close()
 		ticketStore = nil
@@ -366,6 +384,12 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
 		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent)
+	if ticketPresent {
+		// One line that the ticket codes are signed, without the key: the key is a secret
+		// and the fact that it is configured is what an operator needs to know.
+		logger.Info("ticket QR codes are signed; verification route mounted",
+			"route", "/api/v1/tickets/verify", "key_bytes", len(cfg.TicketQRKey))
+	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
 		redis: client, sweeper: sweeper}, nil
 }
