@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
+	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/reservation"
 )
 
@@ -183,7 +186,7 @@ func TestMountReservationMountsThePublicSurface(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbe(cfg, srv, discardLogger(), presentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -217,7 +220,7 @@ func TestMountReservationRejectsUnusableConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := testServer()
-			proc, err := mountReservationWithProbe(tc.cfg, srv, discardLogger(), presentSchema)
+			proc, err := mountReservationWithProbes(tc.cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
 			if err == nil {
 				proc.Close()
 				t.Fatal("mountReservation succeeded, want a refusal")
@@ -238,12 +241,145 @@ func TestMountReservationRejectsUnusableConfiguration(t *testing.T) {
 	}
 }
 
-// presentSchema and absentSchema stand in for the database check, so the mount
-// decision is testable without a database.
+// presentSchema, absentSchema and failingSchema stand in for the reservation
+// schema check, so the mount decision is testable without a database.
 func presentSchema(context.Context, *reservation.PostgresStore) (bool, error) { return true, nil }
 func absentSchema(context.Context, *reservation.PostgresStore) (bool, error)  { return false, nil }
 func failingSchema(context.Context, *reservation.PostgresStore) (bool, error) {
 	return false, errors.New("database unreachable")
+}
+
+// The checkout schema probe is injected the same way: the payment route is only
+// mounted when the database carries the M3 objects.
+func checkoutPresentSchema(context.Context, *checkout.PostgresStore) (bool, error) {
+	return true, nil
+}
+func checkoutAbsentSchema(context.Context, *checkout.PostgresStore) (bool, error) {
+	return false, nil
+}
+func checkoutFailingSchema(context.Context, *checkout.PostgresStore) (bool, error) {
+	return false, errors.New("database unreachable")
+}
+
+// paymentRouted reports whether the checkout route is mounted, i.e. whether a
+// payment request reaches the handler instead of a 404. The probe sends no
+// Idempotency-Key, which the service rejects before any database work, so it needs
+// no database.
+func paymentRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/api/v1/reservations/00000000-0000-0000-0000-00000000c0f1/payment", nil))
+	return w.Code != http.StatusNotFound
+}
+
+// T3 (S7): the checkout route is part of the customer surface, so it is mounted at
+// /api/v1 next to the hold routes and outside the administrative guard.
+func TestMountReservationMountsTheCheckoutRoute(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+	if proc.checkoutStore == nil {
+		t.Fatal("mountReservation built no checkout store next to the reservation store")
+	}
+	if !paymentRouted(srv) {
+		t.Fatal("the checkout route was not mounted although the checkout schema is present")
+	}
+	if adminRouted(srv) {
+		t.Fatal("mounting the checkout route exposed the administrative subtree")
+	}
+}
+
+// T3 (S7): the checkout route stays closed against a database without the checkout
+// schema — the reservation surface keeps working, one informative line replaces an
+// error per request, and no payment route is advertised.
+func TestMountReservationSkipsTheCheckoutRouteWithoutItsSchema(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutAbsentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+	if proc.checkoutStore != nil {
+		t.Fatal("mountReservation kept a checkout store without the checkout schema")
+	}
+	if paymentRouted(srv) {
+		t.Fatal("the checkout route was mounted without the checkout schema")
+	}
+	if !reservationRouted(srv) {
+		t.Fatal("the reservation surface disappeared because the checkout schema is missing")
+	}
+	if !strings.Contains(logged.String(), "checkout schema not present") {
+		t.Fatalf("log = %q, want the one informative line about the missing checkout schema", logged.String())
+	}
+}
+
+// A checkout schema probe that cannot answer is a startup failure: mounting a
+// payment route whose schema state is unknown would be guessing.
+func TestMountReservationFailsWhenTheCheckoutProbeCannotAnswer(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutFailingSchema)
+	if err == nil {
+		t.Fatal("mountReservation returned no error for an unanswerable checkout schema probe")
+	}
+	if proc != nil {
+		t.Fatal("mountReservation returned a process for an unanswerable checkout schema probe")
+	}
+	if paymentRouted(srv) || reservationRouted(srv) {
+		t.Fatal("a surface was mounted although the checkout schema state is unknown")
+	}
+}
+
+// S8/T3: the provider the checkout is wired with never declines. A decline is a
+// test scenario built by constructing an adapter with a decline rule, never the
+// default the process runs with, so a real 12,13 EUR ticket is a normal purchase.
+func TestWiredPaymentProviderNeverDeclines(t *testing.T) {
+	gateway := newPaymentGateway()
+	for _, amount := range []int64{13, 1213, 99999913} {
+		result, err := gateway.Charge(context.Background(), payment.Request{
+			AmountMinorUnits: amount,
+			Reference:        fmt.Sprintf("wired-%d", amount),
+		})
+		if err != nil {
+			t.Fatalf("Charge(%d) = unexpected error %v", amount, err)
+		}
+		if result.Outcome != payment.OutcomeApproved {
+			t.Fatalf("Charge(%d) outcome = %q, want %q: the wired provider never declines",
+				amount, result.Outcome, payment.OutcomeApproved)
+		}
+	}
 }
 
 // An older schema must disable the whole reservation surface: no public routes and
@@ -260,7 +396,7 @@ func TestMountReservationSkipsAnOlderSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbe(cfg, srv, logger, absentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, absentSchema, checkoutPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -289,7 +425,7 @@ func TestMountReservationFailsWhenTheProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbe(cfg, srv, discardLogger(), failingSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), failingSchema, checkoutPresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable schema probe")
 	}

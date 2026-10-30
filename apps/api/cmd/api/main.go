@@ -4,7 +4,9 @@
 // It wires configuration, structured logging, the health service, and the HTTP
 // server with graceful shutdown, and pins the module boundaries into the build.
 // M1 adds the local-only administrative venue API, which is mounted only when
-// local administration is explicitly enabled.
+// local administration is explicitly enabled. M2 adds the customer reservation
+// surface with its expiry worker, and M3 adds the checkout route that pays a held
+// reservation.
 package main
 
 import (
@@ -22,10 +24,12 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"cinema.local/ticketing/apps/api/internal/adminapi"
+	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
 	"cinema.local/ticketing/apps/api/internal/log"
+	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/publicapi"
 	"cinema.local/ticketing/apps/api/internal/reservation"
 	"cinema.local/ticketing/apps/api/internal/venue"
@@ -139,12 +143,20 @@ const expirySweepMaxBatches = 8
 // would stall startup forever, which is worse than failing fast.
 const startupTimeout = 10 * time.Second
 
-// reservationProcess owns what the public reservation surface and the expiry
-// worker need, so one Close releases both pools on shutdown.
+// requiredMigrations lists the migration versions the customer surface needs. The
+// reservation surface is closed until 0003 and 0004 are applied, and the checkout
+// route is closed until 0005 and 0006 are applied as well, so a database without the
+// checkout schema — or without the one-open-attempt guard — advertises no payment
+// route instead of failing every request.
+const requiredMigrations = "0003_reservation, 0004_idempotency, 0005_checkout, 0006_one_open_payment_attempt"
+
+// reservationProcess owns what the public reservation surface, the checkout and
+// the expiry worker need, so one Close releases every pool on shutdown.
 type reservationProcess struct {
-	store   *reservation.PostgresStore
-	redis   *redis.Client
-	sweeper *reservation.Sweeper
+	store         *reservation.PostgresStore
+	checkoutStore *checkout.PostgresStore
+	redis         *redis.Client
+	sweeper       *reservation.Sweeper
 }
 
 // Close releases the pooled connections. It is nil-safe so the process wiring can
@@ -156,14 +168,17 @@ func (p *reservationProcess) Close() {
 	if p.store != nil {
 		p.store.Close()
 	}
+	if p.checkoutStore != nil {
+		p.checkoutStore.Close()
+	}
 	if p.redis != nil {
 		_ = p.redis.Close()
 	}
 }
 
-// mountReservation wires the customer facing reservation surface: the durable
-// reservation store, the shared coordination layer, the hold service over the
-// configured window, the public routes, and the durable expiry worker.
+// mountReservation wires the customer facing surface: the durable reservation
+// store, the shared coordination layer, the hold service over the configured
+// window, the public routes, the checkout route and the durable expiry worker.
 //
 // It mounts nothing unless a database URL is configured, because a hold without
 // durable storage could not be honoured; the default M0/M1 configuration
@@ -171,20 +186,39 @@ func (p *reservationProcess) Close() {
 // closed on shutdown and is nil when nothing was mounted. A failure is reported
 // without echoing a connection URL, which may carry credentials.
 func mountReservation(cfg config.Config, srv *httpserver.Server, logger *slog.Logger) (*reservationProcess, error) {
-	return mountReservationWithProbe(cfg, srv, logger, reservationSchemaProbe)
+	return mountReservationWithProbes(cfg, srv, logger, reservationSchemaProbe, checkoutSchemaProbe)
 }
 
-// schemaProbe reports whether the database carries the reservation tables. It is
-// a parameter so the mount decision can be tested without a live database.
+// schemaProbe reports whether the database carries the reservation tables, and
+// checkoutProbe whether it carries the checkout objects. They are parameters so
+// both mount decisions can be tested without a live database.
 type schemaProbe func(context.Context, *reservation.PostgresStore) (bool, error)
+
+type checkoutProbe func(context.Context, *checkout.PostgresStore) (bool, error)
 
 // reservationSchemaProbe is the production probe: the store's own check.
 func reservationSchemaProbe(ctx context.Context, store *reservation.PostgresStore) (bool, error) {
 	return store.ReservationSchemaPresent(ctx)
 }
 
-// mountReservationWithProbe is mountReservation with the schema check injected.
-func mountReservationWithProbe(cfg config.Config, srv *httpserver.Server, logger *slog.Logger, probe schemaProbe) (*reservationProcess, error) {
+// checkoutSchemaProbe is the production probe of the M3 objects the payment route
+// writes: the payment attempt, the ticket and the outbox table, the event price the
+// checkout charges, and the one-open-attempt index that keeps a second payment from
+// reaching the provider. A database missing any of them keeps the route closed.
+func checkoutSchemaProbe(ctx context.Context, store *checkout.PostgresStore) (bool, error) {
+	return store.CheckoutSchemaPresent(ctx)
+}
+
+// newPaymentGateway builds the payment boundary the checkout is wired with: the
+// simulated provider, which never declines. A decline is a test scenario built by
+// constructing an adapter with a decline rule, never the default the process runs
+// with, so a real 12,13 EUR ticket is an ordinary purchase (design S8 keeps the
+// provider replaceable: only this function changes for a real one).
+func newPaymentGateway() payment.PaymentGateway { return payment.NewSimulated() }
+
+// mountReservationWithProbes is mountReservation with both schema checks injected.
+func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logger *slog.Logger,
+	probe schemaProbe, checkoutSchema checkoutProbe) (*reservationProcess, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, nil
 	}
@@ -214,7 +248,7 @@ func mountReservationWithProbe(cfg config.Config, srv *httpserver.Server, logger
 		// that backs them is applied. One line, once, instead of an error per tick.
 		store.Close()
 		logger.Info("reservation schema not present; reservation surface disabled",
-			"required", "0003_reservation, 0004_idempotency")
+			"required", requiredMigrations)
 		return nil, nil
 	}
 
@@ -239,10 +273,43 @@ func mountReservationWithProbe(cfg config.Config, srv *httpserver.Server, logger
 		return nil, fmt.Errorf("configure the expiry sweep: %w", err)
 	}
 
-	srv.WithPublic(publicapi.New(svc).Mux())
+	// The checkout route needs the M3 objects on top of the reservation tables. Its
+	// store is opened once, and closed again when the schema that backs the route is
+	// missing, so nothing advertises a payment it cannot record. It gets its own
+	// startup budget, so the reservation store's remaining deadline cannot decide
+	// whether the checkout route is mounted.
+	checkoutCtx, cancelCheckout := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelCheckout()
+	checkoutStore, err := checkout.NewPostgresStore(checkoutCtx, cfg.DatabaseURL)
+	if err != nil {
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("open checkout store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+	checkoutPresent, err := checkoutSchema(checkoutCtx, checkoutStore)
+	if err != nil {
+		checkoutStore.Close()
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("check the checkout schema: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+
+	// payments is a nil interface unless the checkout schema is present, which is
+	// exactly what keeps the route unmounted.
+	var payments publicapi.PaymentService
+	if checkoutPresent {
+		payments = checkout.NewService(newPaymentGateway(), checkoutStore, reservation.NewCoordinator(client), payment.ProviderName)
+	} else {
+		checkoutStore.Close()
+		checkoutStore = nil
+		logger.Info("checkout schema not present; payment route disabled", "required", "0005_checkout")
+	}
+
+	srv.WithPublic(publicapi.New(svc).WithPayments(payments).Mux())
 	logger.Info("public reservation API mounted",
-		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval, "expiry_batch", cfg.ExpiryBatch)
-	return &reservationProcess{store: store, redis: client, sweeper: sweeper}, nil
+		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
+		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent)
+	return &reservationProcess{store: store, checkoutStore: checkoutStore, redis: client, sweeper: sweeper}, nil
 }
 
 // mountAdmin wires the administrative venue API behind the local-development
