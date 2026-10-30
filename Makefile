@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3
+.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-e2e
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -88,3 +88,22 @@ verify-m2:
 # refuses to run when the Redis index it would flush already holds keys.
 verify-m3:
 	./scripts/verify_m3.sh
+
+# The M3.5 exit evidence, in a browser: one Chromium drives the administration (create a
+# film, schedule a screening against a published layout version, set its price and its
+# status) and then the purchase (catalogue, seat map with the keyboard, hold, payment,
+# ticket with its QR image and its PDF download), plus the ticket list and the negatives.
+# It builds the web application once and serves that build — never `next dev` — and it
+# creates and removes its own database, Redis index, ports and bucket, refusing by name
+# to run against the development `cinema` database. It needs Docker Compose, Go, Node and
+# Playwright's Chromium (`pnpm --dir apps/web exec playwright install --with-deps
+# chromium`), all checked with a named refusal rather than a stack trace.
+verify-m35:
+	./scripts/verify_m35.sh
+
+# The Playwright suite alone, against a web server and an API that are already running
+# (`WEB_BASE_URL` and `API_BASE_URL` default to http://127.0.0.1:3000 and :8080). Useful
+# while iterating on a scenario; the milestone's evidence is `make verify-m35`, which
+# owns the whole stack.
+verify-e2e:
+	pnpm --dir apps/web exec playwright test --project chromium

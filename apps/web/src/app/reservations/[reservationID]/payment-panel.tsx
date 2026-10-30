@@ -53,6 +53,7 @@ import type {
   ReservationResponse,
 } from "@/lib/public-api";
 import { newIdempotencyKey, ticketPDFUrl } from "@/lib/public-api";
+import { TICKET_PDF_LINK_LABEL } from "@/lib/issued-tickets";
 import type { PaymentKeyStorage, PaymentOutcomeView } from "@/lib/payment-key";
 import {
   describeHoldWindow,
@@ -422,7 +423,9 @@ function Outcome({
  * Shared by the panel (an answer that just issued them) and by the page (a reload of a
  * paid order, whose tickets come from the order read), so both surfaces print the same
  * words about the same thing. Each link is a plain anchor with the shell's visible focus
- * outline, and the PDF is a link target rather than something this page fetches.
+ * outline, and the PDF is a link target rather than something this page fetches — the API
+ * redirects to a URL that declares `Content-Disposition: attachment`, so the sentence
+ * both surfaces print comes from `TICKET_PDF_LINK_LABEL` instead of being written twice.
  */
 export function IssuedTickets({
   ticketIds,
@@ -445,7 +448,7 @@ export function IssuedTickets({
             href={ticketPDFUrl(apiBaseUrl, ticketId)}
             className="rounded-sm text-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
           >
-            Download the PDF
+            {TICKET_PDF_LINK_LABEL}
           </a>
         </li>
       ))}

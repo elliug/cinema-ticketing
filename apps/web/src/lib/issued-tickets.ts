@@ -42,6 +42,23 @@ import type {
   TicketResponse,
 } from "./public-api.ts";
 
+/**
+ * What both ticket surfaces call the PDF link.
+ *
+ * One sentence, because there is one fact: the download route signs
+ * `Content-Disposition: attachment` with a filename derived from the ticket, so every
+ * browser saves the document instead of deciding from its media type whether to render
+ * it. Before that was declared, the ticket screen said "Open the ticket PDF" while the
+ * checkout panel said "Download the PDF", and the panel was promising something the
+ * route never said — two screens describing one link differently is how a claim drifts
+ * from the system (S8).
+ *
+ * It lives here, beside the rest of the ticket vocabulary, because the ticket page and the
+ * confirmation panel both already read this module, and a sentence copied into each of
+ * them could disagree again.
+ */
+export const TICKET_PDF_LINK_LABEL = "Download the ticket PDF";
+
 /** The storage surface this module needs, satisfied by `window.sessionStorage`. */
 export interface IssuedTicketStorage {
   getItem(key: string): string | null;

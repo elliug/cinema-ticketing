@@ -17,6 +17,15 @@
 // the S3 adapter, which addresses the endpoint path-style so a local Floci
 // container behaves like the hosted service.
 //
+// # Declared downloads
+//
+// A pre-signed URL can carry the caller's answer to *how* the object is meant to be
+// delivered, and that answer is signed together with the URL: [PresignOptions]
+// declares the Content-Disposition the download will answer with. It is part of the
+// boundary rather than of the caller's URL handling because the declaration has to be
+// inside the signature — a header appended afterwards could be rewritten by any reader
+// of the link, and whether a ticket is saved or rendered is not a reader's choice.
+//
 // # Fail closed
 //
 // NewS3 validates its configuration and refuses a combination that cannot work,
@@ -69,6 +78,12 @@ var (
 	// ErrInvalidTTL reports a pre-sign lifetime that is not positive or that
 	// exceeds the seven days SigV4 signatures are limited to.
 	ErrInvalidTTL = errors.New("storage: invalid pre-sign lifetime")
+
+	// ErrInvalidContentDisposition reports a declared Content-Disposition that is
+	// empty, of a type a browser does not understand, or carrying a character that
+	// would end the header early. A declaration the store would not honour is refused
+	// before anything is signed.
+	ErrInvalidContentDisposition = errors.New("storage: invalid content disposition")
 )
 
 const (
@@ -96,8 +111,22 @@ type Store interface {
 	// not reach.
 	Exists(ctx context.Context, key string) (bool, error)
 	// PresignGet returns a URL that downloads key without credentials and stops
-	// working after ttl.
-	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// working after ttl. What the URL declares about the object — how the download is
+	// meant to be handled — is opts, signed together with the URL.
+	PresignGet(ctx context.Context, key string, ttl time.Duration, opts PresignOptions) (string, error)
+}
+
+// PresignOptions is what a pre-signed URL declares about the object it serves.
+//
+// The zero value declares nothing, which is the behaviour every existing caller keeps.
+// Every field is signed into the URL, so a value here is an answer the store gives and
+// no reader of the link can rewrite.
+type PresignOptions struct {
+	// ContentDisposition, when set, is signed into the URL as
+	// `response-content-disposition`, so the download answers with that header instead
+	// of leaving the browser to decide from the media type whether to render the object
+	// or save it. It is validated by [ValidateContentDisposition] before it is signed.
+	ContentDisposition string
 }
 
 // Config is the adapter configuration. It mirrors the API_S3_* settings.
@@ -258,8 +287,9 @@ func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 	return false, fmt.Errorf("storage: head %q: %w", key, err)
 }
 
-// PresignGet returns a pre-signed download URL for key that expires after ttl.
-func (s *S3) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+// PresignGet returns a pre-signed download URL for key that expires after ttl, and
+// carries whatever opts declares about the delivery.
+func (s *S3) PresignGet(ctx context.Context, key string, ttl time.Duration, opts PresignOptions) (string, error) {
 	if err := s.usable(); err != nil {
 		return "", err
 	}
@@ -269,11 +299,20 @@ func (s *S3) PresignGet(ctx context.Context, key string, ttl time.Duration) (str
 	if err := ValidatePresignTTL(ttl); err != nil {
 		return "", err
 	}
-
-	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+	input := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
+	}
+	if opts.ContentDisposition != "" {
+		if err := ValidateContentDisposition(opts.ContentDisposition); err != nil {
+			return "", err
+		}
+		// The SDK signs the parameter into the query string, so the store answers the
+		// declaration and a reader cannot replace it with one of their own.
+		input.ResponseContentDisposition = aws.String(opts.ContentDisposition)
+	}
+
+	req, err := s.presigner.PresignGetObject(ctx, input, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("storage: presign %q: %w", key, err)
 	}
@@ -381,6 +420,31 @@ func validateContentType(contentType string) error {
 		if r < 0x20 || r == 0x7f {
 			return fmt.Errorf("%w: the content type contains a control character", ErrInvalidContentType)
 		}
+	}
+	return nil
+}
+
+// ValidateContentDisposition reports whether a declaration can be signed.
+//
+// The rules are the ones a browser reads: the value opens with one of the two
+// disposition types (attachment, which saves the object, or inline, which hands it to
+// the viewer) and carries no control character — a newline would end the header early
+// and let the rest of the value be read as another header. Everything after the type is
+// the caller's: a filename, a quoting style, an extension another system invented.
+func ValidateContentDisposition(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%w: the value is empty", ErrInvalidContentDisposition)
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: the value contains a control character", ErrInvalidContentDisposition)
+		}
+	}
+	kind, _, _ := strings.Cut(trimmed, ";")
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "attachment" && kind != "inline" {
+		return fmt.Errorf("%w: %q is neither attachment nor inline", ErrInvalidContentDisposition, kind)
 	}
 	return nil
 }

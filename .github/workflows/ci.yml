@@ -81,3 +81,51 @@ jobs:
 
       - name: Verify M3 checkout, tickets and PDF delivery
         run: make verify-m3
+
+  # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
+  # compose services, bootstraps the stack, and then adds a real browser. It installs one
+  # browser — Chromium, with the system libraries it needs — because the milestone
+  # verifies behaviour (buying a seat, administering a screening), not cross-browser
+  # parity. `make verify-m35` creates and removes its own database, Redis index, ports and
+  # bucket; it builds the web application once and serves that build rather than running
+  # `next dev`, so nothing here races over `.next`.
+  m35-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 12.15.0
+          run_install: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+
+      # One browser and only one. `--with-deps` installs the system libraries Chromium
+      # needs on the runner image, which is what makes the gate fail on a product defect
+      # rather than on a missing shared object.
+      - name: Install Chromium for Playwright
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+
+      # The project's own bootstrap: compose services, every migration, the development
+      # seed and the ticket bucket. The gate below creates and removes its own on top.
+      - name: Bootstrap the stack
+        env:
+          API_ENV: development
+        run: make bootstrap
+
+      - name: Verify M3.5 purchase and administration in a browser
+        run: make verify-m35

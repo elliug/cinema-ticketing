@@ -42,6 +42,25 @@
 //     derived answer to "does this ticket still admit its holder", so the web page
 //     and the PDF cannot disagree about it.
 //
+// # The record is a download, and the route says so
+//
+// The router that serves this projection answers `302` to a pre-signed object URL, and
+// that URL carries `Content-Disposition: attachment; filename="ticket-<ticketID>.pdf"`,
+// signed into it by internal/storage. The filename is derived from the ticket the
+// projection is for — the object key is `tickets/{eventID}/{ticketID}.pdf`, and the event
+// id is not what a buyer should find in their downloads folder. Declaring it matters
+// because the alternative is the browser's decision: an object stored as
+// `application/pdf` with no disposition is rendered inline by a browser that has a PDF
+// viewer and saved by one that does not, so two buyers of the same ticket would get two
+// different behaviours from one link. The declaration is signed, not appended by the
+// route, so no holder of the link can turn a download into a rendering.
+//
+// What that means for the surfaces: the ticket page and the checkout panel print one
+// sentence, `TICKET_PDF_LINK_LABEL` in `apps/web/src/lib/issued-tickets.ts`, and it says
+// *download*. Nothing here changes what the document is: it is still a record of the sale
+// printed when the payment was captured, and still not the answer to whether the ticket
+// admits anyone (the signed code's verification is, see below).
+//
 // # Access model in v1: the ticket id is the capability
 //
 // v1 has guest checkout and no accounts, so nobody can prove ownership of a ticket

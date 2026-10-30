@@ -1,0 +1,548 @@
+// Shared helpers for the M3.5 browser gate (M3.5 · T9 · S7).
+//
+// The three specs drive the same product through the same steps, so the steps live
+// here once: an operator creates a film, schedules a screening against the room's
+// published layout version and puts it on sale; a buyer opens it from the catalogue,
+// chooses seats with the keyboard, pays and lands on the ticket.
+//
+// Three rules the helpers keep, because a gate that broke them would be asserting
+// something the product never promised:
+//
+//   - **Everything is reached and read the way a person does it**: the paper a person
+//     sees (text, an accessible name, a heading), never a CSS class or an internal
+//     store. The one exception is deliberate and narrow: the ticket records are what
+//     the *tab* keeps, so the ticket scenario writes one record into the same
+//     `sessionStorage` key the application uses for it (ISSUED_TICKETS_STORAGE_NAME in
+//     `src/lib/issued-tickets.ts`) — that is the tab's own state, not the API's.
+//   - **Every navigation is checked**: one `h1` on the screen, exactly one primary
+//     navigation entry marked `aria-current="page"` where the navigation claims one,
+//     and no console error or hydration warning at the end of the test.
+//   - **Nothing is retried and nothing is relaxed.** A selector that needs a retry to
+//     pass is a product or a test defect, and this gate exists to find the first.
+//
+// The demo data the helpers rely on is the development seed the gate applies to its
+// throwaway database (`db/seeds/dev_seed.sql`): the cinema "Cine Prueba", its room
+// "Sala 1" and that room's published layout version 1, whose four enabled seats are
+// A1, A2, A3 and B1 (B2 is disabled and never sold). Prices are per seat.
+import { expect, type Locator, type Page, type Response } from "@playwright/test";
+
+/** The web server the gate started. Set by `scripts/verify_m35.sh`. */
+export const WEB_BASE_URL = process.env.WEB_BASE_URL ?? "http://127.0.0.1:3000";
+
+/** The API the web server was pointed at; used only for the API's own 200 checks. */
+export const API_BASE_URL = (process.env.API_BASE_URL ?? "http://127.0.0.1:8080").replace(
+  /\/+$/,
+  "",
+);
+
+/**
+ * The one `sessionStorage` key a tab keeps its ticket ids under.
+ *
+ * It is `ISSUED_TICKETS_STORAGE_NAME` in `src/lib/issued-tickets.ts`, written here as a
+ * literal because the browser-side module is not part of the running application bundle
+ * this test imports. The ticket scenario writes one record into it on purpose: the
+ * record belongs to the tab, so a tab whose purchase went stale is a state only the tab
+ * can produce, and it is the only kind of record the list may forget.
+ */
+export const ISSUED_TICKETS_KEY = "cinema.issued-tickets";
+
+/** The cinema, room and layout version the development seed creates. */
+export const SEEDED = {
+  cinema: "Cine Prueba",
+  room: "Sala 1",
+  layoutLabel: "v1 · published",
+} as const;
+
+/**
+ * The start time the gate schedules, and what the venue's own clock prints for it.
+ *
+ * The form's label says the value is UTC — `datetime-local` carries no zone and
+ * `parseStartsAt` reads it as one — so `18:30Z` is `20:30` at a venue on Europe/Madrid
+ * summer time. The two strings are written down separately on purpose: the gate must
+ * fail if the catalogue ever prints the UTC instant where it promised the venue's hour.
+ */
+export const STARTS_AT = {
+  utcInput: "2031-05-04T18:30",
+  venueHour: "2031-05-04T20:30:00+02:00",
+} as const;
+
+/** One screening the gate creates through the administration screens. */
+export interface ScreeningFixture {
+  filmTitle: string;
+  runtimeMinutes: string;
+  rating: string;
+  /** The price a person types, in major units. */
+  price: string;
+  /** The status option's visible word in the select. */
+  statusLabel: string;
+}
+
+/** What the administration journey produced. */
+export interface CreatedScreening {
+  /** The identifier the schedule screen itself put in the address bar. */
+  eventId: string;
+  filmTitle: string;
+  price: string;
+  /**
+   * What the venue's own clock prints for the start that was scheduled.
+   *
+   * It is written down here and compared against the served `startsAtLocal` by the
+   * administration spec, so a catalogue that printed the UTC instant the form was given
+   * fails instead of quietly agreeing with itself.
+   */
+  venueHour: string;
+}
+
+// ── The browser's own complaints ────────────────────────────────────────────
+
+/** Everything the browser said that the gate refuses to ignore. */
+export interface PageProblems {
+  /** Every `console.error` and every `console.warn` carrying a warning. */
+  consoleErrors: string[];
+  /** The subset of the above that is a hydration mismatch. */
+  hydrationWarnings: string[];
+  /** Uncaught exceptions in the page. */
+  pageErrors: string[];
+}
+
+/**
+ * A hydration mismatch, whatever wording React or Next uses for it.
+ *
+ * React 19 says "Hydration failed because the server rendered HTML didn't match the
+ * client"; older versions say the text content did not match. Both are the one defect
+ * this gate must never smooth over: a screen that renders differently on the server and
+ * the client is a screen a person sees flicker and a keyboard user may see lose focus.
+ */
+const HYDRATION_PATTERN =
+  /hydrat|did not match|didn't match|server rendered (html|text)|text content does not match/i;
+
+/** Starts collecting the browser's console for one page. Never throws. */
+export function collectProblems(page: Page): PageProblems {
+  const problems: PageProblems = {
+    consoleErrors: [],
+    hydrationWarnings: [],
+    pageErrors: [],
+  };
+
+  page.on("console", (message) => {
+    const type = message.type();
+    if (type !== "error" && type !== "warning") {
+      return;
+    }
+    const text = message.text();
+    // A warning is only a problem when it is a hydration mismatch; everything the page
+    // logs as an error is a problem on its own.
+    if (type === "warning" && !HYDRATION_PATTERN.test(text)) {
+      return;
+    }
+    problems.consoleErrors.push(`${type}: ${text}`);
+    if (HYDRATION_PATTERN.test(text)) {
+      problems.hydrationWarnings.push(text);
+    }
+  });
+
+  page.on("pageerror", (error) => {
+    problems.pageErrors.push(error.message);
+  });
+
+  return problems;
+}
+
+/** Fails the test with the browser's own words when the page complained at all. */
+export function expectNoProblems(problems: PageProblems): void {
+  expect(problems.hydrationWarnings, "hydration mismatches during the run").toEqual([]);
+  expect(problems.pageErrors, "uncaught exceptions in the page").toEqual([]);
+  expect(problems.consoleErrors, "console errors during the run").toEqual([]);
+}
+
+// ── Reading a screen the way a person does ──────────────────────────────────
+
+/**
+ * Asserts the screen has exactly one top-level heading.
+ *
+ * Every screen of this product is one page with one `h1`, and a second one is not a
+ * cosmetic slip: a screen reader's heading list is how a keyboard user finds the page.
+ */
+export async function expectOneH1(page: Page): Promise<void> {
+  const headings = page.locator("h1");
+  await expect(headings, "one h1 per screen").toHaveCount(1);
+  await expect(headings.first()).toBeVisible();
+}
+
+/**
+ * The primary navigation marks this entry as the current page.
+ *
+ * `SITE_NAV` claims a current entry for the catalogue and for "My tickets", and for the
+ * administration on every screen of its section: that entry declares the `/admin` prefix
+ * as well as the venue href it links to. The gate asserts it exactly where the navigation
+ * claims it; a page the navigation does not claim is not asserted to.
+ */
+export async function expectActiveNav(page: Page, label: string): Promise<void> {
+  const primary = page.getByRole("navigation", { name: "Primary" });
+  await expect(primary.getByRole("link", { name: label })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(primary.locator('[aria-current="page"]')).toHaveCount(1);
+}
+
+/**
+ * Opens one address and checks the response and the screen's shape.
+ *
+ * The status is asserted because "the catalogue answers 200" is part of what the
+ * milestone claims: an error page that happens to contain the right words would still
+ * be a broken catalogue.
+ */
+export async function visit(page: Page, path: string): Promise<Response> {
+  const response = await page.goto(path);
+  expect(response, `${path} answered no response`).not.toBeNull();
+  expect(response?.status(), `${path} status`).toBe(200);
+  await expectOneH1(page);
+  return response as Response;
+}
+
+/**
+ * Chooses the one option of a native `<select>` whose visible text starts with `prefix`.
+ *
+ * A cinema's option carries what the API serves about it — its name, its time zone and
+ * its address — so the gate picks it by the name a person would look for rather than by
+ * the exact sentence the screen composed, which is the screen's business and not this
+ * helper's.
+ */
+export async function selectByLabelPrefix(
+  select: Locator,
+  prefix: string,
+): Promise<void> {
+  const value = await select.evaluate((element, wanted) => {
+    const options = Array.from((element as HTMLSelectElement).options);
+    const match = options.find((option) =>
+      (option.textContent ?? "").trim().startsWith(wanted),
+    );
+    return match?.value ?? "";
+  }, prefix);
+  expect(value, `the select offers an option starting with "${prefix}"`).not.toBe("");
+  await select.selectOption(value);
+}
+
+// ── The administration journey ──────────────────────────────────────────────
+
+/**
+ * Runs the administration journey the milestone describes, in one page.
+ *
+ * Create a film, schedule it in the seeded room against the room's published layout
+ * version (both chosen from the selects, never pasted), then set the price and the
+ * status that make the catalogue sell it. The screening is created as a draft and
+ * published by one `PATCH`, which is what "create then publish is two requests" means
+ * on this screen.
+ *
+ * Returns the event id the screen itself put in the address bar, plus what the venue's
+ * clock is expected to print for the start that was scheduled. The helper derives
+ * neither from the API's answer: the administration spec compares the two, which is what
+ * makes "the catalogue prints the venue's hour" a claim about the product.
+ */
+export async function createAndPublishScreening(
+  page: Page,
+  fixture: ScreeningFixture,
+): Promise<CreatedScreening> {
+  await visit(page, "/admin/schedule");
+
+  // 1. The film: created once, then chosen from the repertoire below.
+  await page.getByLabel("Title").fill(fixture.filmTitle);
+  await page.getByLabel("Runtime (minutes)").fill(fixture.runtimeMinutes);
+  await page.getByLabel("Rating").fill(fixture.rating);
+  await page.getByRole("button", { name: "Create film" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Created " }),
+    "the film's confirmation",
+  ).toContainText(`Created ${fixture.filmTitle}`);
+
+  // 2. The room and its published layout version: two reads, neither of them a guess.
+  await selectByLabelPrefix(
+    page.getByLabel("Cinema", { exact: true }),
+    SEEDED.cinema,
+  );
+  await page.getByRole("button", { name: "Show this cinema's rooms" }).click();
+  await page.getByLabel("Room", { exact: true }).selectOption({ label: SEEDED.room });
+  await page.getByRole("button", { name: "Show this room's layout versions" }).click();
+
+  // 3. The screening itself: film and layout version chosen from the selects.
+  await page
+    .getByRole("combobox", { name: "Film" })
+    .click();
+  // `.first()`: the gate's database is created for this run, so this title exists once.
+  // A database reused by hand — a developer pointing this suite at their own stack —
+  // could hold a film with the same title from an earlier attempt, and either row is the
+  // film this scenario means.
+  await page
+    .getByRole("option", {
+      name: `${fixture.filmTitle} (${fixture.runtimeMinutes} min, ${fixture.rating})`,
+    })
+    .first()
+    .click();
+  await page
+    .getByRole("combobox", { name: "Published layout version" })
+    .click();
+  await page.getByRole("option", { name: SEEDED.layoutLabel }).click();
+  await page.getByLabel("Start time (UTC)").fill(STARTS_AT.utcInput);
+  await page.getByRole("button", { name: "Schedule as draft" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Created a draft screening" }),
+    "the screening's confirmation",
+  ).toContainText("It is not for sale yet");
+
+  // The screen opens the new draft's own form, and its address is where the identifier
+  // comes from: this helper never builds one.
+  await expect(page).toHaveURL(/[?&]eventId=/);
+  const eventId = new URL(page.url()).searchParams.get("eventId") ?? "";
+  expect(eventId, "the schedule screen named the new screening").not.toBe("");
+
+  // 4. Price and status: the second request, and the one that makes it sellable.
+  await expect(
+    page.getByRole("heading", { name: "Price and status" }),
+  ).toBeVisible();
+  await page.getByLabel("Price per seat").fill(fixture.price);
+  await page.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: fixture.statusLabel }).click();
+  await page.getByRole("button", { name: "Save price and status" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved." }),
+    "the saved price and status",
+  ).toContainText(
+    `The screening now holds ${fixture.price} per seat and its stored status is on_sale.`,
+  );
+
+  return {
+    eventId,
+    filmTitle: fixture.filmTitle,
+    price: fixture.price,
+    venueHour: STARTS_AT.venueHour,
+  };
+}
+
+/** The screening the API serves for one identifier, as far as the gate reads it. */
+export interface ServedScreening {
+  filmTitle: string;
+  startsAtLocal: string;
+  priceDisplay: string;
+  onSale: boolean;
+}
+
+/** Reads one screening from the public API, so the gate can compare it with the screen. */
+export async function readServedScreening(
+  page: Page,
+  eventId: string,
+): Promise<ServedScreening> {
+  const response = await page.request.get(`${API_BASE_URL}/api/v1/events/${eventId}`);
+  expect(response.status(), `GET /api/v1/events/${eventId}`).toBe(200);
+  const body = (await response.json()) as Partial<ServedScreening>;
+  return {
+    filmTitle: body.filmTitle ?? "",
+    startsAtLocal: body.startsAtLocal ?? "",
+    priceDisplay: body.priceDisplay ?? "",
+    onSale: body.onSale === true,
+  };
+}
+
+// ── The purchase ────────────────────────────────────────────────────────────
+
+/** What one purchase produced. */
+export interface Purchase {
+  reservationId: string;
+  /** The ticket every seat of the order was issued, in the order served. */
+  ticketIds: string[];
+}
+
+/**
+ * Buys two seats of one screening from the catalogue, keyboard only.
+ *
+ * The catalogue is opened rather than addressed by identifier, because that is what the
+ * milestone promises a stranger can do. From the seat map onwards nothing is clicked:
+ * the map is entered with Tab, the roving seat is walked with the arrow keys, Space
+ * selects, the hold is taken with the keyboard and the payment is sent with Enter. If
+ * any of that stops working, a person without a mouse cannot buy a ticket.
+ */
+export async function purchaseTwoSeats(
+  page: Page,
+  screening: CreatedScreening,
+): Promise<Purchase> {
+  await visit(page, "/events");
+  await expectActiveNav(page, "Now showing");
+
+  // The entry the administration just published, found by its own words.
+  const entry = page.getByRole("listitem").filter({ hasText: screening.filmTitle });
+  await expect(entry, "the catalogue lists the new screening").toHaveCount(1);
+  await expect(entry).toContainText(screening.venueHour);
+  await expect(entry).toContainText(screening.price);
+  await expect(entry).toContainText("On sale");
+
+  await entry
+    .getByRole("link", { name: `Choose seats for ${screening.filmTitle}` })
+    .click();
+
+  // The seat page is a screen of its own, with the screening printed as served.
+  await expectOneH1(page);
+  await expect(page.locator("h1")).toHaveText(screening.filmTitle);
+  await expect(page.locator("time")).toHaveText(screening.venueHour);
+
+  // Keyboard only. The map is one tab stop: Tab reaches its roving seat. The scroll
+  // container is the named region that holds the seats, not the section around it.
+  const map = page.getByRole("region", {
+    name: "Seat map, scrolls sideways to reach every seat",
+  });
+  await expect(map).toBeVisible();
+  await map.focus();
+  await page.keyboard.press("Tab");
+  const focused = page.locator(":focus");
+  await expect(focused, "the map's roving seat has the focus").toHaveAttribute(
+    "aria-label",
+    /^Row A seat 1, available$/,
+  );
+  await page.keyboard.press("Space");
+  await expect(
+    page.getByRole("status").filter({ hasText: "1 seat selected" }),
+    "the first seat is selected by the keyboard",
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Row A seat 1,/ }),
+    "the seat the keyboard is on reports itself as pressed",
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(":focus")).toHaveAttribute(
+    "aria-label",
+    /^Row A seat 2, available$/,
+  );
+  await page.keyboard.press("Space");
+  await expect(
+    page.getByRole("status").filter({ hasText: "2 seats selected" }),
+    "the second seat is selected by the keyboard",
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Row A seat 2,/ }),
+    "the second seat reports itself as pressed",
+  ).toHaveAttribute("aria-pressed", "true");
+
+  // The hold, and then the way to the payment, both reached without a mouse.
+  const hold = page.getByRole("button", { name: "Hold these seats" });
+  await focusByTab(page, hold);
+  await expectVisibleFocus(hold, "the hold button");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Seats held — one step left" }),
+    "the hold was accepted",
+  ).toBeVisible();
+
+  const toPayment = page.getByRole("link", { name: "Continue to payment" });
+  await focusByTab(page, toPayment);
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/reservations\/[0-9a-f-]{36}/);
+  await expectOneH1(page);
+  const reservationId = page.url().split("/reservations/")[1]?.split("?")[0] ?? "";
+  expect(reservationId, "the checkout's own address").not.toBe("");
+
+  // The payment: reached by the keyboard, its focus ring visible before Enter, and the
+  // amount is the order's — two seats at 12.50 is the box office's number, not this
+  // page's.
+  const pay = page.getByRole("button", { name: "Pay", exact: true });
+  await focusByTab(page, pay);
+  await expectVisibleFocus(pay, "the Pay button");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Payment approved" }),
+    "the payment was approved",
+  ).toBeVisible();
+
+  const ticketLinks = page.getByRole("link", { name: /^Open ticket / });
+  await expect(ticketLinks, "one ticket per seat").toHaveCount(2);
+  const ticketIds: string[] = [];
+  for (const href of await ticketLinks.evaluateAll((links) =>
+    links.map((link) => (link as HTMLAnchorElement).getAttribute("href") ?? ""),
+  )) {
+    ticketIds.push(href.split("/tickets/")[1] ?? "");
+  }
+  expect(ticketIds.filter((id) => id !== "")).toHaveLength(2);
+
+  return { reservationId, ticketIds };
+}
+
+/**
+ * Opens one ticket from the confirmation and returns what the browser fetched for it.
+ *
+ * The QR image is requested by the browser, not by this test: the responses are captured
+ * as the page loads, so the spec can assert the route the image really came from.
+ */
+export async function openTicket(
+  page: Page,
+  ticketId: string,
+): Promise<{ qrResponses: Response[] }> {
+  const qrResponses: Response[] = [];
+  const suffix = `/api/v1/tickets/${ticketId}/qr.svg`;
+  const listener = (response: Response) => {
+    if (response.url().endsWith(suffix)) {
+      qrResponses.push(response);
+    }
+  };
+  page.on("response", listener);
+
+  await page.getByRole("link", { name: `Open ticket ${ticketId}` }).click();
+  await expect(page).toHaveURL(new RegExp(`/tickets/${ticketId}$`));
+  await expectOneH1(page);
+  await expectActiveNav(page, "My tickets");
+
+  // Validity is the box office's answer, and the page says so in words.
+  await expect(
+    page.getByRole("heading", { name: "This ticket is valid" }),
+    "the door's answer",
+  ).toBeVisible();
+
+  page.off("response", listener);
+  return { qrResponses };
+}
+
+/** Moves the focus to one control with the Tab key alone, and proves it arrived. */
+export async function focusByTab(page: Page, target: Locator): Promise<void> {
+  // Starting from no focus at all, so the walk begins at the top of the document and the
+  // control is proven reachable instead of merely focusable.
+  await page.evaluate(() => {
+    (document.activeElement as HTMLElement | null)?.blur();
+  });
+  for (let press = 0; press < 120; press += 1) {
+    await page.keyboard.press("Tab");
+    const arrived = await target.evaluate((element) => element === document.activeElement);
+    if (arrived) {
+      return;
+    }
+  }
+  throw new Error(
+    "the control was not reachable with the Tab key within 120 presses: a keyboard user cannot reach it",
+  );
+}
+
+/**
+ * Asserts a focused control paints a focus indicator.
+ *
+ * The product draws focus with a Tailwind ring (a box shadow) on `focus-visible`, and
+ * the shell's stylesheet may add an outline; either one is a visible indicator, and
+ * neither is a claim this gate invents.
+ */
+export async function expectVisibleFocus(
+  target: Locator,
+  label: string,
+): Promise<void> {
+  const indicator = await target.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      boxShadow: style.boxShadow,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+    };
+  });
+  const ring = indicator.boxShadow !== "none" && indicator.boxShadow !== "";
+  const outline =
+    indicator.outlineStyle !== "none" &&
+    indicator.outlineWidth !== "0px" &&
+    indicator.outlineWidth !== "";
+  expect(
+    ring || outline,
+    `${label} has no visible focus indicator: ${JSON.stringify(indicator)}`,
+  ).toBe(true);
+}
