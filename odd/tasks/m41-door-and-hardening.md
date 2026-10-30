@@ -244,3 +244,26 @@ filters, and says how to ask for the next page), **T5b** is the catalogue screen
 They are different questions with different failure modes — a cursor that skips a screening versus
 a button that never appears — and a reviewer holding both cannot tell which one is wrong when a
 gate goes red.
+
+### L10 — T5a delivered, and the size problem is mine, not the writers'
+
+The catalogue pages with a keyset cursor over `(starts_at, id)`, bounds its pages with optional
+`from`/`to`, refuses a limit or a cursor it cannot mean by naming the field, and adds a sibling
+`page` object the web client can ignore until T5b consumes it. Proven against a real database:
+the gated tests the writer could not run — the bounded page, the full walk at four limits, the
+**insertion mid-walk that neither repeats nor skips**, the inclusive bounds, the refusal of an
+impossible request — all pass once run.
+
+**And it came to 1506 authored lines**, the third slice in a row between 700 and 1500. That is no
+longer bad luck or a verbose writer; it is a decomposition problem in this milestone. Two slices
+this size would have been caught earlier if I had set the rule before writing them rather than
+after: **one behaviour per PR, and a slice whose diff crosses roughly 600 authored lines is
+re-scoped before it is reviewed**, not explained afterwards in a body.
+
+What the pattern has cost, concretely: three PRs whose review load was carried by CI rather than
+by a reader, and native review declining all three on `under_budget`. A change that is never read
+closely is a change whose defects are found by gates or by users, in that order.
+
+Concretely for what remains: T5b is the catalogue screen only. T6 is one migration. T7 is the
+redeem schema **or** the endpoint, not both. T8 is one screen. The remaining work is small enough
+to be sliced small; the only thing standing in the way was this document not saying so until now.
