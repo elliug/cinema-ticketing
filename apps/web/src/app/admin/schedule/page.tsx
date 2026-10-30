@@ -426,6 +426,16 @@ function ScreeningsList({
                   <Link
                     href={`${ADMIN_SCHEDULE_PATH}?${query.toString()}`}
                     aria-current={editing ? "true" : undefined}
+                    // Not prefetched, deliberately. This screen renders one of these per
+                    // screening, and every one of them is *this same route* with a different
+                    // query: prefetching them buys next to nothing (the payload is a full
+                    // render, not a cheap fragment) and costs one request per screening — a
+                    // month of programming is dozens. It also made the browser gate fail on
+                    // Firefox alone: Firefox reports the aborted prefetches that a navigation
+                    // away leaves behind as console errors, Chromium swallows them. Removing
+                    // the waste removes the symptom; filtering the console would have hidden
+                    // the next real error that looked like this one.
+                    prefetch={false}
                   >
                     {editing
                       ? "Editing the price and status below"
