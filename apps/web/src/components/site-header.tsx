@@ -58,7 +58,7 @@ export interface SiteNavItem {
 
 /** The primary navigation, in the order the product presents itself. */
 export const SITE_NAV: readonly SiteNavItem[] = [
-  { label: "Now showing", href: null },
+  { label: "Now showing", href: "/events" },
   { label: "My tickets", href: null },
   { label: "Administration", href: "/admin/venues" },
 ];

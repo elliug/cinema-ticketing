@@ -800,6 +800,140 @@ test("the PDF and QR links point at the public ticket routes", () => {
   );
 });
 
+// M3.5 · T4 — the public catalogue the "Now showing" screen reads.
+//
+// The catalogue is the first read a stranger makes: it names the screenings on sale
+// without an identifier in hand. Two rules decide the parser below. The screening
+// order is the API's, so nothing here sorts. And what the screen prints is served:
+// the venue's own hour and the price text are carried verbatim, so a response that
+// omits either is a broken contract rather than something this client fills in.
+
+const CATALOGUE_BODY = {
+  events: [
+    {
+      id: "event-early",
+      filmTitle: "The Long Take",
+      cinemaName: "Cinema Centro",
+      roomName: "Room 1",
+      startsAt: "2026-05-04T18:30:00Z",
+      startsAtLocal: "2026-05-04T20:30:00+02:00",
+      priceCents: 1250,
+      priceDisplay: "12.50",
+      seatCount: 40,
+      availableSeats: 12,
+    },
+    {
+      id: "event-late",
+      filmTitle: "Second Feature",
+      cinemaName: "Cinema Centro",
+      roomName: "Room 2",
+      startsAt: "2026-05-04T20:00:00Z",
+      startsAtLocal: "2026-05-04T22:00:00+02:00",
+      priceCents: 900,
+      priceDisplay: "9.00",
+      seatCount: 24,
+      availableSeats: 0,
+    },
+  ],
+};
+
+test("listEvents reads GET /events and keeps the screening order it was served", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, CATALOGUE_BODY));
+
+  const events = unwrap(await makeClient(recorder).listEvents());
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/events`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+
+  // Everything the screen shows is carried through as served, in the order the
+  // API answered: the page renders this array without sorting it again.
+  assert.deepEqual(events, CATALOGUE_BODY.events);
+  assert.deepEqual(
+    events.map((event) => event.id),
+    ["event-early", "event-late"],
+  );
+  assert.equal(events[0].startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.equal(events[1].availableSeats, 0);
+});
+
+test("an empty catalogue is an empty list, not a failure", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, { events: [] }));
+
+  const events = unwrap(await makeClient(recorder).listEvents());
+
+  assert.deepEqual(events, []);
+});
+
+test("a catalogue entry without its served hour or price is refused, never defaulted", async () => {
+  for (const [field, expected] of [
+    ["startsAtLocal", /startsAtLocal/],
+    ["priceDisplay", /priceDisplay/],
+  ] as const) {
+    const recorder = recordingFetch(() => {
+      const [first] = CATALOGUE_BODY.events;
+      return jsonResponse(200, { events: [{ ...first, [field]: "" }] });
+    });
+
+    const problem = unwrapError(await makeClient(recorder).listEvents());
+
+    assert.equal(problem.code, "unexpected_response");
+    assert.equal(problem.status, 200);
+    assert.match(problem.detail, expected);
+  }
+});
+
+test("a catalogue without a screening list or a seat count is unreadable", async () => {
+  // The list itself: an answer that names no catalogue cannot be rendered as one.
+  const noList = recordingFetch(() => jsonResponse(200, { screenings: [] }));
+  const notACatalogue = unwrapError(await makeClient(noList).listEvents());
+  assert.equal(notACatalogue.code, "unexpected_response");
+  assert.match(notACatalogue.detail, /screening list/);
+
+  // One broken entry refuses the whole catalogue: the screen would otherwise have
+  // to drop a screening or print "0 of 0 seats available", and both are claims the
+  // API never made.
+  for (const field of ["seatCount", "availableSeats"] as const) {
+    const recorder = recordingFetch(() => {
+      const [first] = CATALOGUE_BODY.events;
+      const broken: Record<string, unknown> = { ...first };
+      delete broken[field];
+      return jsonResponse(200, { events: [broken] });
+    });
+
+    const problem = unwrapError(await makeClient(recorder).listEvents());
+    assert.equal(problem.code, "unexpected_response");
+    assert.match(problem.detail, /seat count/);
+  }
+
+  // An entry that is not even an object, and one that names no id to link to.
+  const notAnEntry = recordingFetch(() => jsonResponse(200, { events: [42] }));
+  const unnamed = unwrapError(await makeClient(notAnEntry).listEvents());
+  assert.equal(unnamed.code, "unexpected_response");
+  assert.match(unnamed.detail, /without an id/);
+});
+
+test("an unavailable catalogue stays the retryable code the API used", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the catalogue is temporarily unavailable; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).listEvents());
+
+  assert.equal(problem.status, 503);
+  assert.equal(problem.code, "service_unavailable");
+  assert.match(problem.detail, /temporarily unavailable/);
+});
+
 test("a body that is not JSON or not the expected shape is unexpected_response", async () => {
   const garbage = createPublicClient({
     baseUrl: BASE_URL,

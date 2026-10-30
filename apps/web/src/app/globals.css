@@ -40,6 +40,15 @@
   --radius-xl: calc(var(--radius) + 0.25rem);
 }
 
+/* ── Legacy layer ────────────────────────────────────────────────────────────
+ * Everything below is the hand-written styling of M1–M3. It is wrapped in
+ * `@layer base` on purpose: Tailwind's utilities live in `@layer utilities`, and an
+ * unlayered rule always wins over a layered one — which made `text-muted-foreground`
+ * on a paragraph, or a smaller `CardTitle`, silently inert. With the legacy rules in
+ * a layer, utilities override them as they should, and this whole block is deleted
+ * screen by screen as each one migrates (T5–T8). The preflight joins at that point.
+ */
+@layer base {
 /* Design tokens and shell styling (M3.5 · T3 · S1, S2, S8).
  *
  * One file owns the look. Every value a surface needs is a custom property below,
@@ -1185,4 +1194,5 @@ a.download {
 a.download:hover,
 a.download:focus-visible {
   text-decoration: underline;
+}
 }

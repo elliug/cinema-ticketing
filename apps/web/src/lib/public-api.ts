@@ -14,7 +14,8 @@
 //   - rejects a request the API would reject anyway (no seats, too many seats, no
 //     idempotency key, no ticket id) before anything leaves the process.
 //
-// It covers the M2 hold surface, the M3 checkout and ticket reads, and the M3
+// It covers the M2 hold surface, the M3 checkout and ticket reads, the M3.5
+// public catalogue a stranger reads before owning any identifier, and the M3
 // ticket verification a page uses to say plainly whether a ticket admits its
 // holder. The two ticket *downloads* are not reads this client makes: they are
 // built as link and image targets by [ticketPDFUrl] and [ticketQRImageUrl], so the
@@ -208,7 +209,46 @@ export interface PublicVerification {
   reason?: string;
 }
 
+/** One screening of the public catalogue, as `GET /events` answers it. */
+export interface PublicScreening {
+  /** Event id; the seat page is reached at `/events/{id}/seats`. */
+  id: string;
+  filmTitle: string;
+  cinemaName: string;
+  roomName: string;
+  /**
+   * The instant the screening starts, in UTC. It is the machine-readable value a
+   * `<time>` element carries; the surface prints `startsAtLocal` instead.
+   */
+  startsAt: string;
+  /**
+   * The screening time **in the venue's own zone**, rendered by the API.
+   *
+   * Same rule as the ticket: this is what the catalogue prints. Re-formatting
+   * `startsAt` would render the viewer's zone, so a missing value is a refused
+   * response rather than something this client derives.
+   */
+  startsAtLocal: string;
+  /** The price of one seat, in minor units. */
+  priceCents: number;
+  /** The same amount as the API renders it, for example `12.50`. */
+  priceDisplay: string;
+  /** How many seats the screening sells. */
+  seatCount: number;
+  /** How many of them are neither sold nor held right now. */
+  availableSeats: number;
+}
+
 export interface PublicClient {
+  /**
+   * The screenings a buyer can buy right now, in the API's screening order.
+   *
+   * The order is the API's (screening time, then whatever it breaks ties by), so
+   * callers render the array as served: re-sorting it here would be a second
+   * opinion about a sequence one read already decided. An empty catalogue is an
+   * empty array, never an error.
+   */
+  listEvents(): Promise<PublicResult<PublicScreening[]>>;
   listEventSeats(eventId: string): Promise<PublicResult<PublicEventSeats>>;
   createHold(input: CreateHoldInput): Promise<PublicResult<PublicHold>>;
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
@@ -371,6 +411,18 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
   }
 
   return {
+    async listEvents() {
+      const result = await send<unknown>("/events", {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseCatalog(result.value);
+    },
+
     async listEventSeats(eventId) {
       const result = await send<unknown>(
         `/events/${encodeURIComponent(eventId)}/seats`,
@@ -846,6 +898,121 @@ function servedString(value: unknown): string | undefined {
   return value.trim() === "" ? undefined : value;
 }
 
+function parseCatalog(value: unknown): PublicResult<PublicScreening[]> {
+  if (!isRecord(value) || !Array.isArray(value.events)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the public catalogue has no screening list"),
+    };
+  }
+
+  const events: PublicScreening[] = [];
+  for (const item of value.events) {
+    const event = parseScreening(item);
+    if (!event.ok) {
+      // One unreadable entry refuses the whole catalogue. Dropping it would hide a
+      // screening the API offered, and printing a screening whose numbers are
+      // missing would show an availability nobody counted.
+      return event;
+    }
+    events.push(event.value);
+  }
+
+  // Served order, untouched: the API answers the catalogue in screening order and
+  // a client that sorted again could disagree with it.
+  return { ok: true, value: events };
+}
+
+function parseScreening(value: unknown): PublicResult<PublicScreening> {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the catalogue contains a screening without an id"),
+    };
+  }
+  const id = servedString(value.id);
+  if (id === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the catalogue contains a screening without an id"),
+    };
+  }
+
+  const filmTitle = servedString(value.filmTitle);
+  if (filmTitle === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no film title`),
+    };
+  }
+  const cinemaName = servedString(value.cinemaName);
+  if (cinemaName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no cinema name`),
+    };
+  }
+  const roomName = servedString(value.roomName);
+  if (roomName === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, `the catalogue entry ${id} carries no room name`),
+    };
+  }
+  // The venue's local hour is served by the API's own rule, never derived here:
+  // falling back to `startsAt` would print the browser's zone on a page whose
+  // whole point is to print the venue's. A response without it is refused.
+  const startsAtLocal = servedString(value.startsAtLocal);
+  if (startsAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no startsAtLocal, so its screening time cannot be shown in the venue's zone`,
+      ),
+    };
+  }
+  const priceDisplay = servedString(value.priceDisplay);
+  if (priceDisplay === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no priceDisplay, so its price cannot be shown`,
+      ),
+    };
+  }
+  // Availability is the read model's numbers, so both of them have to be there:
+  // "12 of 40 seats available" with either number missing is a claim nobody made.
+  const seatCount = wholeOrUndefined(value.seatCount);
+  const availableSeats = wholeOrUndefined(value.availableSeats);
+  if (seatCount === undefined || availableSeats === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the catalogue entry ${id} carries no seat count, so its availability cannot be shown`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      id,
+      filmTitle,
+      cinemaName,
+      roomName,
+      startsAt: stringOr(value.startsAt, ""),
+      startsAtLocal,
+      priceCents: integerOr(value.priceCents),
+      priceDisplay,
+      seatCount,
+      availableSeats,
+    },
+  };
+}
+
 /** A minor-units amount; anything that is not a finite number counts as zero. */
 function integerOr(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -857,4 +1024,12 @@ function optionalString(value: unknown): string | undefined {
     return undefined;
   }
   return value.trim() === "" ? undefined : value;
+}
+
+/** A served whole number (a seat count), or undefined when it is not one. */
+function wholeOrUndefined(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return value;
 }
