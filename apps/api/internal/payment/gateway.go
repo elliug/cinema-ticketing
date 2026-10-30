@@ -42,10 +42,10 @@ const (
 	// silently clamped, so the boundary never approves an amount it did not see.
 	MaxAmountMinorUnits int64 = 100_000_000
 
-	// MaxReferenceLength bounds a provider reference, so the replay record and the
-	// identifier the checkout persists stay bounded whatever the caller sends. It
-	// matches the idempotency key bound of the reservation surface, because the
-	// payment reference is derived from that key.
+	// MaxReferenceLength bounds a provider reference, so the stored reference and the
+	// replay record stay bounded whatever the caller sends. The checkout derives its
+	// own reference from the payment attempt it stored (`payment_attempt:<attempt
+	// id>`), which is why this is a bound on the record and not on a client key.
 	MaxReferenceLength = 200
 )
 

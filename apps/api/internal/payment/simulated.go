@@ -25,14 +25,25 @@ var (
 )
 
 const (
-	// DefaultDeclineRemainder is the sentinel of the documented simulated outcome
-	// rule: an amount whose two least significant minor units are 13 is declined
-	// (13 cents), and every other amount is approved. It is fixed, not random, so
-	// a test can select the outcome by choosing the amount, and the same amount
-	// always produces the same answer.
+	// ProviderName is the value stored as cinema.payment_attempts.provider while
+	// this adapter answers, so a stored attempt always names the provider that owns
+	// its reference. A real provider supplies its own name through the same wiring.
+	ProviderName = "simulated"
+
+	// DefaultDeclineRemainder is the conventional sentinel of the decline *rule*: an
+	// amount whose two least significant minor units are 13 is declined (13 cents),
+	// and every other amount is approved. It is fixed, not random, so a test can
+	// select the outcome by choosing the amount.
+	//
+	// It is only in force for an adapter built by NewSimulatedWithDeclineRule. The
+	// adapter the service is wired with, NewSimulated, never declines: a decline is a
+	// test scenario, not an amount that happens to end in 13.
 	DefaultDeclineRemainder int64 = 13
 
-	// minorUnitsPerMajorUnit is the base of the remainder the sentinel matches.
+	// neverDeclines is the rule value of an adapter that approves every amount.
+	neverDeclines int64 = -1
+
+	// minorUnitsPerMajorUnit is the base of the remainder a sentinel matches.
 	minorUnitsPerMajorUnit int64 = 100
 )
 
@@ -100,7 +111,7 @@ func (l *MemoryLedger) record(charge Charge) (Charge, error) {
 	return charge, nil
 }
 
-// Simulated is the simulated payment provider: a deterministic outcome rule over a
+// Simulated is the simulated payment provider: a deterministic outcome over a
 // replay ledger, with no I/O.
 //
 // A real provider replaces only this adapter. It implements the same PaymentGateway
@@ -114,22 +125,33 @@ type Simulated struct {
 // Compile-time proof that the adapter satisfies the boundary it is built for.
 var _ PaymentGateway = (*Simulated)(nil)
 
-// NewSimulated builds the simulated provider with the documented rule
-// (DefaultDeclineRemainder) and a private replay ledger.
+// NewSimulated builds the provider the checkout is wired with: a private replay
+// ledger and **no decline rule**, so every amount it is sent is approved.
+//
+// A decline is a test scenario, so it is not reachable from the production
+// constructor at all: an amount that happens to end in 13 minor units — a real
+// 12,13 EUR ticket, for example — is a normal purchase. A test that needs the
+// declined path builds the adapter with NewSimulatedWithDeclineRule.
 func NewSimulated() *Simulated {
-	return &Simulated{ledger: NewMemoryLedger(), declineRemainder: DefaultDeclineRemainder}
+	return &Simulated{ledger: NewMemoryLedger(), declineRemainder: neverDeclines}
 }
 
-// NewSimulatedWithLedger builds the simulated provider with a chosen decline
+// NewSimulatedWithDeclineRule builds the simulated provider with a chosen decline
 // sentinel over a caller supplied ledger, so several adapter instances share one
 // replay record and a test can select which amounts decline.
 //
+// This is the constructor of a *scenario*, not of the wired provider: use it in a
+// test that has to exercise the declined path, and NewSimulated everywhere else.
+// A decline is produced only here; nothing in Request can ask for one, because a
+// real provider replaces this adapter and must not inherit simulator knobs.
+//
 // declineRemainder must be a two-digit remainder, so within 0 and 99: it is
 // compared with the two least significant minor units of the amount.
+// DefaultDeclineRemainder (13) is the conventional sentinel.
 //
 // A nil ledger is ErrInvalidLedger; a zero-value MemoryLedger is accepted and used
 // as an empty ledger.
-func NewSimulatedWithLedger(declineRemainder int64, ledger *MemoryLedger) (*Simulated, error) {
+func NewSimulatedWithDeclineRule(declineRemainder int64, ledger *MemoryLedger) (*Simulated, error) {
 	if declineRemainder < 0 || declineRemainder >= minorUnitsPerMajorUnit {
 		return nil, fmt.Errorf("%w: %d is outside 0 and 99", ErrInvalidRule, declineRemainder)
 	}
@@ -150,7 +172,7 @@ func NewSimulatedWithLedger(declineRemainder int64, ledger *MemoryLedger) (*Simu
 // cancellation aware; this adapter performs no I/O, so it never consults it.
 func (s *Simulated) Charge(ctx context.Context, request Request) (Result, error) {
 	if s == nil || s.ledger == nil {
-		return Result{}, fmt.Errorf("%w: the adapter was not built by NewSimulated", ErrNotConfigured)
+		return Result{}, fmt.Errorf("%w: the adapter was not built by a constructor", ErrNotConfigured)
 	}
 
 	reference, err := validateRequest(request)
@@ -170,12 +192,13 @@ func (s *Simulated) Charge(ctx context.Context, request Request) (Result, error)
 	return Result{Outcome: stored.Outcome, Reference: stored.Reference}, nil
 }
 
-// outcomeFor applies the deterministic rule: an amount whose two least significant
-// minor units equal the configured sentinel is declined, every other amount is
+// outcomeFor applies the deterministic rule: with a configured sentinel, an amount
+// whose two least significant minor units equal it is declined and every other
+// amount is approved; with no sentinel — the wired provider — every amount is
 // approved. The amount is already validated as positive, so no sign handling is
 // needed and the same amount always yields the same outcome.
 func (s *Simulated) outcomeFor(amountMinorUnits int64) Outcome {
-	if amountMinorUnits%minorUnitsPerMajorUnit == s.declineRemainder {
+	if s.declineRemainder != neverDeclines && amountMinorUnits%minorUnitsPerMajorUnit == s.declineRemainder {
 		return OutcomeDeclined
 	}
 	return OutcomeApproved

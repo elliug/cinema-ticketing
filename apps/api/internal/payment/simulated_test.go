@@ -38,14 +38,54 @@ func charge(t *testing.T, gateway payment.PaymentGateway, reference string, amou
 	return result
 }
 
-// TestRuleIsDeterministicForAGivenInput pins the documented outcome rule: an
-// amount whose two least significant minor units equal the configured sentinel is
-// declined, every other amount is approved, and the same input always produces
-// the same outcome.
+// TestNewSimulatedNeverDeclines pins the decision that a decline is a *test
+// scenario* and never an amount that happens to look like one: the adapter the
+// service is wired with approves every amount it is sent, including the real
+// ticket price of 12,13 EUR and every amount whose last minor units are the
+// sentinel a decline rule could use.
+//
+// Determinism still holds — the same amount always gets the same answer through
+// one adapter — it is simply always "approved".
+func TestNewSimulatedNeverDeclines(t *testing.T) {
+	amounts := []int64{
+		13,   // the sentinel itself: a 0,13 EUR ticket
+		1213, // 12,13 EUR, a real ticket price that used to be refused
+		99,   // the largest two-digit amount
+		99999913,
+		1200,
+		1212,
+		1,
+		payment.MaxAmountMinorUnits,
+	}
+
+	gateway := payment.NewSimulated()
+	for _, amount := range amounts {
+		t.Run(fmt.Sprintf("an amount of %d", amount), func(t *testing.T) {
+			const repeats = 5
+			for i := 0; i < repeats; i++ {
+				reference := fmt.Sprintf("never-decline-%d-%d", amount, i)
+				result := charge(t, gateway, reference, amount)
+				if result.Outcome != payment.OutcomeApproved {
+					t.Fatalf("Charge(%q, %d) outcome = %q, want %q: the wired provider never declines",
+						reference, amount, result.Outcome, payment.OutcomeApproved)
+				}
+				if result.Reference != reference {
+					t.Fatalf("Charge(%q, %d) reference = %q, want %q",
+						reference, amount, result.Reference, reference)
+				}
+			}
+		})
+	}
+}
+
+// TestConfiguredDeclineRuleIsDeterministic pins the decline rule as a *scenario*
+// a caller constructs: once a sentinel is configured, an amount whose two least
+// significant minor units equal it is declined, every other amount is approved,
+// and the same input always produces the same outcome.
 //
 // Determinism is proved with a fresh reference per call, so no call can be
 // answered from the replay ledger: each one reaches the rule itself.
-func TestRuleIsDeterministicForAGivenInput(t *testing.T) {
+func TestConfiguredDeclineRuleIsDeterministic(t *testing.T) {
 	cases := []struct {
 		name             string
 		amountMinorUnits int64
@@ -63,7 +103,10 @@ func TestRuleIsDeterministicForAGivenInput(t *testing.T) {
 	const repeats = 25
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gateway := payment.NewSimulated()
+			gateway, err := payment.NewSimulatedWithDeclineRule(payment.DefaultDeclineRemainder, payment.NewMemoryLedger())
+			if err != nil {
+				t.Fatalf("build the declining provider: %v", err)
+			}
 			for i := 0; i < repeats; i++ {
 				reference := fmt.Sprintf("attempt-%d-%d", tc.amountMinorUnits, i)
 				result := charge(t, gateway, reference, tc.amountMinorUnits)
@@ -85,7 +128,7 @@ func TestRuleIsDeterministicForAGivenInput(t *testing.T) {
 // an unusable rule or a missing ledger is refused instead of silently defaulted.
 func TestDeclineSentinelIsConfigurable(t *testing.T) {
 	t.Run("another sentinel moves the decline to that amount", func(t *testing.T) {
-		gateway, err := payment.NewSimulatedWithLedger(0, payment.NewMemoryLedger())
+		gateway, err := payment.NewSimulatedWithDeclineRule(0, payment.NewMemoryLedger())
 		if err != nil {
 			t.Fatalf("NewSimulatedWithLedger(0, ledger) = unexpected error %v", err)
 		}
@@ -99,7 +142,7 @@ func TestDeclineSentinelIsConfigurable(t *testing.T) {
 
 	for _, remainder := range []int64{-1, 100} {
 		t.Run("an out-of-range sentinel "+strconv.FormatInt(remainder, 10)+" is refused", func(t *testing.T) {
-			gateway, err := payment.NewSimulatedWithLedger(remainder, payment.NewMemoryLedger())
+			gateway, err := payment.NewSimulatedWithDeclineRule(remainder, payment.NewMemoryLedger())
 			if err == nil {
 				t.Fatalf("NewSimulatedWithLedger(%d, ledger) = %v, want an error", remainder, gateway)
 			}
@@ -110,7 +153,7 @@ func TestDeclineSentinelIsConfigurable(t *testing.T) {
 	}
 
 	t.Run("a nil ledger is refused", func(t *testing.T) {
-		gateway, err := payment.NewSimulatedWithLedger(payment.DefaultDeclineRemainder, nil)
+		gateway, err := payment.NewSimulatedWithDeclineRule(payment.DefaultDeclineRemainder, nil)
 		if err == nil {
 			t.Fatalf("NewSimulatedWithLedger(default, nil) = %v, want an error", gateway)
 		}
@@ -129,11 +172,11 @@ func TestDeclineSentinelIsConfigurable(t *testing.T) {
 // the stored decline, so the assertion can only pass when the stored outcome wins.
 func TestReplayIsSharedBetweenAdapterInstances(t *testing.T) {
 	ledger := payment.NewMemoryLedger()
-	first, err := payment.NewSimulatedWithLedger(payment.DefaultDeclineRemainder, ledger)
+	first, err := payment.NewSimulatedWithDeclineRule(payment.DefaultDeclineRemainder, ledger)
 	if err != nil {
 		t.Fatalf("build the first adapter: %v", err)
 	}
-	second, err := payment.NewSimulatedWithLedger(12, ledger)
+	second, err := payment.NewSimulatedWithDeclineRule(12, ledger)
 	if err != nil {
 		t.Fatalf("build the second adapter: %v", err)
 	}
@@ -175,7 +218,7 @@ func TestConcurrentReplayIsIdempotent(t *testing.T) {
 	ledger := payment.NewMemoryLedger()
 	adapters := make([]*payment.Simulated, 2)
 	for i := range adapters {
-		adapter, err := payment.NewSimulatedWithLedger(payment.DefaultDeclineRemainder, ledger)
+		adapter, err := payment.NewSimulatedWithDeclineRule(payment.DefaultDeclineRemainder, ledger)
 		if err != nil {
 			t.Fatalf("build adapter %d: %v", i, err)
 		}
@@ -383,7 +426,7 @@ func isNetworkOrCredentialImport(path string) bool {
 func TestZeroValueLedgerIsEmptyAndUsable(t *testing.T) {
 	ledger := &payment.MemoryLedger{}
 
-	g, err := payment.NewSimulatedWithLedger(payment.DefaultDeclineRemainder, ledger)
+	g, err := payment.NewSimulatedWithDeclineRule(payment.DefaultDeclineRemainder, ledger)
 	if err != nil {
 		t.Fatalf("NewSimulatedWithLedger(&MemoryLedger{}) returned error: %v", err)
 	}

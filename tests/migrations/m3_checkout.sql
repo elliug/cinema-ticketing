@@ -4,6 +4,11 @@
 -- duplicate ticket impossible.
 -- Runs after 0001_init, 0002_venue_layout, 0003_reservation, 0004_idempotency and
 -- 0005_checkout; every fixture is rolled back.
+--
+-- The rule "one open payment attempt per reservation" is 0006, not 0005, and is
+-- pinned by tests/migrations/m3_one_open_attempt.sql. So the fixtures here keep at
+-- most one *pending* attempt per reservation, which is what makes this file pass on
+-- the 0005 schema and on the full chain alike.
 BEGIN;
 
 -- M1 fixture: one room with a published three-seat layout, one film, and two
@@ -227,10 +232,13 @@ BEGIN
   END IF;
 END $$;
 
--- Two holds: the first one pays, the second one is the bystander of every duplicate.
+-- Holds: the first one pays, the second one is the bystander of every duplicate,
+-- and the third one is the bystander of the duplicate that needs a reservation of
+-- its own because a reservation may only hold one open attempt (0006).
 INSERT INTO cinema.reservations (id, event_id, expires_at) VALUES
  ('00000000-0000-0000-0000-0000000003e1','00000000-0000-0000-0000-0000000003d1', now() + interval '10 minutes'),
- ('00000000-0000-0000-0000-0000000003e2','00000000-0000-0000-0000-0000000003d1', now() + interval '10 minutes');
+ ('00000000-0000-0000-0000-0000000003e2','00000000-0000-0000-0000-0000000003d1', now() + interval '10 minutes'),
+ ('00000000-0000-0000-0000-0000000003e5','00000000-0000-0000-0000-0000000003d1', now() + interval '10 minutes');
 INSERT INTO cinema.reservation_seats (reservation_id, event_id, event_seat_id)
 SELECT '00000000-0000-0000-0000-0000000003e1','00000000-0000-0000-0000-0000000003d1', id
 FROM m3_seats WHERE event_id='00000000-0000-0000-0000-0000000003d1' AND label='A1';
@@ -307,12 +315,16 @@ BEGIN
       AND provider_reference IS NULL AND outcome IS NULL AND status='pending'
   ) THEN RAISE EXCEPTION 'a pending attempt before the provider call must be storable without a reference or an outcome'; END IF;
   -- Two pending attempts without a reference do not collide: the provider reference
-  -- is only unique among the rows that have one.
+  -- is only unique among the rows that have one. They belong to different
+  -- reservations because 0006 allows one open attempt per reservation, which is a
+  -- rule about the reservation's money and not about this partial index.
   INSERT INTO cinema.payment_attempts
     (id, reservation_id, provider, amount_cents, status, idempotency_key, request_fingerprint)
   VALUES
-    ('00000000-0000-0000-0000-0000000003fc','00000000-0000-0000-0000-0000000003e2','simulated',1250,'pending','key-precall-2','fingerprint-precall-2');
-  IF (SELECT count(*) FROM cinema.payment_attempts WHERE reservation_id='00000000-0000-0000-0000-0000000003e2' AND provider_reference IS NULL) <> 2 THEN
+    ('00000000-0000-0000-0000-0000000003fc','00000000-0000-0000-0000-0000000003e5','simulated',1250,'pending','key-precall-2','fingerprint-precall-2');
+  IF (SELECT count(*) FROM cinema.payment_attempts
+      WHERE id IN ('00000000-0000-0000-0000-0000000003fb','00000000-0000-0000-0000-0000000003fc')
+        AND provider_reference IS NULL) <> 2 THEN
     RAISE EXCEPTION 'two pending attempts without a provider reference must be storable';
   END IF;
 END $$;
@@ -365,11 +377,14 @@ BEGIN
   IF (SELECT count(*) FROM cinema.payment_attempts WHERE provider='simulated' AND provider_reference='ref-captured-1') <> 1 THEN
     RAISE EXCEPTION 'a provider reference must stay unique';
   END IF;
-  -- The same reference under another provider is a different reference.
+  -- The same reference under another provider is a different reference. The row is
+  -- 'failed' rather than 'pending' so it is not a second open attempt of a
+  -- reservation that already holds one (0006); the reference index it exercises does
+  -- not look at status.
   INSERT INTO cinema.payment_attempts
     (id, reservation_id, provider, provider_reference, amount_cents, outcome, status, idempotency_key, request_fingerprint)
   VALUES
-    ('00000000-0000-0000-0000-0000000003f5','00000000-0000-0000-0000-0000000003e2','other-provider','ref-captured-1',1250,'approved','pending','key-captured-5','fingerprint-captured-5');
+    ('00000000-0000-0000-0000-0000000003f5','00000000-0000-0000-0000-0000000003e2','other-provider','ref-captured-1',1250,NULL,'failed','key-captured-5','fingerprint-captured-5');
 END $$;
 
 -- The client idempotency key is scoped to its reservation: a replay of that
