@@ -1,3 +1,45 @@
+/* Tailwind (M3.5 · T3b).
+ *
+ * Imported in two layers on purpose: the theme (so `@theme` tokens exist) and the
+ * utilities, but **not** Tailwind's preflight. Preflight resets margins, headings and
+ * form controls, and the seat, confirmation and ticket screens still rely on the
+ * hand-written rules below until they migrate in their own slices. When the last of
+ * them moves to utilities, the preflight can be added and these legacy rules deleted.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* shadcn's component vocabulary, mapped onto the tokens this app already owns.
+ * `inline` keeps the reference rather than the resolved value, so dark mode and a
+ * future palette change reach every shadcn component without touching them.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius-md: calc(var(--radius) - 0.125rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+}
+
 /* Design tokens and shell styling (M3.5 · T3 · S1, S2, S8).
  *
  * One file owns the look. Every value a surface needs is a custom property below,
@@ -24,6 +66,32 @@
 
 :root {
   color-scheme: light dark;
+
+  /* ── shadcn vocabulary, aliased onto the tokens below ─────────────────────
+   * One palette, two naming schemes: Tailwind/shadcn utilities resolve these, and
+   * they in turn point at the design tokens this file owns. Dark mode therefore
+   * reaches every shadcn component without a second palette.
+   */
+  --background: var(--color-bg);
+  --foreground: var(--color-text);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-text);
+  --popover: var(--color-surface);
+  --popover-foreground: var(--color-text);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--color-on-accent);
+  --secondary: var(--color-surface-muted);
+  --secondary-foreground: var(--color-text);
+  --muted: var(--color-surface-muted);
+  --muted-foreground: var(--color-text-muted);
+  --accent: var(--color-surface-muted);
+  --accent-foreground: var(--color-text);
+  --destructive: var(--color-danger);
+  --destructive-foreground: var(--color-on-danger);
+  --border: var(--color-border);
+  --input: var(--color-border);
+  --ring: var(--color-accent);
+  --radius: var(--radius-md);
 
   /* ── Colour: surfaces and text ─────────────────────────────────────────────
    * Three levels, in the order a page stacks them: the page behind everything,

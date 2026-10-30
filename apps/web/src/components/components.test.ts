@@ -148,3 +148,62 @@ test("every component module is reachable through the barrel", () => {
     );
   }
 });
+
+// ── The shadcn layer (M3.5 · T3b) ────────────────────────────────────────────
+//
+// `ui/` is the primitive layer every screen from T4 on composes. It is imported by
+// path (`@/components/ui/button`), the shadcn convention, so the barrel above stays
+// the semantic set the shell uses and the two layers cannot shadow each other.
+
+test("every ui primitive exists and depends on nothing above it", () => {
+  const primitives = [
+    "alert",
+    "badge",
+    "button",
+    "card",
+    "dialog",
+    "input",
+    "label",
+    "select",
+    "skeleton",
+    "tabs",
+    "textarea",
+    "tooltip",
+  ];
+  for (const name of primitives) {
+    const source = sourceOf(`ui/${name}`);
+    // A primitive may import the `cn` helper and its own Radix package, never one of
+    // ours: a cycle here would make the layer impossible to reason about.
+    assert.ok(
+      !/from "\.\.\//.test(source) && !/from "@\/components"/.test(source),
+      `ui/${name}.tsx must not import from components/`,
+    );
+  }
+});
+
+test("no ui primitive carries a literal colour", () => {
+  for (const name of ["alert", "badge", "button", "card", "input", "select", "skeleton"]) {
+    const source = sourceOf(`ui/${name}`);
+    assert.ok(
+      !/#[0-9a-fA-F]{3,8}\b/.test(source),
+      `ui/${name}.tsx must use theme tokens, not a hex colour`,
+    );
+  }
+});
+
+test("the interactive primitives declare their client boundary", () => {
+  for (const name of ["dialog", "select", "tabs", "tooltip", "label", "button"]) {
+    const source = sourceOf(`ui/${name}`);
+    assert.ok(
+      source.startsWith('"use client";'),
+      `ui/${name}.tsx needs "use client" for its Radix behaviour`,
+    );
+  }
+  for (const name of ["card", "badge", "input", "textarea", "alert", "skeleton"]) {
+    const source = sourceOf(`ui/${name}`);
+    assert.ok(
+      !source.startsWith('"use client";'),
+      `ui/${name}.tsx has no state and must stay a server component`,
+    );
+  }
+});
