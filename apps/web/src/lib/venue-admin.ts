@@ -277,10 +277,23 @@ export function summarizeLayouts(value: AdminLayoutVersionList): LayoutVersionRo
   }));
 }
 
+/**
+ * The layout versions a screening may be scheduled against: published ones only.
+ *
+ * Mirroring the API rather than trusting the operator: a draft version is the
+ * scheduling conflict the API answers, and a select that offered one would be
+ * inviting a request that cannot succeed. The published order is kept, because the
+ * versions were served oldest first.
+ */
+export function publishedLayoutOptions(
+  rows: readonly LayoutVersionRow[],
+): LayoutVersionRow[] {
+  return rows.filter((row) => row.status === "published");
+}
+
 function atMost(): string {
   return `must be at most ${MAX_TEXT_LENGTH} characters`;
 }
-
 /**
  * Builds the local failure shape the API would return for the same field, so
  * the UI can render local and server rejections identically.

@@ -1,14 +1,16 @@
-/* Tailwind (M3.5 · T3b).
+/* Tailwind (M3.5 · T3b, completed by T8).
  *
- * Imported in two layers on purpose: the theme (so `@theme` tokens exist) and the
- * utilities, but **not** Tailwind's preflight. Preflight resets margins, headings and
- * form controls, and the ticket and administration screens still rely on the
- * hand-written rules below until they migrate in their own slices (T7 and T8). When the
- * last of them moves to utilities, the preflight can be added and these legacy rules
- * deleted.
+ * Imported in three layers: the theme (so `@theme` tokens exist), the preflight, and the
+ * utilities. **The preflight is imported as of T8**, which is where the deferral L6
+ * recorded ended: it was held back while the hand-written rules below were still the only
+ * styling of the ticket, seat, confirmation and administration screens, because importing
+ * it would have restyled them in a change that claimed to be about something else. The
+ * administration screens were the last family (T8), so it lands here — together with the
+ * deletion of every legacy rule no remaining screen uses.
  */
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 
 /* shadcn's component vocabulary, mapped onto the tokens this app already owns.
@@ -42,59 +44,36 @@
 }
 
 /* ── Legacy layer ────────────────────────────────────────────────────────────
- * Everything below is the hand-written styling of M1–M3. It is wrapped in
- * `@layer base` on purpose: Tailwind's utilities live in `@layer utilities`, and an
- * unlayered rule always wins over a layered one — which made `text-muted-foreground`
- * on a paragraph, or a smaller `CardTitle`, silently inert. With the legacy rules in
- * a layer, utilities override them as they should, and this block shrinks screen by
- * screen as each one migrates (T5–T8). The preflight joins at that point.
+ * What is left of the hand-written styling of M1–M3 (M3.5 · T8).
  *
- * T5 migrated the seat page — the page, the map and the selection summary are now
- * shadcn primitives and utilities — and **deleted nothing**, because every rule that
- * page stopped using is still the only styling of another screen. T6 migrated the
- * confirmation page (the checkout) the same way and, again, deleted nothing: it used
- * `.card`, `.problems`, `.notice`, `.meta`, `.actions`, `.feedback`, `.eyebrow`, `.lead`
- * and `.list`, and every one of them is still load-bearing somewhere else.
+ * It is wrapped in `@layer base` on purpose: Tailwind's utilities live in `@layer
+ * utilities`, and an unlayered rule always wins over a layered one — which made
+ * `text-muted-foreground` on a paragraph, or a smaller `CardTitle`, silently inert.
  *
- * **T7 is the first migration that deleted something.** It moved both ticket screens —
- * the list and the ticket itself — onto shadcn primitives and utilities, and four rule
- * groups then had no user left anywhere: `.ticket-facts`, `.qr`, `.qr-image` and
- * `a.download`. Everything else those screens stopped using is still the only styling of
- * the administration pages, so the inventory stays and now names who is left with each
- * rule:
+ * T5 migrated the seat page, T6 the confirmation, T7 both ticket screens and T8 the three
+ * administration screens. With the last of them on utilities, everything that had no user
+ * left is **deleted**: `.eyebrow`, `.lead`, `.meta`, `.problems`, `.path`, `.editor`,
+ * `.editor-header`, `.rows`, `.row`, `.row-header`, `.seats`, `.seat`, `.fields`,
+ * `.actions`, `.feedback`, and the `input[type=text]`, `input[type=number]`, `select`,
+ * `button` and `button:disabled` element rules — all of which existed only for the
+ * administration forms and their blocks of rows. Each one was checked with `grep` before
+ * it went.
  *
- *   .foundation, .skip-link        every page, and the root layout's skip link
- *   .eyebrow, .lead                administration: the schedule and venues pages
- *   .card                          administration, and the shell's hand-written Card
- *                                  still imported by the home page
- *   .card__*, .card--*             only components/card.tsx (home page)
- *   .problems                      administration: the layout editor, and the error
- *                                  block of the schedule and venues pages
- *   .notice                        administration and the home page
- *   .meta                          administration: the schedule and layout views
- *   .list                          administration and the home page
- *   .actions                       administration (the layout editor)
- *   .feedback, .feedback.error     administration: the schedule, venues and layout
- *                                  forms
- *   .rows, .row, .row-header       administration: the layout editor (M1)
- *   .path                          administration: schedule, venues and layouts
- *   .seats, .seat, .fields         administration: the layout editor only
- *   .editor                        administration: the layouts page only
- *   .btn, .badge, .alert, .field__*, .empty-state, .skeleton, .page-header__*
- *                                  the hand-written components in components/ that the
- *                                  barrel still exports; no page imports them any more
- *                                  except PageHeader (every page) and the hand-written
- *                                  Card (home page)
- *   button, input, select          administration forms and the demo switcher
- *   code, a, body, headings        base element rules: every remaining screen, and the
- *                                  migrated checkout and ticket screens still print ids
- *                                  in <code> and times in <time>
- *   .visually-hidden               no screen today: kept as the shared utility
+ * What survives, and the screen that still needs it:
  *
- * Nothing here may be removed until the screen named beside it migrates, and the
- * preflight import stays deferred until the last of them does: **administration (T8) is
- * the only one left**. Importing it now would restyle it in a change that claims to be
- * about the tickets (L6).
+ *   .foundation                      every page (`<main id="main-content">`)
+ *   .skip-link, .visually-hidden     the root layout's skip link and the shared utility
+ *   .page-header__*                  components/page-header.tsx, on every page
+ *   .card, .card__*, .card--*        components/card.tsx, the hand-written Card the home
+ *                                    page still renders
+ *   .btn, .badge, .alert, .field__*, .empty-state, .skeleton
+ *                                    the hand-written components in components/ that the
+ *                                    barrel still exports
+ *   .notice, .list                   the home page
+ *   .site-header*, .brand*, .site-nav*, .demo-switcher*, .site-footer*
+ *                                    the shell (site-header.tsx, site-footer.tsx)
+ *   body, h1–h3, p, li, a, code, :focus-visible
+ *                                    base element rules every remaining screen inherits
  */
 @layer base {
 /* Design tokens and shell styling (M3.5 · T3 · S1, S2, S8).
@@ -317,10 +296,6 @@
   }
 }
 
-* {
-  box-sizing: border-box;
-}
-
 /* The shell is a column: header, the page's own `<main>`, footer. `min-height`
  * and the footer's top margin keep the footer at the bottom of a short page
  * instead of floating under a half-empty screen. */
@@ -364,8 +339,13 @@ li {
   color: var(--color-text);
 }
 
+/* A link is a link. Preflight leaves anchors with `color: inherit` and
+ * `text-decoration: inherit`, which would remove the underline every hand-written screen
+ * has shown since M0; this rule keeps the appearance those screens were built with, and a
+ * utility such as `no-underline` can override it where a link is styled as a button. */
 a {
   color: var(--color-accent);
+  text-decoration: underline;
   text-underline-offset: 0.2em;
 }
 
@@ -982,24 +962,14 @@ code {
   flex: 1 0 auto;
 }
 
-.eyebrow {
-  margin: 0 0 var(--space-1);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-.lead {
-  font-size: var(--font-size-lg);
-  color: var(--color-text-muted);
-  margin: 0;
-  max-width: var(--measure);
-}
-
+/* The home page's numbered and bulleted lists. Preflight makes every list `list-style:
+ * none` and strips its padding, and this is the one screen still rendering a marker; so the
+ * rule hands the marker back to the browser's own choice for `<ol>` and `<ul>` rather than
+ * picking a style the page never had. */
 .list {
   margin: 0;
   padding-left: var(--space-5);
+  list-style: revert;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -1021,164 +991,4 @@ code {
   }
 }
 
-/* ── Local administrative layout editor (M1) ─────────────────────────────────
- *
- * Rows are laid out as independent blocks, each with its own seat list, so a
- * row with one seat and a row with twelve seats need no shared column count.
- */
-
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
 }
-
-.editor-header h1 {
-  margin-top: 0;
-}
-
-.meta {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-  max-width: var(--measure);
-}
-
-.notice {
-  margin: var(--space-2) 0 0;
-  color: var(--color-text-muted);
-  max-width: var(--measure);
-}
-
-.problems {
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-}
-
-.problems h2 {
-  margin: 0 0 var(--space-2);
-  font-size: var(--font-size-base);
-}
-
-.problems ul {
-  margin: 0;
-  padding-left: var(--space-5);
-}
-
-.path {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-}
-
-.rows,
-.seats {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.row {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.row-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.row-header h2 {
-  margin: 0;
-  font-size: var(--font-size-base);
-}
-
-.fields {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-3);
-}
-
-.fields label,
-.seat label {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
-}
-
-.seat label.checkbox {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-input[type="text"],
-input[type="number"],
-select {
-  font: inherit;
-  color: var(--color-text);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  padding: 0.3rem 0.5rem;
-  max-width: 12rem;
-}
-
-input[type="number"] {
-  max-width: 6rem;
-}
-
-button {
-  font: inherit;
-  color: var(--color-text);
-  background-color: var(--color-surface-muted);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  padding: 0.35rem 0.75rem;
-  cursor: pointer;
-}
-
-button:disabled {
-  color: var(--color-text-muted);
-  cursor: not-allowed;
-}
-
-.seat {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.feedback {
-  margin: 0;
-  color: var(--color-text);
-}
-
-.feedback.error {
-  color: var(--color-danger-text);
-}
-
-}
-

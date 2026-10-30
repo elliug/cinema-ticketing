@@ -410,6 +410,8 @@ test("createEvent posts the schedule and returns the draft event", async () => {
     layoutVersionId: "layout-1",
     startsAt: "2024-05-01T18:00:00Z",
     status: "draft",
+    priceCents: 0,
+    priceDisplay: "0.00",
   };
   const recorder = recordingFetch(() => jsonResponse(201, event));
   const client = makeClient(recorder);
@@ -433,6 +435,215 @@ test("createEvent posts the schedule and returns the draft event", async () => {
     layoutVersionId: "layout-1",
     startsAt: "2024-05-01T18:00:00Z",
   });
+});
+
+// ── The repertoire and the screening reads (M3.5 · T8 · S3, S4) ───────────────
+//
+// These tests hold the parser to its promise: the shapes the administration screen cannot
+// print are refused, and the field it could not read is named. A dropped film would offer
+// a repertoire smaller than the API answered; a screening without a price would put a
+// number nobody served in front of an operator who is about to publish it.
+
+const FILM = {
+  id: "film-1",
+  title: "The Quiet Cartographer",
+  runtimeMinutes: 104,
+  rating: "PG",
+};
+
+const SCREENING = {
+  id: "5f1b7c1e-0000-4000-8000-000000000001",
+  roomId: "room-1",
+  filmId: "film-1",
+  layoutVersionId: "layout-1",
+  startsAt: "2024-05-01T18:00:00Z",
+  status: "on_sale",
+  priceCents: 1250,
+  priceDisplay: "12.50",
+  filmTitle: "The Quiet Cartographer",
+  roomName: "Sala 2",
+  cinemaName: "Cine Central",
+};
+
+test("listFilms reads the repertoire in the order the API answered it", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      films: [FILM, { ...FILM, id: "film-2", title: "Zulu" }],
+    }),
+  );
+  const client = makeClient(recorder);
+
+  const films = unwrap(await client.listFilms());
+
+  assert.deepEqual(films, [FILM, { ...FILM, id: "film-2", title: "Zulu" }]);
+  const [call] = recorder.calls;
+  assert.equal(call.url, `${BASE_URL}/api/v1/admin/films`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(headerValue(call.init, "Authorization"), `Bearer ${TOKEN}`);
+});
+
+test("listFilms refuses a film it cannot name instead of offering it", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { films: [{ ...FILM, title: "" }] }),
+  );
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(await client.listFilms());
+
+  assert.equal(problem.code, "unexpected_response");
+  assert.equal(problem.detail, "the film film-1 carries no title");
+});
+
+test("listEvents reads screenings with their names and price", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { events: [SCREENING] }),
+  );
+  const client = makeClient(recorder);
+
+  const events = unwrap(await client.listEvents());
+
+  assert.deepEqual(events, [SCREENING]);
+  const [call] = recorder.calls;
+  assert.equal(call.url, `${BASE_URL}/api/v1/admin/events`);
+  assert.equal(call.init.method, "GET");
+});
+
+test("getEvent reads one named screening", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, SCREENING));
+  const client = makeClient(recorder);
+
+  const event = unwrap(await client.getEvent(SCREENING.id));
+
+  assert.deepEqual(event, SCREENING);
+  const [call] = recorder.calls;
+  assert.equal(call.url, `${BASE_URL}/api/v1/admin/events/${SCREENING.id}`);
+  assert.equal(call.init.method, "GET");
+});
+
+// Every field the list prints: an entry the screen cannot print refuses the whole read,
+// because dropping it would hide a screening the API offered.
+test("a screening read refuses an entry it cannot print, naming the field", async () => {
+  for (const [field, detail] of [
+    ["filmTitle", `the screening ${SCREENING.id} carries no film title`],
+    ["roomName", `the screening ${SCREENING.id} carries no room name`],
+    ["cinemaName", `the screening ${SCREENING.id} carries no cinema name`],
+    ["priceDisplay", `the screening ${SCREENING.id} carries no price text`],
+    ["priceCents", `the screening ${SCREENING.id} carries no price in minor units`],
+  ] as const) {
+    const recorder = recordingFetch(() =>
+      jsonResponse(200, { events: [SCREENING, { ...SCREENING, [field]: undefined }] }),
+    );
+    const client = makeClient(recorder);
+
+    const problem = unwrapError(await client.listEvents());
+
+    assert.equal(problem.code, "unexpected_response");
+    assert.equal(problem.detail, detail);
+  }
+});
+
+test("a screening read refuses a start time this screen cannot read", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { events: [{ ...SCREENING, startsAt: "next tuesday" }] }),
+  );
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(await client.listEvents());
+
+  assert.equal(
+    problem.detail,
+    `the screening ${SCREENING.id} carries a start time this screen cannot read`,
+  );
+});
+
+test("updateEvent PATCHes exactly the fields it was given", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      ...SCREENING,
+      priceCents: 1400,
+      priceDisplay: "14.00",
+      status: "on_sale",
+    }),
+  );
+  const client = makeClient(recorder);
+
+  const updated = unwrap(
+    await client.updateEvent(SCREENING.id, {
+      priceCents: 1400,
+      status: "on_sale",
+    }),
+  );
+
+  assert.equal(updated.priceCents, 1400);
+  assert.equal(updated.priceDisplay, "14.00");
+  assert.equal(updated.status, "on_sale");
+  const [call] = recorder.calls;
+  assert.equal(call.url, `${BASE_URL}/api/v1/admin/events/${SCREENING.id}`);
+  assert.equal(call.init.method, "PATCH");
+  assert.deepEqual(bodyOf(call.init), { priceCents: 1400, status: "on_sale" });
+});
+
+test("a status-only update carries no price at all", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { ...SCREENING, status: "cancelled" }),
+  );
+  const client = makeClient(recorder);
+
+  unwrap(await client.updateEvent(SCREENING.id, { status: "cancelled" }));
+
+  const [call] = recorder.calls;
+  // The body is the request: a price that was not sent is not written, so the assertion
+  // is on the JSON the API receives and not on the object this client was handed.
+  assert.equal(call.init.body, JSON.stringify({ status: "cancelled" }));
+});
+
+test("updateEvent refuses an answer that carries no price text", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { ...SCREENING, priceDisplay: undefined }),
+  );
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(
+    await client.updateEvent(SCREENING.id, { status: "cancelled" }),
+  );
+
+  assert.equal(
+    problem.detail,
+    `the screening ${SCREENING.id} carries no price text`,
+  );
+});
+
+test("a blank screening identifier never reaches the API", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, SCREENING));
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(await client.getEvent("  "));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(problem.detail, "eventId: must not be empty");
+  assert.deepEqual(recorder.calls, []);
+});
+
+test("an update the API refuses keeps its field-naming detail", async () => {
+  const detail = "priceCents: must be zero or greater";
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-input",
+      title: "Invalid input",
+      status: 400,
+      code: "invalid_input",
+      detail,
+    }),
+  );
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(
+    await client.updateEvent(SCREENING.id, { priceCents: -1 }),
+  );
+
+  assert.equal(problem.code, "invalid_input");
+  // Printed, not paraphrased: the client hands the API's wording to the form unchanged.
+  assert.equal(problem.detail, detail);
 });
 
 test("listEventSeats reads the materialized seats of one event", async () => {

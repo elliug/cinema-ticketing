@@ -1,4 +1,4 @@
-// Typed administrative API client for the local M1 venue and layout surface.
+// Typed administrative API client for the local venue, layout and screening surface.
 //
 // The Go API serves these routes under /api/v1/admin/, is reachable only from
 // loopback in development, and requires an `Authorization: Bearer <token>`
@@ -101,6 +101,34 @@ export interface AdminEvent {
   layoutVersionId: string;
   startsAt: string;
   status: string;
+  /** The stored price in minor units. Zero is a free screening, never a missing price. */
+  priceCents: number;
+  /** The same amount as the API spells it (`12.50`). This client never formats money. */
+  priceDisplay: string;
+}
+
+/**
+ * A screening as the two administrative reads serve it: the stored columns and the
+ * price, plus the three names the store joined in the same statement. A write answers
+ * [AdminEvent] without them, because `RETURNING` cannot join and a name nobody read is
+ * not a name to answer.
+ */
+export interface AdminEventRead extends AdminEvent {
+  filmTitle: string;
+  roomName: string;
+  cinemaName: string;
+}
+
+/**
+ * The writable fields of a screening, as `PATCH /events/{eventId}` accepts them.
+ *
+ * A field that is absent is not written at all, so `{priceCents: 0}` makes a screening
+ * free and `{status: "on_sale"}` leaves its price exactly where it was. A body with
+ * neither field is the API's `400`, not a request that changes nothing.
+ */
+export interface AdminEventUpdate {
+  priceCents?: number;
+  status?: string;
 }
 
 export interface AdminEventSeat {
@@ -237,7 +265,17 @@ export interface AdminClient {
   cloneLayout(layoutId: string): Promise<AdminResult<AdminLayout>>;
   getLayout(layoutId: string): Promise<AdminResult<AdminLayout>>;
   createFilm(input: CreateFilmInput): Promise<AdminResult<AdminFilm>>;
+  /** The repertoire, in the order the API answers it (`title`, then identifier). */
+  listFilms(): Promise<AdminResult<AdminFilm[]>>;
   createEvent(input: CreateEventInput): Promise<AdminResult<AdminEvent>>;
+  /** Every screening, in the API's screening order, with its film, room and cinema. */
+  listEvents(): Promise<AdminResult<AdminEventRead[]>>;
+  getEvent(eventId: string): Promise<AdminResult<AdminEventRead>>;
+  /** Sets the price, the status, or both. Fields that are absent are not written. */
+  updateEvent(
+    eventId: string,
+    update: AdminEventUpdate,
+  ): Promise<AdminResult<AdminEvent>>;
   listEventSeats(eventId: string): Promise<AdminResult<AdminEventSeats>>;
 }
 
@@ -348,11 +386,245 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
       send(`/layouts/${encodeURIComponent(layoutId)}/clone`, "POST"),
     getLayout: (layoutId) =>
       send(`/layouts/${encodeURIComponent(layoutId)}`, "GET"),
-    createFilm: (input) => send("/films", "POST", input),
-    createEvent: (input) => send("/events", "POST", input),
+
+    async createFilm(input) {
+      const result = await send<unknown>("/films", "POST", input);
+      if (!result.ok) {
+        return result;
+      }
+      return parseFilm(result.value);
+    },
+
+    async listFilms() {
+      const result = await send<unknown>("/films", "GET");
+      if (!result.ok) {
+        return result;
+      }
+      return parseFilmList(result.value);
+    },
+
+    async createEvent(input) {
+      const result = await send<unknown>("/events", "POST", input);
+      if (!result.ok) {
+        return result;
+      }
+      // A create answers the stored columns and the price: the names are the reads' own,
+      // because the write's `RETURNING` cannot join them.
+      return parseEvent(result.value, 201);
+    },
+
+    async listEvents() {
+      const result = await send<unknown>("/events", "GET");
+      if (!result.ok) {
+        return result;
+      }
+      return parseEventList(result.value);
+    },
+
+    async getEvent(eventId) {
+      const id = eventId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidEventId() };
+      }
+      const result = await send<unknown>(
+        `/events/${encodeURIComponent(id)}`,
+        "GET",
+      );
+      if (!result.ok) {
+        return result;
+      }
+      return parseEventRead(result.value, 200);
+    },
+
+    async updateEvent(eventId, update) {
+      const id = eventId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidEventId() };
+      }
+      const result = await send<unknown>(
+        `/events/${encodeURIComponent(id)}`,
+        "PATCH",
+        update,
+      );
+      if (!result.ok) {
+        return result;
+      }
+      return parseEvent(result.value, 200);
+    },
+
     listEventSeats: (eventId) =>
       send(`/events/${encodeURIComponent(eventId)}/seats`, "GET"),
   };
+}
+
+// ── Parsers ─────────────────────────────────────────────────────────────────
+//
+// A parser refuses what the screen cannot print, and names the field it could not read.
+// The alternative — defaulting a missing price to 0, or dropping an entry that carries no
+// film title — would put a number nobody served, or a screening nobody described, in front
+// of an operator who is about to publish it.
+
+function parseFilmList(value: unknown): AdminResult<AdminFilm[]> {
+  if (!isRecord(value) || !Array.isArray(value.films)) {
+    return refused(200, "the administrative film list has no film list");
+  }
+  const films: AdminFilm[] = [];
+  for (const item of value.films) {
+    const film = parseFilm(item);
+    if (!film.ok) {
+      // One unreadable entry refuses the list: a select that silently lost a film would
+      // offer a repertoire smaller than the one the API answered.
+      return film;
+    }
+    films.push(film.value);
+  }
+  return { ok: true, value: films };
+}
+
+function parseFilm(value: unknown): AdminResult<AdminFilm> {
+  if (!isRecord(value)) {
+    return refused(200, "the film list contains an entry without an id");
+  }
+  const id = servedString(value.id);
+  if (id === undefined) {
+    return refused(200, "the film list contains an entry without an id");
+  }
+  const title = servedString(value.title);
+  if (title === undefined) {
+    return refused(200, `the film ${id} carries no title`);
+  }
+  const runtimeMinutes = servedInteger(value.runtimeMinutes);
+  if (runtimeMinutes === undefined) {
+    return refused(200, `the film ${id} carries no runtime`);
+  }
+  const rating = servedString(value.rating);
+  if (rating === undefined) {
+    return refused(200, `the film ${id} carries no rating`);
+  }
+  return { ok: true, value: { id, title, runtimeMinutes, rating } };
+}
+
+function parseEventList(value: unknown): AdminResult<AdminEventRead[]> {
+  if (!isRecord(value) || !Array.isArray(value.events)) {
+    return refused(200, "the administrative screening list has no screening list");
+  }
+  const events: AdminEventRead[] = [];
+  for (const item of value.events) {
+    const event = parseEventRead(item, 200);
+    if (!event.ok) {
+      return event;
+    }
+    events.push(event.value);
+  }
+  return { ok: true, value: events };
+}
+
+/** The two administrative reads: the stored columns, the price, and the three names. */
+function parseEventRead(value: unknown, status: number): AdminResult<AdminEventRead> {
+  const stored = parseEvent(value, status);
+  if (!stored.ok) {
+    return stored;
+  }
+  const { id } = stored.value;
+  const filmTitle = servedString(isRecord(value) ? value.filmTitle : undefined);
+  if (filmTitle === undefined) {
+    return refused(status, `the screening ${id} carries no film title`);
+  }
+  const roomName = servedString(isRecord(value) ? value.roomName : undefined);
+  if (roomName === undefined) {
+    return refused(status, `the screening ${id} carries no room name`);
+  }
+  const cinemaName = servedString(isRecord(value) ? value.cinemaName : undefined);
+  if (cinemaName === undefined) {
+    return refused(status, `the screening ${id} carries no cinema name`);
+  }
+  return {
+    ok: true,
+    value: { ...stored.value, filmTitle, roomName, cinemaName },
+  };
+}
+
+/** The stored columns of one screening, plus the price every event answer carries. */
+function parseEvent(value: unknown, status: number): AdminResult<AdminEvent> {
+  if (!isRecord(value)) {
+    return refused(status, "a screening answer that is not an object");
+  }
+  const id = servedString(value.id);
+  if (id === undefined) {
+    return refused(status, "a screening answer without an id");
+  }
+
+  const stored: Record<string, string> = {};
+  for (const field of STORED_EVENT_FIELDS) {
+    const served = servedString(value[field]);
+    if (served === undefined) {
+      return refused(status, `the screening ${id} carries no ${field}`);
+    }
+    stored[field] = served;
+  }
+
+  // The screen prints this value in a `<time>` and reads it to decide whether the start
+  // has passed, so a start nobody can parse is refused instead of printed as text.
+  if (Number.isNaN(Date.parse(stored.startsAt))) {
+    return refused(
+      status,
+      `the screening ${id} carries a start time this screen cannot read`,
+    );
+  }
+
+  const priceCents = servedInteger(value.priceCents);
+  if (priceCents === undefined || priceCents < 0) {
+    return refused(status, `the screening ${id} carries no price in minor units`);
+  }
+  const priceDisplay = servedString(value.priceDisplay);
+  if (priceDisplay === undefined) {
+    return refused(status, `the screening ${id} carries no price text`);
+  }
+
+  return {
+    ok: true,
+    value: {
+      id,
+      roomId: stored.roomId,
+      filmId: stored.filmId,
+      layoutVersionId: stored.layoutVersionId,
+      startsAt: stored.startsAt,
+      status: stored.status,
+      priceCents,
+      priceDisplay,
+    },
+  };
+}
+
+/** The stored columns every screening answer carries; the names are the reads' own. */
+const STORED_EVENT_FIELDS = [
+  "roomId",
+  "filmId",
+  "layoutVersionId",
+  "startsAt",
+  "status",
+] as const;
+
+function refused(status: number, detail: string): AdminResult<never> {
+  return { ok: false, error: unexpectedResponse(status, detail) };
+}
+
+function invalidEventId(): AdminProblem {
+  return {
+    type: "https://cinema.local/problems/invalid-input",
+    title: "Invalid input",
+    status: 400,
+    code: "invalid_input",
+    detail: "eventId: must not be empty",
+  };
+}
+
+function servedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function servedInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
 }
 
 /** Strips trailing slashes so path joins never double up. */
