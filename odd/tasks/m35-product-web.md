@@ -233,3 +233,37 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   real render of a held, a paid, an already-expired, a missing and an unreachable order against a
   stub API with no error or hydration warning. Not covered: the click path in a browser, which is
   T9's gate.
+- L12 — T7 gave the milestone its last two purchase screens and turned the primary navigation's
+  final entry into a link: "My tickets" carries `/tickets`, L5's rule that the slice building a
+  screen changes that entry's `href` and nothing else, and a component guard now pins that no
+  primary entry is left as plain text while its route is served. **The ticket page re-reads the
+  ticket on every load and asks the door's question**: the screening, the venue's own
+  `startsAtLocal` verbatim in a `<time>` carrying the UTC instant, the seat as painted and
+  `orderAmountDisplay` labelled **order total**, while whether it admits its holder is
+  `POST /tickets/verify` with the token the API itself served — seven states that stay apart:
+  valid; withdrawn (with the warning that the printed PDF predates the withdrawal); screening
+  cancelled, said to be no fault in the ticket; a reason this build does not interpret, quoted
+  rather than translated; `400 invalid_token`, where forgery and unknown ticket are one answer
+  on purpose and no retry is offered; a failed check, which says *nothing about the ticket
+  changed* and offers a link that re-checks; and any other refusal in its own words. The stored
+  status and the PDF are printed as facts, never as the verdict (S8). **The "my tickets" screen
+  says what it is, because it cannot be what an account would be**: the demonstration session
+  authenticates nobody (L3) and no route lists tickets, so the screen shows the ids this browser
+  tab kept when a ticket was opened, in `sessionStorage` beside the payment key and the demo
+  session (newest first, deduplicated, capped at 50, blank ids never written, the key removed
+  when the list empties). Unavailable is not empty, an empty list explains itself, records the
+  page cannot read are counted instead of dropped, and every entry is re-read from the box
+  office — so one stale id costs one row rather than the list, and only a row the box office
+  does not know may be forgotten, because a record the page could not read is not a record it
+  may delete. The two screens print the checkout's own link shape: `IssuedTickets` is imported
+  from the confirmation panel rather than copied. **The rules left JSX**: the store, the
+  verify→display mapping, the failed-read mapping and the seat label are pure functions in
+  `lib/issued-tickets.ts` with 33 tests, and three file-text guards pin what a typechecker
+  cannot see (the PDF is an anchor, the QR `alt` names the ticket, the legacy classes are gone).
+  **This is the first migration that deleted stylesheet**: `.ticket-facts`, `.qr`, `.qr-image`
+  and `a.download` had no user left, while `.card`, `.problems`, `.notice`, `.meta`,
+  `.feedback` and the administration layouts stay with the screens that still need them and the
+  preflight remains deferred for T8. Evidence: `pnpm check` green with 284 tests and a real
+  render of a valid, a voided, a forged-code, a missing and an unreadable ticket plus the list
+  and its navigation, all with a single `h1` and a single skip link. Not covered: the click path
+  in a browser, which is T9's gate.
