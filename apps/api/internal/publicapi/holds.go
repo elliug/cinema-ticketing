@@ -1,8 +1,9 @@
 // Package publicapi exposes the customer facing HTTP surface: the M2 hold
 // creation endpoint, the event seat availability read, the M3 checkout route that
 // pays a held reservation, the M3 ticket detail route that the confirmation page
-// and the PDF both read, and the M3 ticket verification route a door scanner calls
-// with a presented signed code.
+// and the PDF both read, the M3 ticket PDF download route that answers a
+// short-lived pre-signed redirect, and the M3 ticket verification route a door
+// scanner calls with a presented signed code.
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -32,14 +33,16 @@ type HoldService interface {
 
 // Handler serves the public reservation routes.
 type Handler struct {
-	svc      HoldService
-	payments PaymentService
-	tickets  TicketService
+	svc        HoldService
+	payments   PaymentService
+	tickets    TicketService
+	ticketPDFs TicketPDFService
 }
 
-// New builds a Handler over the given service. The checkout and ticket detail
-// routes are attached separately, by WithPayments and WithTickets, so a deployment
-// without the checkout schema mounts neither of them.
+// New builds a Handler over the given service. The checkout, ticket detail, ticket
+// PDF and ticket verification routes are attached separately, by WithPayments,
+// WithTickets and WithTicketPDFs, so a deployment without the checkout schema or
+// without object storage mounts none of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -57,6 +60,12 @@ func (h *Handler) Mux() *http.ServeMux {
 		// that route serves, so mounting one without the other would advertise half a
 		// capability.
 		mux.HandleFunc(verifyTicketRoute, h.verifyTicket)
+	}
+	// The download route needs both halves: a ticket to download and somewhere to store
+	// the document. A deployment without object storage never attaches the archive, so it
+	// advertises no download it could not honour.
+	if h.tickets != nil && h.ticketPDFs != nil {
+		mux.HandleFunc(ticketPDFRoute, h.downloadTicketPDF)
 	}
 	return mux
 }
