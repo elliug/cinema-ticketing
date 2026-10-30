@@ -109,6 +109,7 @@ make seed-dev           # development seed rows; requires API_ENV=development
 make ensure-bucket      # create the configured ticket bucket when it is missing
 make bootstrap          # migrate-all, then seed-dev, then ensure-bucket
 make verify-m3          # M3 gate end to end: hold, pay, ticket, code, PDF from the bucket
+make verify-m35         # M3.5 gate in a real browser: administration, purchase, tickets
 make migrate-down       # explicitly roll back the development schema
 make deps-down          # stop local containers without deleting volumes
 ```
@@ -240,6 +241,25 @@ job: it holds seats, pays, fetches the ticket, verifies the code, downloads the 
 its redirect, and shows the artefact survives a Floci restart and a container recreation.
 Two gates share Redis logical database 9 by default (`verify-m2`, `verify-m3`) and refuse
 to run concurrently rather than flushing each other.
+
+## M3.5 the product web
+
+M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and administration on top of that.
+
+| Surface | What it does |
+|---|---|
+| `/events` | the catalogue: screenings on sale, the venue's own hour, price per seat, seats available |
+| `/events/{id}/seats` | the seat map: the real layout, operable with the keyboard alone, states legible without colour |
+| `/reservations/{id}` | the checkout: pays with a key it keeps per reservation, and answers thirteen outcomes as thirteen states |
+| `/tickets/{id}` · `/tickets` | the ticket and the list of what this browser tab kept |
+| `/admin/venues` · `/admin/layouts` · `/admin/schedule` | cinemas, layouts and screenings — including the price and the status that put a screening on sale |
+
+Two things this build is honest about:
+
+- **The session in the header is a demonstration**, not authentication: it grants no access, no page sends it to the API, and the wording is one exported constant so the interface and these lines cannot drift.
+- **"My tickets" is what the tab kept**, because without accounts no route can list a buyer's tickets. Unavailable storage says so rather than showing an empty list.
+
+`make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, Chromium only.
 
 ## M0 boundaries
 
