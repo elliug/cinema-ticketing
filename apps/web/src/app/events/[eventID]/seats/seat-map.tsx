@@ -26,8 +26,7 @@ import type {
   HoldResponse,
   PublicEventSeat,
 } from "@/lib/public-api";
-import { MAX_HOLD_SEATS, newIdempotencyKey } from "@/lib/public-api";
-import type {
+import { MAX_HOLD_SEATS, newIdempotencyKey } from "@/lib/public-api";import type {
   AvailabilitySnapshotSeat,
   SeatMapCell,
   SeatMapLayout,
@@ -253,6 +252,45 @@ export function SeatSelectionPanel({
         onSubmit={handleSubmit}
         onReset={handleReset}
       />
+
+      {attempt.status === "held" && attempt.hold !== null && !expired ? (
+        <ContinueToPayment eventId={eventId} reservationId={attempt.hold.id} />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * The way from a successful hold to the confirmation page (M3 · T7).
+ *
+ * A hold is not a purchase: the seats are only sold once they are paid for, so the
+ * page that just acquired them points at the checkout. The event id travels as a
+ * query parameter because there is no `GET /api/v1/reservations/{id}` route to ask
+ * which event a reservation belongs to; the confirmation page uses it only to offer
+ * the way back to this seat map.
+ */
+function ContinueToPayment({
+  eventId,
+  reservationId,
+}: {
+  eventId: string;
+  reservationId: string;
+}) {
+  const href = `/reservations/${encodeURIComponent(reservationId)}?eventId=${encodeURIComponent(
+    eventId,
+  )}`;
+  return (
+    <section className="card" aria-labelledby="continue-to-payment">
+      <h2 id="continue-to-payment">Seats held — one step left</h2>
+      <p>
+        Reservation <code>{reservationId}</code> holds your seats until its window
+        closes. Tickets are issued when the payment is approved.
+      </p>
+      <div className="actions">
+        <a className="download" href={href}>
+          Continue to payment
+        </a>
+      </div>
+    </section>
   );
 }

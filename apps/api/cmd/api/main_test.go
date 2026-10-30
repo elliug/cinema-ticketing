@@ -455,8 +455,8 @@ func TestMountReservationSkipsTheTicketRouteWithoutItsSchema(t *testing.T) {
 	if proc.ticketStore != nil {
 		t.Fatal("mountReservation kept a ticket store without the ticket schema")
 	}
-	if ticketRouted(srv) {
-		t.Fatal("the ticket detail route was mounted without its schema")
+	if ticketRouted(srv) || ticketQRRouted(srv) {
+		t.Fatal("the ticket routes were mounted without their schema")
 	}
 	if !reservationRouted(srv) || !paymentRouted(srv) {
 		t.Fatal("the reservation and payment routes disappeared because the ticket schema is missing")
@@ -484,7 +484,7 @@ func TestMountReservationFailsWhenTheTicketProbeCannotAnswer(t *testing.T) {
 	if proc != nil {
 		t.Fatal("mountReservation returned a process for an unanswerable ticket schema probe")
 	}
-	if ticketRouted(srv) || paymentRouted(srv) || reservationRouted(srv) {
+	if ticketRouted(srv) || ticketQRRouted(srv) || paymentRouted(srv) || reservationRouted(srv) {
 		t.Fatal("a surface was mounted although the ticket schema state is unknown")
 	}
 	for _, leaked := range []string{"s3cr3t-pw", "postgres://"} {
@@ -578,6 +578,17 @@ func ticketVerificationRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// ticketQRRouted reports whether the ticket QR image route is mounted, i.e. whether a
+// request for the image reaches the handler instead of the mux's 404. A mounted route
+// cannot answer 404 for a ticket without asking its store, and that store here points
+// at a database that does not exist, so the probe needs no live one.
+func ticketQRRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/tickets/00000000-0000-0000-0000-00000000c0f1/qr.svg", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // T5 (S4): the verification endpoint the door scanner calls is public, like the ticket
 // route beside it — a scanner has no administrative token — and it is mounted with
 // the ticket service, because the code it checks is the code that service signs.
@@ -606,8 +617,45 @@ func TestMountReservationMountsTheTicketVerificationRoute(t *testing.T) {
 	if !ticketRouted(srv) || !paymentRouted(srv) || !reservationRouted(srv) {
 		t.Fatal("mounting the verification route dropped a route next to it")
 	}
+	if !ticketQRRouted(srv) {
+		t.Fatal("the ticket QR image route was not mounted next to the code it renders")
+	}
 	if adminRouted(srv) {
 		t.Fatal("the verification route is behind the administrative guard, but a door scanner has no admin token")
+	}
+}
+
+// T7 (S1, S3): the QR image the ticket page shows is served by the API from the code
+// the ticket service signs, so the page and the PDF print one code and the web needs
+// no QR dependency. It is public for the reason the detail route is — the ticket
+// identifier is the capability — and it is mounted only when the ticket surface is.
+func TestMountReservationMountsTheTicketQRImageRoute(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if !ticketQRRouted(srv) {
+		t.Fatal("the ticket QR image route was not mounted although its ticket schema is present")
+	}
+	if !ticketRouted(srv) || !ticketVerificationRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("mounting the QR image route dropped a route next to it")
+	}
+	if adminRouted(srv) {
+		t.Fatal("the QR image route is behind the administrative guard, but the ticket page is the buyer's")
 	}
 }
 
@@ -651,7 +699,7 @@ func TestMountReservationRequiresAUsableTicketQRKey(t *testing.T) {
 			if testCase.key != "" && strings.Contains(err.Error(), testCase.key) {
 				t.Fatalf("error leaked the key: %v", err)
 			}
-			if ticketRouted(srv) || ticketVerificationRouted(srv) {
+			if ticketRouted(srv) || ticketVerificationRouted(srv) || ticketQRRouted(srv) {
 				t.Fatal("a refused configuration still mounted a ticket route")
 			}
 		})

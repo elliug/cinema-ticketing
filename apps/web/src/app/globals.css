@@ -306,3 +306,67 @@ button:disabled {
     color: #ff8a80;
   }
 }
+
+/* Guest checkout and ticket surfaces (M3 · T7).
+ *
+ * Two layouts and nothing more: the order facts of a ticket as a definition list
+ * that reads as label/value pairs on a phone, and the QR image at a size a scanner
+ * can read from a screen. Everything else reuses the cards, notices and problems
+ * above.
+ */
+
+.ticket-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 1rem 0;
+}
+
+.ticket-facts > div {
+  display: contents;
+}
+
+.ticket-facts dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ticket-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.qr {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+/* A QR code needs quiet space around it and hard edges: no scaling blur, and the
+ * white quiet zone stays white in both colour schemes, because a dark-mode image
+ * is a code a scanner may refuse. */
+.qr-image {
+  background-color: #ffffff;
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+  max-width: 100%;
+  height: auto;
+}
+
+a.download {
+  display: inline-block;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+a.download:hover,
+a.download:focus-visible {
+  text-decoration: underline;
+}

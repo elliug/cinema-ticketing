@@ -467,9 +467,12 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		"ticket_pdfs", ticketPDFs != nil)
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret
-		// and the fact that it is configured is what an operator needs to know.
-		logger.Info("ticket QR codes are signed; verification route mounted",
-			"route", "/api/v1/tickets/verify", "key_bytes", len(cfg.TicketQRKey))
+		// and the fact that it is configured is what an operator needs to know. The two
+		// routes below are the code's two presentations: the SVG the page shows and the
+		// check a door scanner calls.
+		logger.Info("ticket QR codes are signed; code presentation and verification routes mounted",
+			"routes", []string{"/api/v1/tickets/{ticketId}/qr.svg", "/api/v1/tickets/verify"},
+			"key_bytes", len(cfg.TicketQRKey))
 	}
 	if ticketPDFs != nil {
 		// The bucket is not a secret, the credentials are, so only the bucket is named.
