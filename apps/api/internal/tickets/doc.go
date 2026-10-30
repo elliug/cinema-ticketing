@@ -69,10 +69,51 @@
 //     guessed wrong" from "it never existed", because that distinction is exactly
 //     the oracle a capability URL cannot afford.
 //
-// # Why a query and not a service
+// # The signed code, and the one place it is minted
 //
-// This package reads; it decides nothing that the schema does not already decide.
-// The projection rules that are more than copying — validity, the amount
-// presentation, the local rendering — live in this package next to the fields they
-// describe, so both renderers inherit them instead of reimplementing them.
+// The detail carries a QR code ([TicketDetail.QRToken]), because a ticket that could
+// not be scanned would not be a ticket. That code is a signed opaque token: two
+// base64url halves — the payload and an HMAC-SHA256 signature over those exact
+// payload bytes — and the payload is the canonical, versioned identity of the ticket,
+//
+//	v1|<ticketID>|<eventID>|<seatID>,<seatID>,...
+//
+// with the seats ascending. Three facts, all identifiers, and nothing else: no buyer
+// name, no email, no film, no screening time, no price. A QR code is a photograph
+// waiting to happen, so the code carries what the server can look up and every
+// readable fact is fetched server side after the code verifies.
+//
+// The version is inside the signed payload rather than beside the signature, because a
+// version label that is not signed is a label anybody can rewrite: an old payload
+// relabelled as a new format would be parsed under rules nobody signed it for. Signed,
+// the version is an authenticated statement, and a token minted after an upgrade is
+// distinguishable from one this build understands instead of being guessed at.
+//
+// The code is minted in exactly one place — [Service.Detail] — so the web page (T7)
+// and the PDF (T6) print the same code for the same ticket instead of each renderer
+// signing its own version. A detail that cannot be signed is [ErrUnavailable], never a
+// ticket served without its code, because a renderer would print it.
+//
+// [Service.Verify] is the other half, and the only thing a door scanner is asked to
+// believe. It checks the signature, reads the ticket the code names, and requires the
+// signed identity to agree with the stored one: the same ticket, the same event, the
+// same seats. Anything else is [ErrInvalidToken] — the same answer a forged code gets,
+// so probing identifiers cannot confirm that one exists — and an unreadable database is
+// [ErrUnavailable] rather than a verdict on the ticket. What the token deliberately
+// does not do is mark anything as used: a code is copyable by nature, and redemption is
+// a state change M4's cashier workflow owns. What M3 promises is that a photographed
+// code carries no personal data — not that it hides anything. The payload is signed,
+// not encrypted: it is base64url text, so anyone who decodes the code reads the ticket,
+// event and seat identifiers, and the public ticket route resolves them to the whole
+// screening. A photograph is therefore both a readable reference and a usable
+// credential, and that is why a door must honour `valid` rather than the 200, and why
+// single use is the next milestone's work. What a forged, tampered or unknown code gets
+// is a refusal, server side.
+//
+// # What this package decides, and what it only copies
+//
+// The readers here copy what the schema already decided; the rules that are more than
+// copying — validity, the invalid reason, the amount presentation, the local rendering
+// — live in this package next to the fields they describe, so the web page, the PDF and
+// the door inherit them instead of reimplementing them and disagreeing.
 package tickets

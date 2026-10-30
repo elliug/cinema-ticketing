@@ -300,8 +300,11 @@ func TestLocalAdminDatabaseURL(t *testing.T) {
 			env:  map[string]string{},
 		},
 		{
+			// A configured database URL means this process can serve tickets, so the
+			// development environment (and with it the documented QR key) is required;
+			// see TestTicketQRKeyConfiguration.
 			name:         "disabled local administration keeps a configured database URL",
-			env:          map[string]string{"API_DATABASE_URL": testDatabaseURL},
+			env:          map[string]string{"API_ENV": "development", "API_DATABASE_URL": testDatabaseURL},
 			wantDatabase: testDatabaseURL,
 		},
 		{
@@ -628,6 +631,152 @@ func TestS3Configuration(t *testing.T) {
 				t.Errorf("S3PresignTTL = %v, want %v", cfg.S3PresignTTL, tc.wantPresign)
 			}
 		})
+	}
+}
+
+// ticketQRKeyMinLength mirrors the documented minimum length of the ticket QR
+// signing key, so the test states the number a deployment has to satisfy.
+const ticketQRKeyMinLength = 32
+
+// TestTicketQRKeyConfiguration pins the ticket QR signing key rules: a well-known
+// development default that works with no variables at all in development, an
+// explicit key of at least 32 bytes anywhere, and a refusal everywhere else — a key
+// that ships in a repository signs nothing, so the default must never become a
+// production key by accident. No case may be satisfied by echoing the key.
+func TestTicketQRKeyConfiguration(t *testing.T) {
+	const (
+		explicitKey = "m3-configured-ticket-qr-key-0123456789"
+		shortKey    = "too-short-for-a-ticket-qr-key"
+		// The documented development default, spelled out so this test fails if
+		// somebody changes it without thinking about the environments.
+		developmentDefault = "cinema-m3-development-ticket-qr-key"
+	)
+
+	cases := []struct {
+		name     string
+		env      map[string]string
+		wantKey  string
+		wantErr  string
+		wantWord string
+	}{
+		{
+			name:    "development falls back to the documented default",
+			env:     map[string]string{"API_ENV": "development"},
+			wantKey: developmentDefault,
+		},
+		{
+			name: "development accepts an explicit key",
+			env: map[string]string{
+				"API_ENV":           "development",
+				"API_TICKET_QR_KEY": explicitKey,
+				"API_DATABASE_URL":  testDatabaseURL,
+			},
+			wantKey: explicitKey,
+		},
+		{
+			name:    "production accepts an explicit key",
+			env:     map[string]string{"API_ENV": "production", "API_TICKET_QR_KEY": explicitKey},
+			wantKey: explicitKey,
+		},
+		{
+			name:    "a key of exactly the documented minimum is accepted",
+			env:     map[string]string{"API_ENV": "production", "API_TICKET_QR_KEY": strings.Repeat("k", ticketQRKeyMinLength)},
+			wantKey: strings.Repeat("k", ticketQRKeyMinLength),
+		},
+		{
+			name:     "a key below the documented minimum is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_QR_KEY": shortKey},
+			wantErr:  "API_TICKET_QR_KEY",
+			wantWord: "32 bytes",
+		},
+		{
+			name:     "a blank key is refused even in development",
+			env:      map[string]string{"API_ENV": "development", "API_TICKET_QR_KEY": strings.Repeat(" ", 40)},
+			wantErr:  "API_TICKET_QR_KEY",
+			wantWord: "blank",
+		},
+		{
+			name:     "the development default is refused outside development",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_QR_KEY": developmentDefault},
+			wantErr:  "API_TICKET_QR_KEY",
+			wantWord: "development",
+		},
+		{
+			name:     "the development default is refused in an unstated environment",
+			env:      map[string]string{"API_TICKET_QR_KEY": developmentDefault},
+			wantErr:  "API_TICKET_QR_KEY",
+			wantWord: "development",
+		},
+		{
+			// A missing key is left empty here: this configuration is shared by commands
+			// that never serve a ticket, and the API process refuses to mount the ticket
+			// surface without a usable key (pinned in cmd/api).
+			name: "a missing key is left to the process that serves tickets",
+			env:  map[string]string{"API_ENV": "production", "API_DATABASE_URL": testDatabaseURL},
+		},
+		{
+			name: "a missing key in an unstated environment is left to the process as well",
+			env:  map[string]string{"API_DATABASE_URL": testDatabaseURL},
+		},
+		{
+			// Without a database URL this process cannot reach a ticket, so no surface
+			// needs a key and a key would sign nothing; `make up` runs exactly this
+			// configuration. That leniency never reaches a route.
+			name: "a missing key is tolerated when the process serves no tickets",
+			env:  map[string]string{"API_ENV": "production"},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return testCase.env[key] })
+			if testCase.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", testCase.wantErr)
+				}
+				if !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("error = %q, want it to name %s", err, testCase.wantErr)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), testCase.wantWord) {
+					t.Fatalf("error = %q, want it to mention %q", err, testCase.wantWord)
+				}
+				// A wrong key is a secret too: it must never be echoed.
+				for _, secret := range []string{shortKey, developmentDefault, strings.Repeat(" ", 40)} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("error message leaked the key: %v", err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.TicketQRKey != testCase.wantKey {
+				t.Fatalf("TicketQRKey = %q, want %q", cfg.TicketQRKey, testCase.wantKey)
+			}
+			if cfg.TicketQRKey != "" && len(cfg.TicketQRKey) < ticketQRKeyMinLength {
+				t.Fatalf("an accepted key is shorter than the documented minimum: %d bytes", len(cfg.TicketQRKey))
+			}
+		})
+	}
+}
+
+// A configuration that can serve tickets never holds the development key by accident:
+// the accepted development default is only reachable in development, and every other
+// environment either supplies its own key or is left to the API process, which refuses
+// to mount the ticket surface without one (pinned in cmd/api).
+func TestTicketQRKeyNeverShipsTheDevelopmentDefault(t *testing.T) {
+	for _, environment := range []string{"", "production", "staging", "test"} {
+		env := map[string]string{"API_ENV": environment, "API_DATABASE_URL": testDatabaseURL}
+		cfg, err := config.LoadFrom(func(key string) string { return env[key] })
+		if err != nil {
+			// A refusal is a fine answer; what must never happen is a config that starts
+			// with a key published in this repository.
+			continue
+		}
+		if cfg.TicketQRKey != "" {
+			t.Fatalf("API_ENV=%q configured TicketQRKey %q without one being supplied", environment, cfg.TicketQRKey)
+		}
 	}
 }
 

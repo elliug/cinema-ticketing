@@ -21,11 +21,16 @@ import (
 	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
-// TicketService is the ticket detail read contract. It is satisfied by the
-// projection's PostgreSQL reader; a deployment without the checkout schema wires
-// nothing, and then the route is not mounted at all.
+// TicketService is the ticket surface contract: the projection read the detail route
+// serves, and the verification a door scanner asks for. It is satisfied by the
+// tickets service, which attaches the signed code both renderers print; a deployment
+// without the checkout schema wires nothing, and then neither route is mounted.
 type TicketService interface {
+	// Detail answers the projection of one ticket, signed code included.
 	Detail(ctx context.Context, ticketID string) (tickets.TicketDetail, error)
+	// Verify checks a presented QR token against the stored ticket and answers that
+	// ticket, so the door never trusts a value from the client.
+	Verify(ctx context.Context, token string) (tickets.TicketDetail, error)
 }
 
 // WithTickets attaches the ticket detail reader and returns the same handler, so
@@ -93,6 +98,10 @@ func (h *Handler) getTicket(w http.ResponseWriter, r *http.Request) {
 		// a renderer to print the order total as this seat's price.
 		"orderAmountCents":   detail.OrderAmountCents,
 		"orderAmountDisplay": detail.OrderAmountText(),
+		// The code the page shows and the PDF prints. It is already signed by the
+		// service, so both renderers print the same one; it is opaque, and it names no
+		// buyer and no screening fact.
+		"qrToken": detail.QRToken,
 	})
 }
 

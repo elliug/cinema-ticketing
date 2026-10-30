@@ -67,6 +67,11 @@ type Config struct {
 	// S3PresignTTL is how long a ticket PDF download link stays valid. It defaults
 	// to five minutes and can never exceed the seven day signature limit.
 	S3PresignTTL time.Duration
+	// TicketQRKey is the HMAC key the ticket QR tokens are signed with. It is a
+	// secret and must never be logged, echoed in an error or committed: a key that
+	// ships in a repository signs nothing, which is why the development default is
+	// accepted only when Environment is development.
+	TicketQRKey string
 }
 
 // Documented defaults for the reservation surface.
@@ -109,6 +114,21 @@ const (
 	maxS3PresignTTL = 7 * 24 * time.Hour
 )
 
+// The ticket QR signing key rules. The code printed on the web page and on the PDF
+// is an HMAC-SHA256 signature over the ticket's identity, so the key behind it is
+// the whole of its security: a key anybody can read signs nothing at all.
+const (
+	// developmentTicketQRKey is the well-known development key, accepted only when
+	// API_ENV is development. It exists so a developer can run the whole checkout with
+	// no variables at all, and it is refused everywhere else: an environment that
+	// trusts it would sign tickets with a key that is published in this repository.
+	developmentTicketQRKey = "cinema-m3-development-ticket-qr-key"
+	// ticketQRKeyMinLength is the shortest key accepted, in bytes. It matches the
+	// length of a SHA-256 digest, so the number a deployment has to satisfy is the one
+	// its hash function already implies.
+	ticketQRKeyMinLength = 32
+)
+
 // Load reads configuration from the process environment.
 func Load() (Config, error) { return LoadFrom(os.Getenv) }
 
@@ -135,6 +155,9 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	API_S3_ACCESS_KEY_ID      credential identifier (default "floci", refused for a non-local endpoint)
 //	API_S3_SECRET_ACCESS_KEY  secret credential, always set together with the key id and never echoed
 //	API_S3_PRESIGN_TTL        download link lifetime as a duration (default "5m", at most "168h")
+//	API_TICKET_QR_KEY         HMAC key the ticket QR tokens are signed with: at least 32
+//	                          bytes, a secret, never echoed (default: the development key,
+//	                          and only when API_ENV=development)
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -232,7 +255,53 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := cfg.loadTicketQR(getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadTicketQR reads and validates API_TICKET_QR_KEY, the key the ticket QR tokens
+// are signed with.
+//
+// Two things are refused here, both at startup and both without echoing the key:
+//
+//   - a key that cannot sign anything, because it is blank or shorter than
+//     ticketQRKeyMinLength bytes;
+//   - the well-known development default in any environment but development, because
+//     a key that ships in a repository signs nothing anybody should trust. That covers
+//     the accidental copy as well as the missing key: an operator who pastes the
+//     development value into production is refused rather than started.
+//
+// An absent key is not refused here, and the reason is precise: this configuration is
+// shared by commands that never serve a ticket (`bootstrap wait-deps` and
+// `bootstrap ensure-bucket` load it too), so refusing here would break them for a
+// requirement they do not have. The requirement is enforced where it is real — the
+// API process refuses to mount the ticket surface without a usable key (see cmd/api),
+// so a deployment that can serve a ticket cannot start without one, and a deployment
+// that serves none never needs it. In development the documented default is applied
+// so a local run needs no variables at all.
+func (c *Config) loadTicketQR(getenv func(string) string) error {
+	key := getenv("API_TICKET_QR_KEY")
+	if key == "" {
+		if c.Environment == "development" {
+			c.TicketQRKey = developmentTicketQRKey
+		}
+		return nil
+	}
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("API_TICKET_QR_KEY must not be blank: a blank key signs nothing")
+	}
+	if len(key) < ticketQRKeyMinLength {
+		return fmt.Errorf("API_TICKET_QR_KEY must be at least %d bytes of entropy-bearing text, got %d",
+			ticketQRKeyMinLength, len(key))
+	}
+	if key == developmentTicketQRKey && c.Environment != "development" {
+		return fmt.Errorf("API_TICKET_QR_KEY still holds the development default, which only API_ENV=development accepts: a key that ships in a repository signs nothing")
+	}
+	c.TicketQRKey = key
+	return nil
 }
 
 // loadObjectStorage reads and validates the API_S3_* settings. The defaults point

@@ -94,6 +94,19 @@ type TicketDetail struct {
 	// per-ticket amount because an order is priced as price × seats. A renderer
 	// prints it as the order total.
 	OrderAmountCents int64
+	// QRToken is the signed QR code of this ticket, already minted by
+	// [Service.Detail], so the web page and the PDF print the same code for the same
+	// ticket instead of each renderer signing its own.
+	//
+	// It is a signed token: a payload naming the ticket, its event and its seats, plus
+	// an HMAC signature over that payload. It carries no name, no email, no film, no
+	// time and no price, so a photographed code exposes no personal data. Signed is not
+	// encrypted, though: the payload is base64url text, so anyone holding the code can
+	// read the identifiers it names, and the ticket route resolves them to the
+	// screening. A photograph is therefore both a readable reference and a usable
+	// credential, which is why the door must honour `valid` and why marking a ticket as
+	// redeemed is M4's. The token is never logged and never echoed in an error.
+	QRToken string
 }
 
 // EventDetail is the screening part of a ticket detail: what is being shown,
@@ -135,6 +148,17 @@ type Seat struct {
 	SeatNumber string
 }
 
+// The machine-readable reasons a ticket does not admit its holder. They are the
+// values a door scanner is told, so "this ticket was cancelled" stays
+// distinguishable from "this code is a forgery" (which is a refusal, not a reason).
+const (
+	// InvalidReasonVoided is a ticket that was withdrawn: the ticket itself no longer
+	// admits anyone, whatever happens to the screening.
+	InvalidReasonVoided = "voided"
+	// InvalidReasonEventCancelled is an issued ticket whose screening was cancelled.
+	InvalidReasonEventCancelled = "event_cancelled"
+)
+
 // Valid reports whether the ticket still admits its holder: it was issued and the
 // screening was not cancelled.
 //
@@ -144,6 +168,27 @@ type Seat struct {
 // still a valid ticket.
 func (d TicketDetail) Valid() bool {
 	return d.Status == TicketStatusIssued && d.Event.Status != EventStatusCancelled
+}
+
+// InvalidReason names why the ticket does not admit its holder, and answers the
+// empty string for a ticket that does. It is derived from the same two statuses as
+// [TicketDetail.Valid] and lives beside it, so the door, the web page and the PDF
+// cannot disagree; the two are exhaustive in this milestone, whose schema allows the
+// ticket statuses [TicketStatusIssued] and [TicketStatusVoid] only. A later status
+// (M4's redeemed ticket, for example) extends this function rather than each
+// renderer deriving its own answer.
+func (d TicketDetail) InvalidReason() string {
+	switch {
+	case d.Valid():
+		return ""
+	case d.Status != TicketStatusIssued:
+		// A ticket is void (or, later, redeemed): the ticket is the reason, not the
+		// screening.
+		return InvalidReasonVoided
+	default:
+		// The ticket was issued, so the screening is what makes it unusable.
+		return InvalidReasonEventCancelled
+	}
 }
 
 // OrderAmountText renders the order's charged amount for display, without a
