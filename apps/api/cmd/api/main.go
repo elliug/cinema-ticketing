@@ -6,7 +6,7 @@
 // M1 adds the local-only administrative venue API, which is mounted only when
 // local administration is explicitly enabled. M2 adds the customer reservation
 // surface with its expiry worker, and M3 adds the checkout route that pays a held
-// reservation.
+// reservation and the ticket detail route the confirmation page and the PDF read.
 package main
 
 import (
@@ -32,6 +32,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/publicapi"
 	"cinema.local/ticketing/apps/api/internal/reservation"
+	"cinema.local/ticketing/apps/api/internal/tickets"
 	"cinema.local/ticketing/apps/api/internal/venue"
 
 	// Module boundaries: wired into the build so the skeleton stays explicit
@@ -145,16 +146,18 @@ const startupTimeout = 10 * time.Second
 
 // requiredMigrations lists the migration versions the customer surface needs. The
 // reservation surface is closed until 0003 and 0004 are applied, and the checkout
-// route is closed until 0005 and 0006 are applied as well, so a database without the
-// checkout schema — or without the one-open-attempt guard — advertises no payment
-// route instead of failing every request.
+// and ticket detail routes are closed until 0005 and 0006 are applied as well, so a
+// database without the checkout schema — or without the one-open-attempt guard —
+// advertises no payment route and no ticket route instead of failing every request.
 const requiredMigrations = "0003_reservation, 0004_idempotency, 0005_checkout, 0006_one_open_payment_attempt"
 
-// reservationProcess owns what the public reservation surface, the checkout and
-// the expiry worker need, so one Close releases every pool on shutdown.
+// reservationProcess owns what the public reservation surface, the checkout, the
+// ticket detail read and the expiry worker need, so one Close releases every pool
+// on shutdown.
 type reservationProcess struct {
 	store         *reservation.PostgresStore
 	checkoutStore *checkout.PostgresStore
+	ticketStore   *tickets.PostgresStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
 }
@@ -171,6 +174,9 @@ func (p *reservationProcess) Close() {
 	if p.checkoutStore != nil {
 		p.checkoutStore.Close()
 	}
+	if p.ticketStore != nil {
+		p.ticketStore.Close()
+	}
 	if p.redis != nil {
 		_ = p.redis.Close()
 	}
@@ -178,7 +184,8 @@ func (p *reservationProcess) Close() {
 
 // mountReservation wires the customer facing surface: the durable reservation
 // store, the shared coordination layer, the hold service over the configured
-// window, the public routes, the checkout route and the durable expiry worker.
+// window, the public routes, the checkout route, the ticket detail route and the
+// durable expiry worker.
 //
 // It mounts nothing unless a database URL is configured, because a hold without
 // durable storage could not be honoured; the default M0/M1 configuration
@@ -186,15 +193,18 @@ func (p *reservationProcess) Close() {
 // closed on shutdown and is nil when nothing was mounted. A failure is reported
 // without echoing a connection URL, which may carry credentials.
 func mountReservation(cfg config.Config, srv *httpserver.Server, logger *slog.Logger) (*reservationProcess, error) {
-	return mountReservationWithProbes(cfg, srv, logger, reservationSchemaProbe, checkoutSchemaProbe)
+	return mountReservationWithProbes(cfg, srv, logger, reservationSchemaProbe, checkoutSchemaProbe, ticketSchemaProbe)
 }
 
-// schemaProbe reports whether the database carries the reservation tables, and
-// checkoutProbe whether it carries the checkout objects. They are parameters so
-// both mount decisions can be tested without a live database.
+// schemaProbe reports whether the database carries the reservation tables,
+// checkoutProbe whether it carries the checkout objects, and ticketsProbe whether it
+// carries what the ticket detail read touches. They are parameters so every mount
+// decision can be tested without a live database.
 type schemaProbe func(context.Context, *reservation.PostgresStore) (bool, error)
 
 type checkoutProbe func(context.Context, *checkout.PostgresStore) (bool, error)
+
+type ticketsProbe func(context.Context, *tickets.PostgresStore) (bool, error)
 
 // reservationSchemaProbe is the production probe: the store's own check.
 func reservationSchemaProbe(ctx context.Context, store *reservation.PostgresStore) (bool, error) {
@@ -209,6 +219,16 @@ func checkoutSchemaProbe(ctx context.Context, store *checkout.PostgresStore) (bo
 	return store.CheckoutSchemaPresent(ctx)
 }
 
+// ticketSchemaProbe is the production probe of the objects the ticket detail read
+// touches: the tickets a checkout issued, the captured payment attempt its amount
+// comes from, and the venue, event and layout tables the screening is read through.
+// It is its own probe rather than a reuse of the checkout one because the ticket
+// route does not read the outbox or the event price, so requiring them would close
+// the route on a database that can serve it perfectly well.
+func ticketSchemaProbe(ctx context.Context, store *tickets.PostgresStore) (bool, error) {
+	return store.TicketDetailSchemaPresent(ctx)
+}
+
 // newPaymentGateway builds the payment boundary the checkout is wired with: the
 // simulated provider, which never declines. A decline is a test scenario built by
 // constructing an adapter with a decline rule, never the default the process runs
@@ -216,9 +236,9 @@ func checkoutSchemaProbe(ctx context.Context, store *checkout.PostgresStore) (bo
 // provider replaceable: only this function changes for a real one).
 func newPaymentGateway() payment.PaymentGateway { return payment.NewSimulated() }
 
-// mountReservationWithProbes is mountReservation with both schema checks injected.
+// mountReservationWithProbes is mountReservation with every schema check injected.
 func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logger *slog.Logger,
-	probe schemaProbe, checkoutSchema checkoutProbe) (*reservationProcess, error) {
+	probe schemaProbe, checkoutSchema checkoutProbe, ticketSchema ticketsProbe) (*reservationProcess, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, nil
 	}
@@ -294,8 +314,8 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		return nil, fmt.Errorf("check the checkout schema: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
 	}
 
-	// payments is a nil interface unless the checkout schema is present, which is
-	// exactly what keeps the route unmounted.
+	// payments and ticketDetails are nil interfaces unless their schema is present,
+	// which is exactly what keeps each route unmounted.
 	var payments publicapi.PaymentService
 	if checkoutPresent {
 		payments = checkout.NewService(newPaymentGateway(), checkoutStore, reservation.NewCoordinator(client), payment.ProviderName)
@@ -305,11 +325,49 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		logger.Info("checkout schema not present; payment route disabled", "required", "0005_checkout")
 	}
 
-	srv.WithPublic(publicapi.New(svc).WithPayments(payments).Mux())
+	// The ticket detail route reads what the checkout wrote: the tickets and the
+	// captured payment attempt they belong to. A deployment whose schema predates the
+	// checkout schema has issued no tickets, so it advertises no ticket route: the
+	// capability URL of a ticket does not exist there, and a route that could only
+	// answer 404 or 503 is worse than an absent one. It gets its own startup budget
+	// for the same reason the checkout store does.
+	ticketCtx, cancelTickets := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelTickets()
+	ticketStore, err := tickets.NewPostgresStore(ticketCtx, cfg.DatabaseURL)
+	if err != nil {
+		if checkoutStore != nil {
+			checkoutStore.Close()
+		}
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("open ticket store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+	ticketPresent, err := ticketSchema(ticketCtx, ticketStore)
+	if err != nil {
+		ticketStore.Close()
+		if checkoutStore != nil {
+			checkoutStore.Close()
+		}
+		_ = client.Close()
+		store.Close()
+		return nil, fmt.Errorf("check the ticket schema: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+
+	var ticketDetails publicapi.TicketService
+	if ticketPresent {
+		ticketDetails = ticketStore
+	} else {
+		ticketStore.Close()
+		ticketStore = nil
+		logger.Info("ticket schema not present; ticket route disabled", "required", "0005_checkout")
+	}
+
+	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
-		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent)
-	return &reservationProcess{store: store, checkoutStore: checkoutStore, redis: client, sweeper: sweeper}, nil
+		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent)
+	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
+		redis: client, sweeper: sweeper}, nil
 }
 
 // mountAdmin wires the administrative venue API behind the local-development

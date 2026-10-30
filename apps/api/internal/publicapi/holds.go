@@ -1,10 +1,14 @@
-// Package publicapi exposes the customer facing reservation HTTP surface: the
-// M2 hold creation endpoint, the event seat availability read, and the M3 checkout
-// route that pays a held reservation.
+// Package publicapi exposes the customer facing HTTP surface: the M2 hold
+// creation endpoint, the event seat availability read, the M3 checkout route that
+// pays a held reservation, and the M3 ticket detail route that the confirmation
+// page and the PDF both read.
 //
 // Routes here are public application routes. They are mounted outside the
-// administrative guard, because a customer selecting seats and paying for them has
-// no administrative token; see httpserver.Server.WithPublic.
+// administrative guard, because a customer selecting seats, paying for them and
+// then showing the ticket has no administrative token; see
+// httpserver.Server.WithPublic. The ticket route is public for a further reason
+// the tickets package documents: in v1 the ticket identifier is the capability,
+// because guest checkout has no account that could prove who owns a ticket.
 package publicapi
 
 import (
@@ -29,11 +33,12 @@ type HoldService interface {
 type Handler struct {
 	svc      HoldService
 	payments PaymentService
+	tickets  TicketService
 }
 
-// New builds a Handler over the given service. The checkout route is attached
-// separately, by WithPayments, so a deployment without the checkout schema mounts
-// no payment route.
+// New builds a Handler over the given service. The checkout and ticket detail
+// routes are attached separately, by WithPayments and WithTickets, so a deployment
+// without the checkout schema mounts neither of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -44,6 +49,9 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /events/{eventID}/seats", h.listEventSeats)
 	if h.payments != nil {
 		mux.HandleFunc(paymentRoute, h.createPayment)
+	}
+	if h.tickets != nil {
+		mux.HandleFunc(ticketRoute, h.getTicket)
 	}
 	return mux
 }

@@ -18,6 +18,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/httpserver"
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/reservation"
+	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
 const adminTestURL = "postgres://cinema:s3cr3t-pw@127.0.0.1:5432/cinema?sslmode=disable"
@@ -186,7 +187,7 @@ func TestMountReservationMountsThePublicSurface(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestMountReservationRejectsUnusableConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := testServer()
-			proc, err := mountReservationWithProbes(tc.cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
+			proc, err := mountReservationWithProbes(tc.cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
 			if err == nil {
 				proc.Close()
 				t.Fatal("mountReservation succeeded, want a refusal")
@@ -283,7 +284,7 @@ func TestMountReservationMountsTheCheckoutRoute(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestMountReservationSkipsTheCheckoutRouteWithoutItsSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutAbsentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutAbsentSchema, ticketPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestMountReservationFailsWhenTheCheckoutProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutFailingSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutFailingSchema, ticketPresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable checkout schema probe")
 	}
@@ -359,6 +360,127 @@ func TestMountReservationFailsWhenTheCheckoutProbeCannotAnswer(t *testing.T) {
 	}
 	if paymentRouted(srv) || reservationRouted(srv) {
 		t.Fatal("a surface was mounted although the checkout schema state is unknown")
+	}
+}
+
+// The ticket detail schema probe is injected the same way: the ticket route is only
+// mounted when the database carries the objects its read touches.
+func ticketPresentSchema(context.Context, *tickets.PostgresStore) (bool, error) { return true, nil }
+func ticketAbsentSchema(context.Context, *tickets.PostgresStore) (bool, error) {
+	return false, nil
+}
+func ticketFailingSchema(context.Context, *tickets.PostgresStore) (bool, error) {
+	return false, errors.New("database unreachable")
+}
+
+// ticketRouted reports whether the ticket detail route is mounted, i.e. whether a
+// ticket request reaches the handler instead of a 404. A mounted route cannot answer
+// 404 for a ticket without asking its store, and that store here points at a database
+// that does not exist, so the probe never needs a live one.
+func ticketRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/tickets/00000000-0000-0000-0000-00000000c0f1", nil))
+	return w.Code != http.StatusNotFound
+}
+
+// T4 (S4): the ticket detail route is part of the customer surface, so it is mounted
+// at /api/v1 next to the hold and payment routes and outside the administrative
+// guard. It is the route the confirmation page and the PDF download both address.
+func TestMountReservationMountsTheTicketRoute(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+	if proc.ticketStore == nil {
+		t.Fatal("mountReservation built no ticket store next to the checkout store")
+	}
+	if !ticketRouted(srv) {
+		t.Fatal("the ticket detail route was not mounted although its schema is present")
+	}
+	if !paymentRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("mounting the ticket route dropped a route next to it")
+	}
+	if adminRouted(srv) {
+		t.Fatal("mounting the ticket route exposed the administrative subtree")
+	}
+}
+
+// T4 (S4): a deployment without the ticket schema has issued no tickets, so it
+// advertises no ticket route: the rest of the customer surface keeps working, one
+// informative line replaces an error per request, and nothing claims a ticket that
+// cannot exist there.
+func TestMountReservationSkipsTheTicketRouteWithoutItsSchema(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketAbsentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+	if proc.ticketStore != nil {
+		t.Fatal("mountReservation kept a ticket store without the ticket schema")
+	}
+	if ticketRouted(srv) {
+		t.Fatal("the ticket detail route was mounted without its schema")
+	}
+	if !reservationRouted(srv) || !paymentRouted(srv) {
+		t.Fatal("the reservation and payment routes disappeared because the ticket schema is missing")
+	}
+	if !strings.Contains(logged.String(), "ticket schema not present") {
+		t.Fatalf("log = %q, want the one informative line about the missing ticket schema", logged.String())
+	}
+}
+
+// A ticket schema probe that cannot answer is a startup failure: mounting a route
+// whose schema state is unknown would be guessing.
+func TestMountReservationFailsWhenTheTicketProbeCannotAnswer(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+	}
+	srv := testServer()
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketFailingSchema)
+	if err == nil {
+		t.Fatal("mountReservation returned no error for an unanswerable ticket schema probe")
+	}
+	if proc != nil {
+		t.Fatal("mountReservation returned a process for an unanswerable ticket schema probe")
+	}
+	if ticketRouted(srv) || paymentRouted(srv) || reservationRouted(srv) {
+		t.Fatal("a surface was mounted although the ticket schema state is unknown")
+	}
+	for _, leaked := range []string{"s3cr3t-pw", "postgres://"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("error leaked %q: %v", leaked, err)
+		}
 	}
 }
 
@@ -396,7 +518,7 @@ func TestMountReservationSkipsAnOlderSchema(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	proc, err := mountReservationWithProbes(cfg, srv, logger, absentSchema, checkoutPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, logger, absentSchema, checkoutPresentSchema, ticketPresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -425,7 +547,7 @@ func TestMountReservationFailsWhenTheProbeCannotAnswer(t *testing.T) {
 		ExpiryBatch:    25,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), failingSchema, checkoutPresentSchema)
+	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), failingSchema, checkoutPresentSchema, ticketPresentSchema)
 	if err == nil {
 		t.Fatal("mountReservation returned no error for an unanswerable schema probe")
 	}
