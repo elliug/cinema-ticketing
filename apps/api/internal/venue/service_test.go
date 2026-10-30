@@ -245,6 +245,56 @@ func TestCloneLayoutRejectsDraftSource(t *testing.T) {
 	}
 }
 
+// A venue's timezone is what its own clock is rendered from (the ticket detail reads it
+// with time.LoadLocation), so the name has to resolve at creation instead of surfacing as
+// an unrenderable ticket much later. A resolvable name is trimmed and stored as given.
+func TestCreateCinemaStoresAResolvableTimezone(t *testing.T) {
+	store := &fakeStore{}
+	svc := venue.NewService(store)
+	cinema, err := svc.CreateCinema(context.Background(), "  Cine Central  ", " Europe/Madrid ", " Gran Via 1 ")
+	if err != nil {
+		t.Fatalf("CreateCinema returned error: %v", err)
+	}
+	if cinema.Timezone != "Europe/Madrid" {
+		t.Fatalf("timezone = %q, want the trimmed IANA name", cinema.Timezone)
+	}
+	if cinema.Name != "Cine Central" || cinema.Address != "Gran Via 1" {
+		t.Fatalf("cinema = %+v, want the trimmed name and address", cinema)
+	}
+	if len(store.calls) != 1 || store.calls[0] != "CreateCinema" {
+		t.Fatalf("store calls = %v, want exactly CreateCinema", store.calls)
+	}
+}
+
+// A timezone that does not resolve is refused as the timezone field and never reaches the
+// store: a stored zone nobody can load is a ticket nobody can print, so the write that
+// would create it must not happen at all.
+func TestCreateCinemaRejectsAnUnusableTimezone(t *testing.T) {
+	for _, tc := range []struct {
+		timezone string
+		message  string
+	}{
+		{"Madrid", "must be an IANA timezone name such as Europe/Madrid"},
+		{"Europe/Madridd", "must be an IANA timezone name such as Europe/Madrid"},
+		{"", "must not be empty"},
+		{"   ", "must not be empty"},
+	} {
+		store := &fakeStore{}
+		svc := venue.NewService(store)
+		_, err := svc.CreateCinema(context.Background(), "Cine Central", tc.timezone, "")
+		var invalid *venue.InvalidError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("timezone %q: error = %v, want a validation rejection", tc.timezone, err)
+		}
+		if invalid.Field != "timezone" || invalid.Message != tc.message {
+			t.Fatalf("timezone %q: error = %v, want timezone: %s", tc.timezone, err, tc.message)
+		}
+		if len(store.calls) != 0 {
+			t.Fatalf("timezone %q: store calls = %v, want no write", tc.timezone, store.calls)
+		}
+	}
+}
+
 func TestCreateFilmRejectsInvalidRuntime(t *testing.T) {
 	for _, runtime := range []int{0, -5, 601} {
 		svc := venue.NewService(&fakeStore{})

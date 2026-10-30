@@ -105,6 +105,7 @@ export function CinemaForm() {
           <Input
             id={ids.timezone}
             name="timezone"
+            placeholder="Europe/Madrid"
             value={timezone}
             onChange={(event) => setTimezone(event.target.value)}
             disabled={pending}

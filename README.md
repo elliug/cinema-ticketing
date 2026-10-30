@@ -199,6 +199,23 @@ The administrative contract lives under `/api/v1/admin`:
 
 Errors use RFC 9457 problem details with a stable `code` (`invalid_input`, `invalid_request`, `not_found`, `conflict`, `internal_error`) and a human-safe `detail`.
 
+A cinema's `timezone` must be an **IANA time zone name** (`Europe/Madrid`,
+`America/New_York`, `UTC`), not a city, a country or an abbreviation. It is the
+zone the venue's own clock is rendered from — the ticket detail prints the
+screening's local start through it — so `POST /cinemas` resolves the name with
+`time.LoadLocation` and refuses one that does not load with
+`timezone: must be an IANA timezone name such as Europe/Madrid`, storing
+nothing. The API binary embeds the zone database (`time/tzdata`), so a
+deployment without system zoneinfo still validates and renders these names.
+
+A wrong `API_LOCAL_ADMIN_TOKEN`, or an API started without `API_LOCAL_ADMIN=true`,
+is answered **404** rather than 401: the guard makes an absent administrative
+surface indistinguishable from a denied one. The admin web reports that as
+`the API has no administration at that address: either it runs without
+API_LOCAL_ADMIN=true, or API_LOCAL_ADMIN_TOKEN does not match the token it was
+started with`, so a 404 there is a settings problem, not a problem with the
+form that was submitted.
+
 Apply and verify the M1 migration:
 
 ```sh

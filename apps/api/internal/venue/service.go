@@ -37,6 +37,11 @@ type Service struct {
 func NewService(store Store) *Service { return &Service{store: store} }
 
 // CreateCinema validates and stores a venue.
+//
+// The timezone is stored, never interpreted here, but it is what the venue's own clock is
+// rendered from: the ticket detail builds the local start time with
+// time.LoadLocation(cinema.Timezone). A name that does not resolve is therefore refused at
+// creation, naming the field, instead of surfacing much later as a ticket nobody can print.
 func (s *Service) CreateCinema(ctx context.Context, name, timezone, address string) (Cinema, error) {
 	name, err := validateText("name", name)
 	if err != nil {
@@ -45,6 +50,9 @@ func (s *Service) CreateCinema(ctx context.Context, name, timezone, address stri
 	timezone, err = validateText("timezone", timezone)
 	if err != nil {
 		return Cinema{}, err
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return Cinema{}, NewInvalidError("timezone", "must be an IANA timezone name such as Europe/Madrid")
 	}
 	address = trimOptional(address)
 	if len(address) > maxNameLength {

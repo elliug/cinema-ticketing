@@ -157,7 +157,9 @@ export default async function VenuesPage({ searchParams }: VenuesPageProps) {
           <h2 className="m-0 text-lg leading-tight font-semibold">Create a cinema</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
             The timezone is the venue&apos;s own clock, which is what the public catalogue
-            prints next to each screening.
+            prints next to each screening, so it must be an IANA name such as{" "}
+            <code>Europe/Madrid</code> — not a city or an abbreviation. The API refuses a
+            name it cannot load.
           </p>
         </CardHeader>
         <CardContent>

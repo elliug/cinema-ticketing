@@ -127,7 +127,7 @@ grep -q 'durable expiry sweep started' "$tmp/api.log" \
 
 # An irregular published layout: a two-seat row, a shorter row with a disabled
 # seat, and a third row whose position skips a number.
-api 201 POST /cinemas '{"name":"Cine Concurrencia","timezone":"America/Madrid","address":"Calle 2"}' "$token"
+api 201 POST /cinemas '{"name":"Cine Concurrencia","timezone":"Europe/Madrid","address":"Calle 2"}' "$token"
 cinema="$(id_of)"
 api 201 POST /rooms "{\"cinemaId\":\"$cinema\",\"name\":\"Sala M2\"}" "$token"
 room="$(id_of)"

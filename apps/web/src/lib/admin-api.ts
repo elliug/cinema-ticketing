@@ -659,11 +659,27 @@ function toProblem(status: number, parsed: JsonRead): AdminProblem {
       };
     }
   }
+  if (status === 404) {
+    // The API's local administrative guard answers 404, not 401, so that a caller can
+    // never tell an absent surface from a wrong token. Both causes are administration
+    // that was not mounted: the API started without API_LOCAL_ADMIN=true, or it was
+    // started with an API_LOCAL_ADMIN_TOKEN this web does not hold. Naming them is the
+    // difference between fixing a deployment setting and re-reading a form that was fine.
+    return unexpectedResponse(status, ADMINISTRATION_ABSENT_DETAIL);
+  }
   return unexpectedResponse(
     status,
     "the cinema API returned an unrecognised error response",
   );
 }
+
+/**
+ * The two reasons the administrative surface answers 404, in the words an operator can
+ * act on. It names the settings and never the token: the credential must not reach a
+ * problem detail, a log, or the screen.
+ */
+const ADMINISTRATION_ABSENT_DETAIL =
+  "the API has no administration at that address: either it runs without API_LOCAL_ADMIN=true, or API_LOCAL_ADMIN_TOKEN does not match the token it was started with";
 
 function unexpectedResponse(status: number, detail: string): AdminProblem {
   return {

@@ -745,6 +745,32 @@ test("a non-problem error body becomes a typed unexpected response", async () =>
   assert.equal(problem.status, 502);
 });
 
+// The local administrative guard answers 404, not 401, so a wrong token is
+// indistinguishable from an address that serves no administration at all. A bare
+// "unrecognised error response · HTTP 404" sent an operator hunting for a mistake in the
+// form they had just submitted, so the detail has to name the two real causes instead.
+test("a 404 with no problem body names the two reasons administration is absent", async () => {
+  const recorder = recordingFetch(
+    () => new Response("404 page not found\n", { status: 404 }),
+  );
+  const client = makeClient(recorder);
+
+  const problem = unwrapError(await client.listCinemas());
+
+  assert.equal(problem.code, "unexpected_response");
+  assert.equal(problem.status, 404);
+  assert.equal(
+    problem.detail,
+    "the API has no administration at that address: either it runs without API_LOCAL_ADMIN=true, or API_LOCAL_ADMIN_TOKEN does not match the token it was started with",
+  );
+  // The token is a credential: the explanation names the setting, never the value it was
+  // sent with.
+  assert.equal(problem.detail.includes(TOKEN), false);
+  const [call] = recorder.calls;
+  assert.equal(call.url, `${BASE_URL}/api/v1/admin/cinemas`);
+  assert.equal(call.init.method, "GET");
+});
+
 test("a success body that is not JSON becomes a typed unexpected response", async () => {
   const recorder = recordingFetch(
     () => new Response("not json", { status: 200 }),

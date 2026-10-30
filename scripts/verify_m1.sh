@@ -92,7 +92,7 @@ api 404 POST /cinemas '{"name":"Guarded","timezone":"UTC"}'
 api 404 POST /cinemas '{"name":"Guarded","timezone":"UTC"}' wrong-token
 
 # S1/S11: irregular geometry, one row with two seats and one with one seat.
-api 201 POST /cinemas '{"name":"Cine Centro","timezone":"America/Madrid","address":"Calle 1"}' "$token"
+api 201 POST /cinemas '{"name":"Cine Centro","timezone":"Europe/Madrid","address":"Calle 1"}' "$token"
 cinema="$(id_of)"
 api 201 POST /rooms "{\"cinemaId\":\"$cinema\",\"name\":\"Sala 1\"}" "$token"
 room="$(id_of)"
