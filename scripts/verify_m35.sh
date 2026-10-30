@@ -7,7 +7,11 @@
 # browser does NOT treat as secure:
 #   1. A run-scoped stack: its own database, its own Redis logical database, its own API
 #      port, its own web port and its own bucket, so it can never touch the development
-#      data. It refuses to run against the `cinema` development database by name.
+#      data. The scope is **enforced, not assumed**: it refuses to run against the `cinema`
+#      development database by name, against Redis logical database 0 (the development
+#      keyspace), and against an object store that is not on loopback, because this gate
+#      flushes the index it uses and creates and deletes a bucket in the store it is
+#      pointed at. Each refusal names the override and how to choose a safe value.
 #   2. The project's own migration runner brings that database to 0006, the project's own
 #      bootstrap command seeds it (a cinema, a room, a published layout, two films and two
 #      screenings) and creates the bucket the ticket PDFs are stored in.
@@ -44,7 +48,8 @@
 # and all three ports are unique to this run, and nothing here touches the development
 # `cinema` database or Redis index 0. Cleanup runs on every exit path — the two server
 # processes are stopped, the database is dropped, the bucket is emptied and deleted, and
-# the Redis logical database this run owned is flushed.
+# the Redis logical database this run owned is flushed. Cleanup only touches what the run
+# took: the index is flushed once it was taken empty, and the bucket once it was created.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,6 +67,10 @@ tmp="$(mktemp -d)"
 checks="$tmp/checks"
 api_pid=""
 web_pid=""
+# Whether this run took something it may give back. Both stay 0 until the run owns what
+# cleanup would otherwise remove, so a refusal never deletes somebody else's keys or bucket.
+redis_owned=0
+bucket_created=0
 api_log="$tmp/api.log"
 web_log="$tmp/web.log"
 artifacts="${TMPDIR:-/tmp}/cinema-m35-verify-$unique-artifacts"
@@ -110,13 +119,18 @@ cleanup() {
   if [ -n "$compose" ] && [ -n "$db" ]; then
     $compose exec -T postgres dropdb -U cinema --if-exists "$db" >/dev/null 2>&1 \
       && printf 'dropped database %s\n' "$db" >>"$cleanup_log"
-    # The reservation keys live in a dedicated logical database, so the development
-    # keyspace (index 0) is never flushed.
+  fi
+  # The reservation keys live in a dedicated logical database, so the development
+  # keyspace (index 0) is never flushed — and neither is any other index this run did not
+  # take empty, which is what makes a refused run harmless.
+  if [ "$redis_owned" = 1 ] && [ -n "$compose" ]; then
     $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 \
       && printf 'flushed Redis logical database %s\n' "$redis_db" >>"$cleanup_log"
   fi
-  # The bucket is emptied and removed, so a failed run leaves no objects behind.
-  if curl --silent --fail "$s3_endpoint/$bucket?list-type=2" >"$tmp/cleanup-list.xml" 2>/dev/null; then
+  # The bucket is emptied and removed, so a failed run leaves no objects behind — but only
+  # the bucket this run created is touched, never one that was already there.
+  if [ "$bucket_created" = 1 ] \
+    && curl --silent --fail "$s3_endpoint/$bucket?list-type=2" >"$tmp/cleanup-list.xml" 2>/dev/null; then
     local key
     for key in $(grep -o '<Key>[^<]*</Key>' "$tmp/cleanup-list.xml" | sed 's/<[^>]*>//g'); do
       curl --silent --output /dev/null -X DELETE "$s3_endpoint/$bucket/$key" || true
@@ -150,6 +164,42 @@ trap cleanup EXIT INT TERM
 case "$db" in cinema_m35_verify_[0-9]*) ;; *) fail "refusing to drop an unexpected database name" ;; esac
 [ "$db" != "cinema" ] || fail "refusing to run against the development database"
 case "$bucket" in cinema-m35-verify-[0-9]*) ;; *) fail "refusing to create an unexpected bucket name" ;; esac
+
+# ── The run scope is enforced, not assumed ───────────────────────────────────
+# The two overrides at the top of this script can point the run outside the scope it
+# claims, and both would be destructive rather than merely wrong: index 0 is the
+# development keyspace somebody's machine is using, and an object store that is not this
+# machine's is a shared bucket namespace this gate creates and deletes a bucket in. Each
+# is refused by name, with the value that makes it safe, before anything is created.
+case "$redis_db" in
+  0)
+    fail "refusing to run: M35_REDIS_DB=0 is the development Redis logical database, which this gate flushes on cleanup; set M35_REDIS_DB to a free index other than 0 (the default is 8)"
+    ;;
+  "" | *[!0123456789]*)
+    fail "refusing to run: M35_REDIS_DB='$redis_db' is not a Redis logical database index; set it to a free index other than 0 (the default is 8)"
+    ;;
+  *) ;;
+esac
+
+# The endpoint is reduced to its host so a scheme, a port, a path or a userinfo in the
+# middle cannot hide a remote store behind a loopback-looking prefix.
+s3_host="${s3_endpoint#*://}"
+s3_host="${s3_host%%/*}"
+s3_host="${s3_host##*@}"
+s3_host="${s3_host%:*}"
+s3_is_loopback=0
+case "$s3_host" in
+  localhost | "[::1]" | "::1") s3_is_loopback=1 ;;
+  *)
+    # `127.0.0.1.example.com` starts with `127.` and is not loopback, so what remains has to
+    # be a dotted quad inside 127.0.0.0/8 rather than anything the prefix happens to match.
+    if printf '%s' "$s3_host" | grep -Eq '^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+      s3_is_loopback=1
+    fi
+    ;;
+esac
+[ "$s3_is_loopback" = 1 ] \
+  || fail "refusing to run: M35_S3_ENDPOINT='$s3_endpoint' is not a loopback object store, and this gate creates and deletes a bucket in the store it is pointed at; point it at the local Floci (the default is http://127.0.0.1:4566) or at a loopback address of your own"
 [ -n "$compose" ] || fail "Docker Compose is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v go >/dev/null 2>&1 || fail "Go is required to build the API and the bootstrap command"
@@ -245,10 +295,10 @@ ok "dependencies: postgres, redis and floci are healthy"
 
 # This script flushes one Redis logical database on cleanup, so it must own it. A
 # developer using the same index for something else loses nothing: the run stops before
-# touching it.
+# touching it, and it stops before claiming it.
 dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || echo 0)"
 case "$dbsize" in
-  0|"") ;;
+  0|"") redis_owned=1 ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M35_REDIS_DB to a free database" ;;
 esac
 
@@ -289,6 +339,7 @@ case "$bucket_output" in
   *) fail "bootstrap ensure-bucket answered '$bucket_output', expected 'bucket $bucket is ready'" ;;
 esac
 ok "bucket: bootstrap ensure-bucket created $bucket and Floci answers it"
+bucket_created=1
 
 # ── 3. The API ───────────────────────────────────────────────────────────────
 # The API runs from the built binary, so the recorded PID is the server itself and

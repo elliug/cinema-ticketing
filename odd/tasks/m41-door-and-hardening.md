@@ -54,7 +54,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 
 | ID | Specs | Route | Slice |
 |---|---|---|---|
-| T1 | S6, S7 | gate: insecure origin + second engine | 1 |
+| T1 | S6, S7 | gate: insecure origin + second engine | 1 · `8b2afc0` (#59) |
 | T2 | S8 | the five cheap defects | 2 |
 | T3 | S9 | `POST /events` with price and status; local hour in admin reads | 3 |
 | T4 | S10 | `POST /reservations/{id}/cancel` end to end | 4 |
@@ -106,3 +106,35 @@ Four defects reached a delivered milestone within one hour of real use, and none
 
 The common thread is in the spec that opens this milestone: each was true only where it was
 written. S6 exists so the gate stops being blind to that class, and it is T1 for that reason.
+
+### L4 — T1 delivered: the gate now fails for the right reasons
+
+Merged as #59 (`8b2afc0`). The gate drives the machine's own non-loopback IPv4 instead of
+loopback, refuses to fall back to a secure origin, runs Chromium and Firefox against one
+served stack, and carries `e2e/insecure-origin.spec.ts`, which asserts from inside the browser
+that `isSecureContext` is false and `crypto.randomUUID` is undefined. Two receipts approved it:
+`review-ec69f0632e46a78c` for the slice (high risk, process boundary in the workflow) with five
+informational findings, and `review-e8a2f6cd7a12eaa2` for the delta — two files, 59 lines,
+medium, no findings at all.
+
+**The gate found three defects while being built, and only one was its own.** In order:
+
+1. A constant film title in the fixture. Both engines share one stack, so the second engine
+   found two catalogue entries and `toHaveCount(1)` failed, correctly. The fixture assumed a
+   virgin database; the suffix that fixed it also makes the test honest on a reused stack.
+2. A console error only Firefox reports: `Failed to fetch RSC payload … Falling back to
+   browser navigation`. It looked like noise to filter. It was not.
+3. The cause of (2), in the product: the schedule screen renders one link per screening, all to
+   *the same route with a different query*, and Next prefetched every one — a full render per
+   screening for a navigation the operator may never take. `prefetch={false}` removed a real
+   waste and the symptom with it. **Filtering the console would have hidden the next error that
+   looked the same**, which is why the rule stayed as it was.
+
+Three CI round trips, roughly five minutes each, and a `visit()` that waits a bounded half
+second for a route's prefetches so the test stops aborting them.
+
+**Recorded honestly:** the first review's `R1-run-scope` finding was never written down anywhere
+this session can read, so T2 does not pretend to fix it. What T2 does instead is re-derive the
+isolation question from the code itself — the gate's `M35_*` overrides are advisory, and a
+Redis index of `0` would point the gate at the development database's neighbour. If the
+original finding said something else, this log is where that becomes visible.

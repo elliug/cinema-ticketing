@@ -564,8 +564,7 @@ UPDATE cinema.payment_attempts SET created_at = now() - interval '3 minutes' WHE
 		if stored := readAttempts(t, ctx, pool, inFlightReservation); stored.Count != 1 {
 			t.Fatalf("the refused second key stored %d attempts, want the original 1", stored.Count)
 		}
-		if stored := readAttempts(t, ctx, pool, inFlightReservation);
-			stored.ID != firstID || stored.Key != "key-in-flight-a" || stored.Status != checkout.StatusPending {
+		if stored := readAttempts(t, ctx, pool, inFlightReservation); stored.ID != firstID || stored.Key != "key-in-flight-a" || stored.Status != checkout.StatusPending {
 			t.Fatalf("stored attempt = %s/%s/%s, want %s/key-in-flight-a/pending",
 				stored.ID, stored.Key, stored.Status, firstID)
 		}

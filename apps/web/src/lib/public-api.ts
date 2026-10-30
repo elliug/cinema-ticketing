@@ -420,7 +420,14 @@ export const PUBLIC_BASE_URL_ENV = "API_BASE_URL";
  */
 export const MAX_HOLD_SEATS = 20;
 
-const PUBLIC_PATH_PREFIX = "/api/v1";
+/**
+ * The prefix every public (guest) route of the API hangs off.
+ *
+ * It is declared here, once, because two places build a public address: this client and
+ * the ticket media forward in lib/ticket-media.ts. A second copy of the value would drift
+ * silently — the forward would answer 502 for every ticket while both files looked right.
+ */
+export const PUBLIC_PATH_PREFIX = "/api/v1";
 
 const PROBLEM_CODES: readonly PublicErrorCode[] = [
   "invalid_input",

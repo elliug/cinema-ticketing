@@ -96,6 +96,33 @@ for env_value in unset "" production; do
 done
 log "the guard refused three times and inserted nothing"
 
+# The environment guard is a string the caller supplies, so a person who can reach a shared
+# database can export it there. The second guard reads the address the server answered the
+# connection on: a unix socket and loopback are this machine, anything else was applied
+# across a network.
+#
+# The connection below is non-loopback rather than remote — the server is this machine's own
+# postgres container, reached on its container address — because the address the connection
+# was accepted on is exactly what the rule reads, and it is the only way to make it
+# non-loopback without a second host.
+log "the guard refuses a seed applied over a non-loopback connection"
+server_ip="$($compose exec -T postgres hostname -i 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+[ -n "$server_ip" ] || fail "could not read the postgres container's own address"
+set +e
+nonlocal_output="$($compose exec -T -e PGPASSWORD=cinema_local_only postgres psql \
+  -X -q -v ON_ERROR_STOP=1 -U cinema -d "$db" -h "$server_ip" \
+  -v api_env=development -f - <db/seeds/dev_seed.sql 2>&1)"
+nonlocal_status=$?
+set -e
+[ "$nonlocal_status" -ne 0 ] \
+  || fail "the seed ran over $server_ip, which is not a loopback address, and inserted $(counts)"
+case "$nonlocal_output" in
+  *"not a local database"*) ;;
+  *) fail "the guard did not name the non-local server as the reason: $nonlocal_output" ;;
+esac
+[ "$(counts)" = "0|0|0|0|0|0|0|0" ] || fail "a refused non-local seed inserted rows: $(counts)"
+log "the guard refused the connection accepted on $server_ip and inserted nothing"
+
 log "first run: seeding the development data"
 seed development || fail "the first seed run failed"
 
