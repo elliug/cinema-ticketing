@@ -116,6 +116,14 @@ export interface PageProblems {
 const HYDRATION_PATTERN =
   /hydrat|did not match|didn't match|server rendered (html|text)|text content does not match/i;
 
+/**
+ * How long a visit waits for the route's own prefetches to settle before returning.
+ *
+ * Long enough for a prefetch of this application's own routes, short enough that a stuck
+ * request cannot stall the whole gate.
+ */
+const NETWORK_IDLE_TIMEOUT_MS = 5_000;
+
 /** Starts collecting the browser's console for one page. Never throws. */
 export function collectProblems(page: Page): PageProblems {
   const problems: PageProblems = {
@@ -198,6 +206,17 @@ export async function visit(page: Page, path: string): Promise<Response> {
   expect(response, `${path} answered no response`).not.toBeNull();
   expect(response?.status(), `${path} status`).toBe(200);
   await expectOneH1(page);
+  // Let the route's own prefetches finish before the caller navigates away.
+  //
+  // The App Router prefetches the links a screen renders, and a `goto` issued while one is
+  // in flight aborts it. Chromium swallows that abort; Firefox reports it as a console error
+  // — `Failed to fetch RSC payload … Falling back to browser navigation` — and the gate
+  // treats a console error as a failure, correctly, because until proven otherwise it is a
+  // defect. This abort is the test's, not the product's, so the wait belongs here instead of
+  // in `collectProblems`: the gate keeps its rule and pays half a second per navigation.
+  // Bounded, and tolerant of a page that never goes idle, because a stream that stays open
+  // is not a defect either.
+  await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
   return response as Response;
 }
 
