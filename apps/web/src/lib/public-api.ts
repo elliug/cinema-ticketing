@@ -36,6 +36,8 @@
 // and the map then degrades to its honest flat fallback instead of inventing
 // geometry.
 
+import { randomUUID } from "./uuid.ts";
+
 /** Error codes the reservation API and this client can report. */
 export type PublicErrorCode =
   | "invalid_input"
@@ -481,7 +483,7 @@ export function resolvePublicConfig(env: PublicEnvironment): PublicResult<Public
  * failure instead of starting a new hold.
  */
 export function newIdempotencyKey(): string {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 /** Builds a client; callers normally obtain it from resolvePublicConfig. */
