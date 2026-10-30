@@ -25,8 +25,6 @@ import {
   newIdempotencyKey,
   PUBLIC_BASE_URL_ENV,
   resolvePublicConfig,
-  ticketPDFUrl,
-  ticketQRImageUrl,
 } from "./public-api.ts";
 
 const BASE_URL = "http://127.0.0.1:8080";
@@ -777,27 +775,6 @@ test("verifyTicket refuses a blank token before any request", async () => {
 
   assert.equal(recorder.calls.length, 0);
   assert.equal(problem.code, "invalid_input");
-});
-
-test("the PDF and QR links point at the public ticket routes", () => {
-  assert.equal(
-    ticketPDFUrl(BASE_URL, "ticket-1"),
-    `${BASE_URL}/api/v1/tickets/ticket-1/pdf`,
-  );
-  assert.equal(
-    ticketQRImageUrl(BASE_URL, "ticket-1"),
-    `${BASE_URL}/api/v1/tickets/ticket-1/qr.svg`,
-  );
-  // A configured base URL with a trailing slash must not double up, and an id is
-  // escaped exactly as the client escapes it.
-  assert.equal(
-    ticketPDFUrl(`${BASE_URL}/`, "ticket/1"),
-    `${BASE_URL}/api/v1/tickets/ticket%2F1/pdf`,
-  );
-  assert.equal(
-    ticketQRImageUrl(`${BASE_URL}/`, "ticket 1"),
-    `${BASE_URL}/api/v1/tickets/ticket%201/qr.svg`,
-  );
 });
 
 // M3.5 · T4 — the public catalogue the "Now showing" screen reads.

@@ -21,9 +21,10 @@
 // its screening, its seats, its deadline and its tickets without asking the payment
 // route again), and the M3 ticket verification a page uses to say plainly whether a
 // ticket admits its holder. The two ticket *downloads* are not reads this
-// client makes: they are built as link and image targets by [ticketPDFUrl] and
-// [ticketQRImageUrl], so the browser fetches the bytes and the page never handles
-// them.
+// client makes: the page points its link and its image at this application's own
+// same-origin ticket routes (lib/ticket-media.ts), which forward the request to
+// the API from the server, so the browser fetches the bytes and the page never
+// handles them.
 //
 // The client depends only on the standard fetch API, so it is usable from a
 // server component, a server action, or a test with an injected fetch.
@@ -693,35 +694,6 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
       return parseVerification(result.value);
     },
   };
-}
-
-/**
- * The URL of a ticket's PDF: `GET /api/v1/tickets/{ticketId}/pdf`, which answers
- * with a short-lived pre-signed redirect.
- *
- * It is built as a plain link target rather than fetched: the browser follows the
- * redirect and downloads the bytes, so this page never handles them.
- *
- * The PDF is a record of the sale, not evidence that the ticket is valid: it was
- * rendered when the payment was captured, so a later void or a cancelled
- * screening cannot appear in it. [PublicClient.verifyTicket] is what answers
- * whether the ticket still admits its holder.
- */
-export function ticketPDFUrl(baseUrl: string, ticketId: string): string {
-  const id = encodeURIComponent(ticketId.trim());
-  return `${normalizeBaseUrl(baseUrl)}${PUBLIC_PATH_PREFIX}/tickets/${id}/pdf`;
-}
-
-/**
- * The URL of a ticket's QR image: `GET /api/v1/tickets/{ticketId}/qr.svg`, the
- * code rendered from the same signed token the PDF prints.
- *
- * It is an image source, not a client-side encoding step, so the page needs no QR
- * library and both media show one code minted by the API.
- */
-export function ticketQRImageUrl(baseUrl: string, ticketId: string): string {
-  const id = encodeURIComponent(ticketId.trim());
-  return `${normalizeBaseUrl(baseUrl)}${PUBLIC_PATH_PREFIX}/tickets/${id}/qr.svg`;
 }
 
 /** Rejects a payment that must never reach the network. */

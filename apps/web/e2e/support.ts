@@ -475,7 +475,9 @@ export async function openTicket(
   ticketId: string,
 ): Promise<{ qrResponses: Response[] }> {
   const qrResponses: Response[] = [];
-  const suffix = `/api/v1/tickets/${ticketId}/qr.svg`;
+  // The suffix of this application's own route, not the API's: the page asks its own origin
+  // so that the image works from whatever device opened it. An API path would not match.
+  const suffix = `/api/tickets/${ticketId}/qr.svg`;
   const listener = (response: Response) => {
     if (response.url().endsWith(suffix)) {
       qrResponses.push(response);
