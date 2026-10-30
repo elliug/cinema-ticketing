@@ -313,3 +313,35 @@ Decisions are quoted from the human in `## Log`; every task names the specs it m
   the administration screen must still do itself: create-then-publish is two requests, the six
   statuses are carried by the screen because no endpoint serves them, and it must not claim "for
   sale" on its own — the administrative list carries no `onSale`.
+- L15 — T8 built the administration screens the milestone's demo needs, and ended the
+  hand-written stylesheet. **Sellable is create-then-patch, and the screen performs both
+  requests.** `POST /admin/events` still stores a draft at price `0.00` and cannot carry a price
+  or a status, so the schedule creates the screening from a film chosen out of the repertoire —
+  and a room and a published layout version chosen the same way, never pasted — then opens that
+  draft's own form pre-filled with `0.00`/`draft`, and one `PATCH /admin/events/{eventId}`
+  carries the price, the status, or both. **Only what changed is sent**: a status-only change
+  sends `{status}` and leaves the price alone, a price-only change sends `{priceCents}`, and a
+  submit that changed nothing is refused locally in the API's own words instead of being sent
+  for the server to refuse again. **The screen carries the six statuses because no endpoint
+  serves them** (L14): the list is the migration's own spellings in its own order, each option
+  carrying the sentence about what it means for the sale — including that `published` is a
+  recording state the catalogue does not act on. **Nothing here calls a screening for sale.**
+  The administrative list carries `status` and no `onSale`, so the row prints the stored status
+  and the price, and when the status says `on_sale` but the start is behind us the badge reads
+  *Start passed* and the row says the catalogue no longer lists it and its seats cannot be
+  bought — the mirror of the API's `starts_at > now()` predicate, tested at the boundary.
+  **Errors are printed, not paraphrased**: code, HTTP status and the API's `detail` appear
+  unchanged, and the input a `400` named is the control the form marks. **The parser is still
+  the contract**: the film list and both screening reads refuse an entry they cannot print, and
+  one unreadable entry refuses the whole read rather than being dropped. **The stylesheet
+  ended.** Preflight is imported, L6's deferral closes, and fifteen legacy rule groups are
+  deleted after a grep per rule; what remains is named in the file beside the screen that still
+  needs it. Two preflight consequences reached screens outside this slice — every list's marker
+  and every anchor's underline — and were repaired in the stylesheet rather than in those
+  screens, which is where they belong. The guard T7 wrote to stop a future slice deleting rules
+  other screens needed was retired in the same commit, because T8 is that slice: it now asserts
+  that the rules with a remaining user stay and the ones whose last screen migrated are gone.
+  Evidence: 27 new tests, `pnpm check` green with 312 tests, a build whose schedule route is
+  4.27 kB, and a real render of the three screens against a stub API — one `h1` per screen, no
+  legacy class in the markup, and a passed-but-`on_sale` screening labelled *Start passed*. Not
+  covered: the click path in a browser, which is T9's gate.
