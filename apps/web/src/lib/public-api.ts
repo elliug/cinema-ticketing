@@ -1,23 +1,30 @@
 // Public (guest) reservation API client.
 //
-// The customer facing reservation routes live under /api/v1, are mounted
-// outside the administrative guard, and require no credential: a guest selects
-// seats without an account. This client therefore:
+// The customer facing routes live under /api/v1, are mounted outside the
+// administrative guard, and require no credential: a guest selects seats without
+// an account, pays for them and shows the ticket. This client therefore:
 //
 //   - sends no Authorization header and reads no token; the only header it adds
-//     besides the usual JSON ones is the Idempotency-Key of a hold attempt;
+//     besides the usual JSON ones is the Idempotency-Key of a hold or a payment
+//     attempt;
 //   - targets a configurable base URL resolved from server-side environment
 //     variables, defaulting to http://127.0.0.1:8080;
 //   - converts failures into typed results instead of throwing, so callers must
 //     handle RFC 9457 problem details explicitly;
-//   - rejects a selection the API would reject anyway (no seats, too many
-//     seats, no idempotency key) before any request leaves the process.
+//   - rejects a request the API would reject anyway (no seats, too many seats, no
+//     idempotency key, no ticket id) before anything leaves the process.
+//
+// It covers the M2 hold surface, the M3 checkout and ticket reads, and the M3
+// ticket verification a page uses to say plainly whether a ticket admits its
+// holder. The two ticket *downloads* are not reads this client makes: they are
+// built as link and image targets by [ticketPDFUrl] and [ticketQRImageUrl], so the
+// browser fetches the bytes and the page never handles them.
 //
 // The client depends only on the standard fetch API, so it is usable from a
 // server component, a server action, or a test with an injected fetch.
 //
-// Per ARCHITECTURE.md the field names below are the M2 shapes the API actually
-// serves (see apps/api/internal/publicapi/holds.go). The availability snapshot
+// Per ARCHITECTURE.md the field names below are the M2 and M3 shapes the API
+// actually serves (see apps/api/internal/publicapi). The availability snapshot
 // carries the layout projection (`rowLabel`, `seatNumber`, `kind`) because the
 // public read joins the layout, so the seat map can render the event's real
 // rows. Those three fields stay optional: an older API serves availability only,
@@ -28,12 +35,23 @@
 export type PublicErrorCode =
   | "invalid_input"
   | "invalid_request"
+  | "invalid_token"
   | "seat_unavailable"
+  | "seat_already_sold"
   | "hold_window_expired"
+  | "hold_expired"
   | "idempotency_key_reused"
   | "duplicate_seat"
   | "not_found"
+  | "not_sellable"
+  | "already_paid"
+  | "reservation_not_payable"
+  | "payment_in_flight"
+  | "payment_unavailable"
+  | "amount_mismatch"
+  | "provider_reference_taken"
   | "coordination_unavailable"
+  | "service_unavailable"
   | "network_error"
   | "unexpected_response";
 
@@ -94,9 +112,108 @@ export interface PublicHold {
   expiresAt: string;
 }
 
+export interface PayReservationInput {
+  reservationId: string;
+  /**
+   * The key of this payment attempt, kept per reservation by
+   * lib/payment-key.ts. A retry after a temporary failure resends the same key;
+   * only a declined attempt discards it and mints a new one.
+   */
+  idempotencyKey: string;
+}
+
+/**
+ * POST /reservations/{reservationId}/payment.
+ *
+ * A declined charge is a **successful answer** whose `paymentStatus` says so:
+ * the request was processed and the provider refused it. Only `paymentStatus`
+ * tells the two apart — never the HTTP status.
+ */
+export interface PublicPayment {
+  reservationId: string;
+  /** The payment attempt the answer belongs to. */
+  attemptId: string;
+  /** `approved` or `declined`, as the checkout recorded it. */
+  paymentStatus: string;
+  /** What the whole order cost, in minor units. */
+  amountCents: number;
+  /** One ticket per seat of an approved payment; empty for a decline. */
+  ticketIds: string[];
+}
+
+/** One seat of a ticket, as it is painted at the door. */
+export interface PublicTicketSeat {
+  eventSeatId: number;
+  rowLabel: string;
+  seatNumber: string;
+}
+
+/** The screening a ticket admits its holder to. */
+export interface PublicTicketEvent {
+  id: string;
+  filmTitle: string;
+  /** The instant the screening starts, in UTC. */
+  startsAt: string;
+  /**
+   * The screening time **in the venue's own zone**, rendered by the API.
+   *
+   * This is what a surface prints. Re-formatting `startsAt` in the browser would
+   * render the viewer's zone instead of the venue's, so a missing value is a
+   * refused response rather than something this client derives.
+   */
+  startsAtLocal: string;
+  roomName: string;
+  cinemaName: string;
+  /** The venue's IANA zone, for labelling the local time. */
+  timezone: string;
+  /** Stored event status; `cancelled` is what makes a ticket unusable. */
+  status: string;
+}
+
+/** GET /tickets/{ticketId} — the one projection the page and the PDF render. */
+export interface PublicTicket {
+  ticketId: string;
+  /** Stored ticket status: `issued` or `void`. */
+  status: string;
+  /** The API's validity rule: issued and the screening was not cancelled. */
+  valid: boolean;
+  issuedAt: string;
+  /** The order (one reservation) the ticket was sold in. */
+  reservationId: string;
+  event: PublicTicketEvent;
+  /** This ticket's own seat; one ticket is one seat. */
+  seats: PublicTicketSeat[];
+  /** What the whole reservation cost, never this seat's price. */
+  orderAmountCents: number;
+  /** The same amount as the API renders it, for example `19.98`. */
+  orderAmountDisplay: string;
+  /** The signed code the page shows and the PDF prints. */
+  qrToken: string;
+}
+
+/** POST /tickets/verify — what a presented code is, checked server side. */
+export interface PublicVerification {
+  ticketId: string;
+  eventId: string;
+  seats: PublicTicketSeat[];
+  ticketStatus: string;
+  eventStatus: string;
+  valid: boolean;
+  /**
+   * Why the ticket does not admit its holder. Absent for a valid ticket, and
+   * only these two values exist in this milestone: `voided` and
+   * `event_cancelled`. Every code that is not a ticket of ours is instead a
+   * refusal (`400 invalid_token`), never a reason.
+   */
+  reason?: string;
+}
+
 export interface PublicClient {
   listEventSeats(eventId: string): Promise<PublicResult<PublicEventSeats>>;
   createHold(input: CreateHoldInput): Promise<PublicResult<PublicHold>>;
+  payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
+  getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
+  verifyTicket(token: string): Promise<PublicResult<PublicVerification>>;
 }
 
 /**
@@ -113,6 +230,21 @@ export type AvailabilityResponse =
 /** The serializable answer of a hold attempt. */
 export type HoldResponse =
   | { ok: true; hold: PublicHold }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of a payment attempt. */
+export type PaymentResponse =
+  | { ok: true; payment: PublicPayment }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of a ticket read. */
+export type TicketResponse =
+  | { ok: true; ticket: PublicTicket }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of a ticket verification. */
+export type VerificationResponse =
+  | { ok: true; verification: PublicVerification }
   | { ok: false; problem: PublicProblem };
 
 export const DEFAULT_PUBLIC_BASE_URL = "http://127.0.0.1:8080";
@@ -132,12 +264,23 @@ const PUBLIC_PATH_PREFIX = "/api/v1";
 const PROBLEM_CODES: readonly PublicErrorCode[] = [
   "invalid_input",
   "invalid_request",
+  "invalid_token",
   "seat_unavailable",
+  "seat_already_sold",
   "hold_window_expired",
+  "hold_expired",
   "idempotency_key_reused",
   "duplicate_seat",
   "not_found",
+  "not_sellable",
+  "already_paid",
+  "reservation_not_payable",
+  "payment_in_flight",
+  "payment_unavailable",
+  "amount_mismatch",
+  "provider_reference_taken",
   "coordination_unavailable",
+  "service_unavailable",
   "unexpected_response",
 ];
 
@@ -267,7 +410,118 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
       }
       return parseHold(result.value);
     },
+
+    async payReservation(input) {
+      const invalid = validatePayInput(input);
+      if (invalid !== null) {
+        return { ok: false, error: invalid };
+      }
+
+      // No body, by design: the amount is `events.price_cents × seats held`,
+      // computed server side, so there is nothing for a client to send and
+      // nothing for the API to trust if it did.
+      const result = await send<unknown>(
+        `/reservations/${encodeURIComponent(input.reservationId)}/payment`,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Idempotency-Key": input.idempotencyKey,
+          },
+          cache: "no-store",
+        },
+      );
+      if (!result.ok) {
+        return result;
+      }
+      return parsePayment(result.value);
+    },
+
+    async getTicket(ticketId) {
+      const id = ticketId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidInput("this page needs a ticket id") };
+      }
+
+      const result = await send<unknown>(`/tickets/${encodeURIComponent(id)}`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseTicket(result.value);
+    },
+
+    async verifyTicket(token) {
+      const presented = token.trim();
+      if (presented === "") {
+        // A blank code cannot verify, and sending it would only ask the API for a
+        // refusal this client already knows the answer to.
+        return {
+          ok: false,
+          error: invalidInput("a QR code is needed to check a ticket"),
+        };
+      }
+
+      const result = await send<unknown>("/tickets/verify", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({ token: presented }),
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseVerification(result.value);
+    },
   };
+}
+
+/**
+ * The URL of a ticket's PDF: `GET /api/v1/tickets/{ticketId}/pdf`, which answers
+ * with a short-lived pre-signed redirect.
+ *
+ * It is built as a plain link target rather than fetched: the browser follows the
+ * redirect and downloads the bytes, so this page never handles them.
+ *
+ * The PDF is a record of the sale, not evidence that the ticket is valid: it was
+ * rendered when the payment was captured, so a later void or a cancelled
+ * screening cannot appear in it. [PublicClient.verifyTicket] is what answers
+ * whether the ticket still admits its holder.
+ */
+export function ticketPDFUrl(baseUrl: string, ticketId: string): string {
+  const id = encodeURIComponent(ticketId.trim());
+  return `${normalizeBaseUrl(baseUrl)}${PUBLIC_PATH_PREFIX}/tickets/${id}/pdf`;
+}
+
+/**
+ * The URL of a ticket's QR image: `GET /api/v1/tickets/{ticketId}/qr.svg`, the
+ * code rendered from the same signed token the PDF prints.
+ *
+ * It is an image source, not a client-side encoding step, so the page needs no QR
+ * library and both media show one code minted by the API.
+ */
+export function ticketQRImageUrl(baseUrl: string, ticketId: string): string {
+  const id = encodeURIComponent(ticketId.trim());
+  return `${normalizeBaseUrl(baseUrl)}${PUBLIC_PATH_PREFIX}/tickets/${id}/qr.svg`;
+}
+
+/** Rejects a payment that must never reach the network. */
+function validatePayInput(input: PayReservationInput): PublicProblem | null {
+  // The key is what makes a retry a replay rather than a second charge, so a
+  // request without one is never sent.
+  if (input.idempotencyKey.trim() === "") {
+    return invalidInput("an Idempotency-Key is required for every payment attempt");
+  }
+  if (input.reservationId.trim() === "") {
+    return invalidInput("the payment request needs a reservation id");
+  }
+  return null;
 }
 
 /** Rejects a selection that must never reach the network. */
@@ -298,6 +552,149 @@ function invalidInput(detail: string): PublicProblem {
     code: "invalid_input",
     detail,
   };
+}
+
+function parsePayment(value: unknown): PublicResult<PublicPayment> {
+  if (!isRecord(value) || typeof value.reservationId !== "string") {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the payment answer names no reservation"),
+    };
+  }
+  const paymentStatus = servedString(value.paymentStatus);
+  if (paymentStatus === undefined) {
+    // Without a verdict the page could only guess, and guessing "declined" or
+    // "approved" from the HTTP status is exactly what the API refuses to do.
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the payment answer carries no payment status"),
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      reservationId: value.reservationId,
+      attemptId: stringOr(value.attemptId, ""),
+      paymentStatus,
+      amountCents: integerOr(value.amountCents),
+      // A decline answers with no tickets, so an absent list is empty rather than
+      // an error; a client that iterates it never needs a nil check.
+      ticketIds: Array.isArray(value.ticketIds)
+        ? value.ticketIds.filter((id): id is string => typeof id === "string")
+        : [],
+    },
+  };
+}
+
+function parseTicket(value: unknown): PublicResult<PublicTicket> {
+  if (!isRecord(value) || typeof value.ticketId !== "string") {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the ticket detail names no ticket"),
+    };
+  }
+  if (!isRecord(value.event)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the ticket detail carries no screening"),
+    };
+  }
+
+  const event = value.event;
+  // The venue's local time is served, never derived: falling back to `startsAt`
+  // here would print the ticket in the browser's zone, which is the one thing the
+  // API computes it to prevent. A response without it is refused.
+  const startsAtLocal = servedString(event.startsAtLocal);
+  if (startsAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        "the ticket detail carries no startsAtLocal, so its screening time cannot be shown in the venue's zone",
+      ),
+    };
+  }
+  const qrToken = servedString(value.qrToken);
+  if (qrToken === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the ticket detail carries no QR code"),
+    };
+  }
+  if (!Array.isArray(value.seats)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the ticket detail carries no seat"),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ticketId: value.ticketId,
+      status: stringOr(value.status, "unknown"),
+      // Validity is the API's rule (issued and the screening was not
+      // cancelled), so only an explicit `true` reads as valid.
+      valid: value.valid === true,
+      issuedAt: stringOr(value.issuedAt, ""),
+      reservationId: stringOr(value.reservationId, ""),
+      event: {
+        id: stringOr(event.id, ""),
+        filmTitle: stringOr(event.filmTitle, ""),
+        startsAt: stringOr(event.startsAt, ""),
+        startsAtLocal,
+        roomName: stringOr(event.roomName, ""),
+        cinemaName: stringOr(event.cinemaName, ""),
+        timezone: stringOr(event.timezone, ""),
+        status: stringOr(event.status, "unknown"),
+      },
+      seats: parseTicketSeats(value.seats),
+      orderAmountCents: integerOr(value.orderAmountCents),
+      orderAmountDisplay: stringOr(value.orderAmountDisplay, ""),
+      qrToken,
+    },
+  };
+}
+
+function parseVerification(value: unknown): PublicResult<PublicVerification> {
+  if (!isRecord(value) || typeof value.ticketId !== "string") {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the ticket check names no ticket"),
+    };
+  }
+
+  const verification: PublicVerification = {
+    ticketId: value.ticketId,
+    eventId: stringOr(value.eventId, ""),
+    seats: Array.isArray(value.seats) ? parseTicketSeats(value.seats) : [],
+    ticketStatus: stringOr(value.ticketStatus, "unknown"),
+    eventStatus: stringOr(value.eventStatus, "unknown"),
+    valid: value.valid === true,
+  };
+  // The reason is present only for a ticket that does not admit its holder, so
+  // an absent key stays absent instead of becoming an empty string a surface
+  // would have to special-case.
+  const reason = servedString(value.reason);
+  if (reason !== undefined) {
+    verification.reason = reason;
+  }
+  return { ok: true, value: verification };
+}
+
+function parseTicketSeats(items: unknown[]): PublicTicketSeat[] {
+  const seats: PublicTicketSeat[] = [];
+  for (const item of items) {
+    if (!isRecord(item) || typeof item.eventSeatId !== "number") {
+      continue;
+    }
+    seats.push({
+      eventSeatId: item.eventSeatId,
+      rowLabel: stringOr(item.rowLabel, ""),
+      seatNumber: stringOr(item.seatNumber, ""),
+    });
+  }
+  return seats;
 }
 
 function parseAvailability(value: unknown): PublicResult<PublicEventSeats> {
@@ -439,6 +836,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+/** A value the API must serve for the page to be honest, or undefined when absent. */
+function servedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return value.trim() === "" ? undefined : value;
+}
+
+/** A minor-units amount; anything that is not a finite number counts as zero. */
+function integerOr(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 /** A served string, or undefined when the field is absent or blank. */

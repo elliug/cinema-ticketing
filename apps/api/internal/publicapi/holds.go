@@ -1,7 +1,8 @@
 // Package publicapi exposes the customer facing HTTP surface: the M2 hold
 // creation endpoint, the event seat availability read, the M3 checkout route that
 // pays a held reservation, the M3 ticket detail route that the confirmation page
-// and the PDF both read, the M3 ticket PDF download route that answers a
+// and the PDF both read, the M3 ticket QR image route that renders that signed code as
+// an SVG the ticket page shows, the M3 ticket PDF download route that answers a
 // short-lived pre-signed redirect, and the M3 ticket verification route a door
 // scanner calls with a presented signed code.
 //
@@ -60,6 +61,11 @@ func (h *Handler) Mux() *http.ServeMux {
 		// that route serves, so mounting one without the other would advertise half a
 		// capability.
 		mux.HandleFunc(verifyTicketRoute, h.verifyTicket)
+		// The QR image is the same signed code rendered as a picture, so the page and
+		// the PDF show one code and the web needs no QR dependency. It is mounted with
+		// the ticket route for the same reason the verification route is: it draws the
+		// code that route serves.
+		mux.HandleFunc(ticketQRRoute, h.getTicketQR)
 	}
 	// The download route needs both halves: a ticket to download and somewhere to store
 	// the document. A deployment without object storage never attaches the archive, so it

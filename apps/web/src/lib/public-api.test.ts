@@ -25,6 +25,8 @@ import {
   newIdempotencyKey,
   PUBLIC_BASE_URL_ENV,
   resolvePublicConfig,
+  ticketPDFUrl,
+  ticketQRImageUrl,
 } from "./public-api.ts";
 
 const BASE_URL = "http://127.0.0.1:8080";
@@ -420,6 +422,382 @@ test("an unreachable API becomes a typed network failure", async () => {
   assert.equal(problem.code, "network_error");
   assert.equal(problem.status, 0);
   assert.doesNotMatch(problem.detail, /ECONNREFUSED/, "internals stay out of the UI");
+});
+
+// M3 · T7 — the checkout and ticket reads the confirmation and ticket pages use.
+//
+// The checkout route takes no body at all (the amount is computed server side)
+// and is idempotent by header, so what matters here is the URL, the key, and that
+// a refusal keeps the code the API used: `payment_in_flight`, `hold_expired` and
+// `payment_unavailable` each tell the buyer to do something different.
+
+const TICKET_BODY = {
+  ticketId: "ticket-1",
+  status: "issued",
+  valid: true,
+  issuedAt: "2026-05-04T18:30:00Z",
+  reservationId: "reservation-a",
+  event: {
+    id: "event-a",
+    filmTitle: "The Long Take",
+    startsAt: "2026-05-04T18:30:00Z",
+    startsAtLocal: "2026-05-04T20:30:00+02:00",
+    roomName: "Room 1",
+    cinemaName: "Cinema Centro",
+    timezone: "Europe/Madrid",
+    status: "on_sale",
+  },
+  seats: [{ eventSeatId: 11, rowLabel: "A", seatNumber: "1" }],
+  orderAmountCents: 1998,
+  orderAmountDisplay: "19.98",
+  qrToken: "cGF5bG9hZA.c2ln",
+};
+
+test("payReservation posts with the Idempotency-Key and no body", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation-a",
+      attemptId: "attempt-1",
+      paymentStatus: "approved",
+      amountCents: 1998,
+      ticketIds: ["ticket-1"],
+    }),
+  );
+
+  const payment = unwrap(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/reservations/reservation-a/payment`);
+  assert.equal(call.init.method, "POST");
+  assert.equal(headerValue(call.init, "Idempotency-Key"), "key-1");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(call.init.body, undefined, "the amount is computed server side");
+
+  assert.deepEqual(payment, {
+    reservationId: "reservation-a",
+    attemptId: "attempt-1",
+    paymentStatus: "approved",
+    amountCents: 1998,
+    ticketIds: ["ticket-1"],
+  });
+});
+
+test("payReservation escapes the reservation id in its path", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation a/b",
+      attemptId: "attempt-1",
+      paymentStatus: "approved",
+      amountCents: 1,
+      ticketIds: [],
+    }),
+  );
+
+  await makeClient(recorder).payReservation({
+    reservationId: "reservation a/b",
+    idempotencyKey: "key-1",
+  });
+
+  assert.equal(
+    recorder.calls[0].url,
+    `${BASE_URL}/api/v1/reservations/reservation%20a%2Fb/payment`,
+  );
+});
+
+test("a declined payment is a success whose body says so, with no tickets", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation-a",
+      attemptId: "attempt-1",
+      paymentStatus: "declined",
+      amountCents: 1998,
+      ticketIds: [],
+    }),
+  );
+
+  const payment = unwrap(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(payment.paymentStatus, "declined");
+  assert.deepEqual(payment.ticketIds, []);
+});
+
+test("payReservation rejects a missing key or reservation before any request", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, {}));
+  const client = makeClient(recorder);
+
+  const withoutKey = unwrapError(
+    await client.payReservation({ reservationId: "reservation-a", idempotencyKey: "  " }),
+  );
+  assert.equal(withoutKey.code, "invalid_input");
+  assert.match(withoutKey.detail, /Idempotency-Key/);
+
+  const withoutReservation = unwrapError(
+    await client.payReservation({ reservationId: "", idempotencyKey: "key-1" }),
+  );
+  assert.equal(withoutReservation.code, "invalid_input");
+
+  assert.equal(recorder.calls.length, 0);
+});
+
+test("409 payment_in_flight keeps its own code, because it asks for the same key", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/payment-in-flight",
+      title: "Conflict",
+      status: 409,
+      code: "payment_in_flight",
+      detail:
+        "a payment for this reservation is already being processed; retry with the same Idempotency-Key",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(problem.status, 409);
+  assert.equal(problem.code, "payment_in_flight");
+  assert.match(problem.detail, /same Idempotency-Key/);
+});
+
+test("a closed hold and an already paid order stay distinguishable", async () => {
+  const expired = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/hold-expired",
+      title: "Hold expired",
+      status: 409,
+      code: "hold_expired",
+      detail: "the hold window closed before the payment was completed",
+    }),
+  );
+  const expiredProblem = unwrapError(
+    await makeClient(expired).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+  assert.equal(expiredProblem.code, "hold_expired");
+
+  const paid = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/already-paid",
+      title: "Conflict",
+      status: 409,
+      code: "already_paid",
+      detail: "the reservation already carries a captured payment",
+    }),
+  );
+  const paidProblem = unwrapError(
+    await makeClient(paid).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+  assert.equal(paidProblem.code, "already_paid");
+  assert.notEqual(paidProblem.code, expiredProblem.code);
+});
+
+test("503 payment_unavailable stays retryable with the same key", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/payment-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "payment_unavailable",
+      detail: "the payment provider is temporarily unavailable; retry the same Idempotency-Key",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+    }),
+  );
+
+  assert.equal(problem.status, 503);
+  assert.equal(problem.code, "payment_unavailable");
+});
+
+test("getTicket reads GET /tickets/{id} and keeps the served local time verbatim", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, TICKET_BODY));
+
+  const ticket = unwrap(await makeClient(recorder).getTicket("ticket-1"));
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/tickets/ticket-1`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+
+  // The venue's own clock is served, and it is what the page prints: re-deriving
+  // it from `startsAt` in the browser would render the viewer's zone instead.
+  assert.equal(ticket.event.startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.equal(ticket.event.timezone, "Europe/Madrid");
+  assert.equal(ticket.event.filmTitle, "The Long Take");
+  assert.equal(ticket.event.roomName, "Room 1");
+  assert.equal(ticket.event.cinemaName, "Cinema Centro");
+
+  assert.deepEqual(ticket.seats, [{ eventSeatId: 11, rowLabel: "A", seatNumber: "1" }]);
+  assert.equal(ticket.orderAmountCents, 1998);
+  assert.equal(ticket.orderAmountDisplay, "19.98");
+  assert.equal(ticket.qrToken, "cGF5bG9hZA.c2ln");
+  assert.equal(ticket.valid, true);
+  assert.equal(ticket.status, "issued");
+  assert.equal(ticket.reservationId, "reservation-a");
+  assert.equal(ticket.issuedAt, "2026-05-04T18:30:00Z");
+});
+
+test("getTicket escapes the ticket id and reports an unknown ticket", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(404, {
+      type: "https://cinema.local/problems/not-found",
+      title: "Not found",
+      status: 404,
+      code: "not_found",
+      detail: "the requested ticket does not exist",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).getTicket("ticket/1 x"));
+
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/tickets/ticket%2F1%20x`);
+  assert.equal(problem.status, 404);
+  assert.equal(problem.code, "not_found");
+});
+
+test("a ticket body without its served local time or its code is refused, never patched", async () => {
+  const withoutLocalTime = recordingFetch(() => {
+    const body = {
+      ...TICKET_BODY,
+      event: { ...TICKET_BODY.event, startsAtLocal: "" },
+    };
+    return jsonResponse(200, body);
+  });
+  const noTime = unwrapError(await makeClient(withoutLocalTime).getTicket("ticket-1"));
+  assert.equal(noTime.code, "unexpected_response");
+  assert.match(noTime.detail, /startsAtLocal/);
+
+  const withoutCode = recordingFetch(() => jsonResponse(200, { ...TICKET_BODY, qrToken: "" }));
+  const noCode = unwrapError(await makeClient(withoutCode).getTicket("ticket-1"));
+  assert.equal(noCode.code, "unexpected_response");
+  assert.match(noCode.detail, /QR/);
+});
+
+test("verifyTicket posts the served token and renders the reason it is refused", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      ticketId: "ticket-1",
+      eventId: "event-a",
+      seats: [{ eventSeatId: 11, rowLabel: "A", seatNumber: "1" }],
+      ticketStatus: "void",
+      eventStatus: "on_sale",
+      valid: false,
+      reason: "voided",
+    }),
+  );
+
+  const verification = unwrap(
+    await makeClient(recorder).verifyTicket("cGF5bG9hZA.c2ln"),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/tickets/verify`);
+  assert.equal(call.init.method, "POST");
+  assert.equal(headerValue(call.init, "Content-Type"), "application/json");
+  assert.deepEqual(JSON.parse(call.init.body as string), { token: "cGF5bG9hZA.c2ln" });
+
+  assert.equal(verification.valid, false);
+  assert.equal(verification.reason, "voided");
+  assert.equal(verification.ticketStatus, "void");
+});
+
+test("a cancelled screening is a different reason from a withdrawn ticket", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      ticketId: "ticket-1",
+      eventId: "event-a",
+      seats: [],
+      ticketStatus: "issued",
+      eventStatus: "cancelled",
+      valid: false,
+      reason: "event_cancelled",
+    }),
+  );
+
+  const verification = unwrap(await makeClient(recorder).verifyTicket("token"));
+  assert.equal(verification.reason, "event_cancelled");
+});
+
+test("a valid verification carries no reason, and a refused one is invalid_token", async () => {
+  const valid = recordingFetch(() =>
+    jsonResponse(200, {
+      ticketId: "ticket-1",
+      eventId: "event-a",
+      seats: [],
+      ticketStatus: "issued",
+      eventStatus: "on_sale",
+      valid: true,
+    }),
+  );
+  const verdict = unwrap(await makeClient(valid).verifyTicket("token"));
+  assert.equal(verdict.valid, true);
+  assert.equal(verdict.reason, undefined);
+
+  const refused = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-token",
+      title: "Invalid token",
+      status: 400,
+      code: "invalid_token",
+      detail: "the presented code is not a valid ticket",
+    }),
+  );
+  const problem = unwrapError(await makeClient(refused).verifyTicket("nope"));
+  assert.equal(problem.status, 400);
+  assert.equal(problem.code, "invalid_token");
+});
+
+test("verifyTicket refuses a blank token before any request", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, {}));
+  const problem = unwrapError(await makeClient(recorder).verifyTicket("   "));
+
+  assert.equal(recorder.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+});
+
+test("the PDF and QR links point at the public ticket routes", () => {
+  assert.equal(
+    ticketPDFUrl(BASE_URL, "ticket-1"),
+    `${BASE_URL}/api/v1/tickets/ticket-1/pdf`,
+  );
+  assert.equal(
+    ticketQRImageUrl(BASE_URL, "ticket-1"),
+    `${BASE_URL}/api/v1/tickets/ticket-1/qr.svg`,
+  );
+  // A configured base URL with a trailing slash must not double up, and an id is
+  // escaped exactly as the client escapes it.
+  assert.equal(
+    ticketPDFUrl(`${BASE_URL}/`, "ticket/1"),
+    `${BASE_URL}/api/v1/tickets/ticket%2F1/pdf`,
+  );
+  assert.equal(
+    ticketQRImageUrl(`${BASE_URL}/`, "ticket 1"),
+    `${BASE_URL}/api/v1/tickets/ticket%201/qr.svg`,
+  );
 });
 
 test("a body that is not JSON or not the expected shape is unexpected_response", async () => {
