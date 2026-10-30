@@ -116,6 +116,14 @@ export interface PageProblems {
 const HYDRATION_PATTERN =
   /hydrat|did not match|didn't match|server rendered (html|text)|text content does not match/i;
 
+/**
+ * How long a visit waits for the route's own prefetches to settle before returning.
+ *
+ * Long enough for a prefetch of this application's own routes, short enough that a stuck
+ * request cannot stall the whole gate.
+ */
+const NETWORK_IDLE_TIMEOUT_MS = 5_000;
+
 /** Starts collecting the browser's console for one page. Never throws. */
 export function collectProblems(page: Page): PageProblems {
   const problems: PageProblems = {
@@ -198,6 +206,17 @@ export async function visit(page: Page, path: string): Promise<Response> {
   expect(response, `${path} answered no response`).not.toBeNull();
   expect(response?.status(), `${path} status`).toBe(200);
   await expectOneH1(page);
+  // Let the route's own prefetches finish before the caller navigates away.
+  //
+  // The App Router prefetches the links a screen renders, and a `goto` issued while one is
+  // in flight aborts it. Chromium swallows that abort; Firefox reports it as a console error
+  // — `Failed to fetch RSC payload … Falling back to browser navigation` — and the gate
+  // treats a console error as a failure, correctly, because until proven otherwise it is a
+  // defect. This abort is the test's, not the product's, so the wait belongs here instead of
+  // in `collectProblems`: the gate keeps its rule and pays half a second per navigation.
+  // Bounded, and tolerant of a page that never goes idle, because a stream that stays open
+  // is not a defect either.
+  await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
   return response as Response;
 }
 
@@ -240,21 +259,37 @@ export async function selectByLabelPrefix(
  * neither from the API's answer: the administration spec compares the two, which is what
  * makes "the catalogue prints the venue's hour" a claim about the product.
  */
+/**
+ * A film title that belongs to this test alone.
+ *
+ * Both engines drive **one** stack, and a stack keeps what the other engine created: a
+ * constant title then matches twice, and `toHaveCount(1)` fails on whichever engine runs
+ * second. That is exactly what happened when the gate grew a second engine, and the
+ * assertion was right both times — the fixture was not.
+ *
+ * The suffix keeps every screening distinguishable from every other run of the same spec,
+ * in the same engine, in another engine, or in a database a developer reused by hand.
+ */
+function uniqueTitle(base: string): string {
+  return `${base} · ${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export async function createAndPublishScreening(
   page: Page,
   fixture: ScreeningFixture,
 ): Promise<CreatedScreening> {
+  const filmTitle = uniqueTitle(fixture.filmTitle);
   await visit(page, "/admin/schedule");
 
   // 1. The film: created once, then chosen from the repertoire below.
-  await page.getByLabel("Title").fill(fixture.filmTitle);
+  await page.getByLabel("Title").fill(filmTitle);
   await page.getByLabel("Runtime (minutes)").fill(fixture.runtimeMinutes);
   await page.getByLabel("Rating").fill(fixture.rating);
   await page.getByRole("button", { name: "Create film" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Created " }),
     "the film's confirmation",
-  ).toContainText(`Created ${fixture.filmTitle}`);
+  ).toContainText(`Created ${filmTitle}`);
 
   // 2. The room and its published layout version: two reads, neither of them a guess.
   await selectByLabelPrefix(
@@ -269,13 +304,11 @@ export async function createAndPublishScreening(
   await page
     .getByRole("combobox", { name: "Film" })
     .click();
-  // `.first()`: the gate's database is created for this run, so this title exists once.
-  // A database reused by hand — a developer pointing this suite at their own stack —
-  // could hold a film with the same title from an earlier attempt, and either row is the
-  // film this scenario means.
+  // `.first()`: the title carries this test's own suffix, so this row is the one the test
+  // just created; the `.first()` is belt and braces for a reused database, not a guess.
   await page
     .getByRole("option", {
-      name: `${fixture.filmTitle} (${fixture.runtimeMinutes} min, ${fixture.rating})`,
+      name: `${filmTitle} (${fixture.runtimeMinutes} min, ${fixture.rating})`,
     })
     .first()
     .click();
@@ -313,7 +346,7 @@ export async function createAndPublishScreening(
 
   return {
     eventId,
-    filmTitle: fixture.filmTitle,
+    filmTitle,
     price: fixture.price,
     venueHour: STARTS_AT.venueHour,
   };

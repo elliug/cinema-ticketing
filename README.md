@@ -309,7 +309,9 @@ Two things this build is honest about:
 - **The session in the header is a demonstration**, not authentication: it grants no access, no page sends it to the API, and the wording is one exported constant so the interface and these lines cannot drift.
 - **"My tickets" is what the tab kept**, because without accounts no route can list a buyer's tickets. Unavailable storage says so rather than showing an empty list.
 
-`make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, Chromium only.
+`make verify-m35` proves all of it in a real browser: administration creates, prices and publishes a screening; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
+
+The gate drives an origin the browser does **not** treat as secure: it serves the web on the machine's primary non-loopback IPv4 address and refuses to fall back to loopback, because loopback is a secure context and a gate pointed at one cannot see anything the browser decides by origin — which is how `crypto.randomUUID` and an absolute ticket link both escaped a green build. A spec asserts `window.isSecureContext === false` and `typeof crypto.randomUUID === "undefined"` inside the browser, so pointing the gate at a secure origin fails with a message naming the reason instead of passing quietly.
 
 ## What this build does not do
 
@@ -326,7 +328,7 @@ Four milestones are delivered, and what they leave out is part of the delivery. 
 | **PDFs that follow a void** | The PDF is rendered when the payment is captured and stored immutably: cancelling a screening or voiding a ticket does not change a PDF already issued. It is a record of the sale and never proof of validity — validity is `POST /tickets/verify`. |
 | **Real payment and storage** | The provider is simulated and storage is Floci. A real decline needs `NewSimulatedWithDeclineRule`; the wired simulator always approves. |
 | **Accessibility beyond the keyboard path** | The seat map is operable without a mouse, with a visible focus ring, one `h1` per screen and `aria-current` on the navigation. That is not an accessibility audit. |
-| **Browser coverage beyond Chromium** | `make verify-m35` drives Chromium only, and only by `localhost` — an origin the browser treats as secure. Anything the browser decides by origin stays invisible to it. |
+| **Browser coverage beyond Chromium and Firefox** | `make verify-m35` drives Chromium and Firefox, both over one origin family: a private LAN address on plain HTTP, never WebKit, never a public host and never TLS. So what WebKit decides differently, and what a secure context gates *on*, stay outside it. |
 
 The tagged acceptance test for the double-booking contract still runs as its own proof:
 

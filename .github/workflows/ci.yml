@@ -83,12 +83,15 @@ jobs:
         run: make verify-m3
 
   # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
-  # compose services, bootstraps the stack, and then adds a real browser. It installs one
-  # browser — Chromium, with the system libraries it needs — because the milestone
-  # verifies behaviour (buying a seat, administering a screening), not cross-browser
-  # parity. `make verify-m35` creates and removes its own database, Redis index, ports and
-  # bucket; it builds the web application once and serves that build rather than running
-  # `next dev`, so nothing here races over `.next`.
+  # compose services, bootstraps the stack, and then adds a real browser. It installs two
+  # engines — Chromium and Firefox, with the system libraries they need — because a single
+  # engine made "works in the browser" mean "works in Chromium". `make verify-m35` creates
+  # and removes its own database, Redis index, ports and bucket; it builds the web
+  # application once and serves that build rather than running `next dev`, so nothing here
+  # races over `.next`. It also serves the web on this runner's non-loopback IPv4 address
+  # instead of loopback, because loopback is a secure context and a gate pointed at it
+  # cannot see anything the browser decides by origin; the gate fails rather than fall back
+  # to loopback, so this runner must always have a non-loopback address.
   m35-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -114,11 +117,13 @@ jobs:
       - name: Install web dependencies
         run: pnpm install --frozen-lockfile
 
-      # One browser and only one. `--with-deps` installs the system libraries Chromium
-      # needs on the runner image, which is what makes the gate fail on a product defect
-      # rather than on a missing shared object.
-      - name: Install Chromium for Playwright
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      # Two engines, and `--with-deps` installs the system libraries both need on the
+      # runner image, which is what makes the gate fail on a product defect rather than on
+      # a missing shared object. Naming both here keeps the install in step with
+      # apps/web/playwright.config.ts: a project whose engine is not installed fails the
+      # gate before it can run.
+      - name: Install Chromium and Firefox for Playwright
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox
 
       # The project's own bootstrap: compose services, every migration, the development
       # seed and the ticket bucket. The gate below creates and removes its own on top.
