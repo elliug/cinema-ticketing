@@ -1,9 +1,14 @@
-// Playwright configuration for the M3.5 product gate (M3.5 · T9 · S7).
+// Playwright configuration for the M3.5 product gate (M3.5 · T9 · S7, M4.1 · T1 · S7).
 //
-// One browser, and only one: this gate asks whether a person can buy a seat and
-// administer a screening, not whether four engines agree, so the projects list holds
-// Chromium alone. A second browser would double the runtime of the milestone's exit
-// check to answer a question the milestone did not ask.
+// Two engines, not one: Chromium alone made "works in the browser" mean "works in
+// Chromium", so the same suite now runs in Chromium and Firefox against the same web
+// server. Both are driven by the gate's one `WEB_BASE_URL`; neither gets its own stack,
+// its own timeouts or its own relaxations, because the question is whether the product
+// works, not whether one engine is more forgiving.
+//
+// WebKit is deliberately absent: this slice closes the "one engine" gap, and Safari's
+// engine needs its own decision (and its own risk of a gate that fails for reasons that
+// have nothing to do with the product). `README.md` says so where the gaps are listed.
 //
 // Nothing here starts the stack. `scripts/verify_m35.sh` owns the three compose
 // services, the throwaway database, the migrations, the seed, the bucket, the API and
@@ -20,7 +25,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
-/** The web server the gate started; a hand-run points this at `pnpm web:dev`. */
+/**
+ * The web server the gate started, reached by the machine's own non-loopback address.
+ *
+ * A hand-run points this at `pnpm web:dev`, which listens on loopback — and loopback is a
+ * secure context, so `e2e/insecure-origin.spec.ts` fails on it by design. That failure is
+ * the gate's own promise being checked (S6): a run against a secure origin is a run that
+ * does not exercise the insecure case.
+ */
 const WEB_BASE_URL = process.env.WEB_BASE_URL ?? "http://127.0.0.1:3000";
 
 export default defineConfig({
@@ -53,6 +65,10 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "firefox",
+      use: { ...devices["Desktop Firefox"] },
     },
   ],
 });

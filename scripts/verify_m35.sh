@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # M3.5 end-to-end verification: the milestone's exit criterion, in a browser.
 #
-# It proves, through a real Chromium driven by Playwright, that a stranger can buy a
-# seat and that an operator can put one on sale — the purchase *and* the administration,
-# on one stack, in one browser context per scenario:
+# It proves, through two real engines driven by Playwright (Chromium and Firefox), that a
+# stranger can buy a seat and that an operator can put one on sale — the purchase *and* the
+# administration, on one stack, in one browser context per scenario, and on an origin the
+# browser does NOT treat as secure:
 #   1. A run-scoped stack: its own database, its own Redis logical database, its own API
 #      port, its own web port and its own bucket, so it can never touch the development
 #      data. It refuses to run against the `cinema` development database by name.
@@ -11,22 +12,33 @@
 #      bootstrap command seeds it (a cinema, a room, a published layout, two films and two
 #      screenings) and creates the bucket the ticket PDFs are stored in.
 #   3. The web application is **built once and served**, never run through `next dev`, so
-#      a developer's dev server and this gate cannot collide over `.next`.
-#   4. The administration: a film is created, a screening is scheduled by choosing the
+#      a developer's dev server and this gate cannot collide over `.next`, and it is
+#      served on the machine's own non-loopback IPv4 address rather than on loopback.
+#      Loopback is a *secure context* in every browser, so a gate pointed at `127.0.0.1`
+#      cannot see anything the browser decides by origin — which is exactly how
+#      `crypto.randomUUID` and the absolute ticket media links both shipped (S6). There is
+#      no fallback to loopback: see `non_loopback_ipv4` below.
+#   4. The origin itself: `e2e/insecure-origin.spec.ts` asserts, from inside the browser,
+#      that `window.isSecureContext` is false and that `crypto.randomUUID` is undefined, so
+#      a run that silently slid back to a secure origin fails with a message naming it.
+#   5. The administration: a film is created, a screening is scheduled by choosing the
 #      room, the film and the room's published layout version from the selects, its
 #      price is set to 12.50 and its status to on_sale. A submit that changes nothing is
 #      refused locally, a price of 12.505 is refused and its input is marked invalid, and
 #      neither refusal writes anything.
-#   5. The purchase: the catalogue lists the new screening at the venue's own hour, an
+#   6. The purchase: the catalogue lists the new screening at the venue's own hour, an
 #      order of two seats is chosen with the keyboard alone, paid, and the ticket says
 #      the box office answered "This ticket is valid", shows the API's QR image and hands
 #      the browser a PDF.
-#   6. The ticket list: what this tab kept, across a reload; a stale record is forgotten
+#   7. The ticket list: what this tab kept, across a reload; a stale record is forgotten
 #      and empties the list; a fresh context says it kept nothing; a context that denies
 #      `sessionStorage` says it cannot read the list instead of claiming it is empty.
-#   7. The negatives: an unknown ticket identifier is answered as unknown, every screen
+#   8. The negatives: an unknown ticket identifier is answered as unknown, every screen
 #      renders exactly one `h1`, and no console error or hydration warning appears during
 #      the whole run.
+#
+# Every scenario runs in both engines against the one served stack: two engines with
+# separate stacks would be two gates, and twice the surface for one of them to drift.
 #
 # Everything it creates is disposable: the database name, the bucket name, the Redis index
 # and all three ports are unique to this run, and nothing here touches the development
@@ -143,7 +155,7 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v go >/dev/null 2>&1 || fail "Go is required to build the API and the bootstrap command"
 command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to build and serve the web application"
 [ -x "$root/apps/web/node_modules/.bin/playwright" ] \
-  || fail "Playwright is not installed: run pnpm install, then pnpm --dir apps/web exec playwright install --with-deps chromium"
+  || fail "Playwright is not installed: run pnpm install, then pnpm --dir apps/web exec playwright install --with-deps chromium firefox"
 
 cd "$root"
 
@@ -163,13 +175,67 @@ free_port() { # <first> <last>
 api_port="$(free_port 18182 18260)" || fail "no free API port in 18182-18260"
 web_port="$(free_port 18300 18400)" || fail "no free web port in 18300-18400"
 base="http://127.0.0.1:$api_port"
-web="http://127.0.0.1:$web_port"
+
+# ── The origin the browser drives: never loopback ────────────────────────────
+# Every browser treats loopback (`127.0.0.1`, `localhost`, `::1`) as a **secure context**,
+# whatever the scheme says. A gate that navigates there therefore exercises the same
+# browser surface as a production TLS origin, and everything gated on origin —
+# `crypto.randomUUID`, mixed content, absolute cross-origin links — stays invisible. That
+# blindness is how two defects shipped (M4.1 · S6): `crypto.randomUUID is not a function`
+# and a ticket whose media pointed at an absolute API address.
+#
+# So the gate finds the machine's primary non-loopback IPv4 address and drives the web
+# through it. Both platforms are handled on purpose: the CI runner is Linux and the
+# developers' machines are macOS, and the tool that answers the question differs on each.
+non_loopback_ipv4() {
+  local address="" iface=""
+  # Linux (iproute2): ask the kernel which source address it would use to reach the default
+  # route. This reads the routing table; it sends no packet and needs no connectivity.
+  if command -v ip >/dev/null 2>&1; then
+    address="$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}' || true)"
+  fi
+  # macOS (BSD route table): there is no `route get <destination>`, so read the default
+  # interface and ask `ipconfig` for the address that interface holds.
+  if [ -z "$address" ] && command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
+    iface="$(route -n get default 2>/dev/null | awk '$1 == "interface:" { print $2; exit }' || true)"
+    if [ -n "$iface" ]; then
+      address="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    fi
+  fi
+  # Last pass, on either platform: walk the configured global-scope addresses, because a
+  # machine whose default route is a VPN or a bridge with no IPv4 still has a LAN address
+  # a browser can reach.
+  if [ -z "$address" ] && command -v ip >/dev/null 2>&1; then
+    address="$(ip -4 -o addr show scope global 2>/dev/null \
+      | awk '{split($4, parts, "/"); print parts[1]; exit}' || true)"
+  fi
+  if [ -z "$address" ] && command -v ifconfig >/dev/null 2>&1; then
+    address="$(ifconfig 2>/dev/null \
+      | awk '$1 == "inet" && $2 !~ /^127\./ { print $2; exit}' || true)"
+  fi
+  printf '%s' "$address"
+}
+
+browser_host="$(non_loopback_ipv4 | tr -d '\r')"
+case "$browser_host" in
+  127.* | 0.0.0.0 | "")
+    # Deliberately a failure and not a fallback to loopback: a gate that silently degrades
+    # to a secure origin is worse than no gate, because it keeps reporting "the browser
+    # saw it" while proving nothing about the class of defect it exists to catch.
+    fail "no non-loopback IPv4 address found (looked with ip, route/ipconfig and ifconfig): the browser gate must drive an origin the browser does not treat as secure, and falling back to loopback would silently turn it back into the blind gate this change removes; give this machine a network address and run it again"
+    ;;
+esac
+printf '%s' "$browser_host" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
+  || fail "the address found for the browser gate ('$browser_host') is not an IPv4 address: the gate cannot drive an origin it cannot name"
+
+web="http://$browser_host:$web_port"
 dburl="postgres://cinema:cinema_local_only@127.0.0.1:5432/$db?sslmode=disable"
 redisurl="redis://127.0.0.1:6379/$redis_db"
 
 psql_db() { $compose exec -T postgres psql -X -q -tA -v ON_ERROR_STOP=1 -U cinema -d "$db" "$@"; }
 
-note "isolation: database $db, Redis database $redis_db, API port $api_port, web port $web_port, bucket $bucket"
+note "isolation: database $db, Redis database $redis_db, API port $api_port, web port $web_port on $browser_host, bucket $bucket"
 
 # ── 1. The three services ────────────────────────────────────────────────────
 note "waiting for postgres, redis and floci to report healthy (docker compose up --wait)"
@@ -283,10 +349,22 @@ if ! API_BASE_URL="$base" API_LOCAL_ADMIN_TOKEN="$admin_token" \
   fail "the web application did not build"
 fi
 
-API_BASE_URL="$base" \
-API_LOCAL_ADMIN_TOKEN="$admin_token" \
-NEXT_TELEMETRY_DISABLED=1 \
-pnpm --dir "$root/apps/web" exec next start -H 127.0.0.1 -p "$web_port" >"$web_log" 2>&1 &
+note "waiting for the browser gate's origin to answer: the web is served on $browser_host, not loopback (a secure context)"
+
+# `-H 0.0.0.0`, deliberately and only for this run: the browser reaches this server by the
+# machine's own address, and `cleanup` stops the process on every exit path (EXIT, INT,
+# TERM), so the wide binding lives exactly as long as the gate does. The server binary is
+# `exec`'d inside the subshell so `$web_pid` is the process holding the port, not a package
+# manager in front of it — a broad binding that outlived the script would be a published
+# surface nobody meant to leave. The API stays on loopback: the web server talks to it from
+# this same host, and nothing outside needs that port.
+(
+  cd "$root/apps/web" || exit 1
+  export API_BASE_URL="$base"
+  export API_LOCAL_ADMIN_TOKEN="$admin_token"
+  export NEXT_TELEMETRY_DISABLED=1
+  exec ./node_modules/.bin/next start -H 0.0.0.0 -p "$web_port"
+) >"$web_log" 2>&1 &
 web_pid=$!
 
 note "waiting for the web server to answer GET /events on $web (it reads the catalogue, so this waits for the API too)"
@@ -304,25 +382,40 @@ for _ in $(seq 1 240); do
   sleep 0.5
 done
 [ -n "$web_ready" ] || { cat "$web_log" >&2; fail "the web server did not answer $web/events within 120s"; }
-ok "web: the build is served on $web and GET /events answers 200 against $base"
+ok "web: the build is served on $web, bound broadly for this run only, and GET /events answers 200 against $base"
 
 # ── 5. The browser ───────────────────────────────────────────────────────────
 playwright_version="$(pnpm --dir "$root/apps/web" exec playwright --version 2>/dev/null | tr -d '\r')"
 [ -n "$playwright_version" ] || fail "playwright --version answered nothing"
-chromium_path="$(cd "$root/apps/web" && node -e \
-  'const { chromium } = require("@playwright/test"); process.stdout.write(chromium.executablePath())' 2>/dev/null | tr -d '\r')"
-[ -n "$chromium_path" ] && [ -x "$chromium_path" ] \
-  || fail "the Chromium build Playwright expects is not installed ($chromium_path): run pnpm --dir apps/web exec playwright install --with-deps chromium"
-ok "browser: $playwright_version, chromium at $chromium_path"
+# Both engines are checked before the run, so a missing Firefox fails here with the command
+# that installs it instead of 30 minutes into the suite as an engine error. The gate needs
+# two engines because Chromium alone made "works in the browser" mean "works in Chromium".
+# One variable per engine rather than an associative array: macOS still ships bash 3.2 as
+# `/bin/bash`, and `declare -A` there would break the gate on the developer's machine.
+chromium_path=""
+firefox_path=""
+for engine in chromium firefox; do
+  engine_path="$(cd "$root/apps/web" && ENGINE="$engine" node -e \
+    'const engines = require("@playwright/test"); process.stdout.write(engines[process.env.ENGINE].executablePath())' 2>/dev/null | tr -d '\r')"
+  [ -n "$engine_path" ] && [ -x "$engine_path" ] \
+    || fail "the $engine build Playwright expects is not installed ($engine_path): run pnpm --dir apps/web exec playwright install --with-deps chromium firefox"
+  case "$engine" in
+    chromium) chromium_path="$engine_path" ;;
+    firefox) firefox_path="$engine_path" ;;
+  esac
+done
+ok "browsers: $playwright_version, chromium at $chromium_path, firefox at $firefox_path"
 
-note "waiting for Playwright to drive Chromium through the administration and the purchase"
+# No `--project`: the configuration's projects *are* this gate's engines, so both run
+# against the same served stack and the same `WEB_BASE_URL`. Naming one here is how the
+# gate went blind to the second engine in the first place.
+note "waiting for Playwright to drive Chromium and Firefox through the administration, the purchase and the origin"
 set +e
 WEB_BASE_URL="$web" \
 API_BASE_URL="$base" \
 PLAYWRIGHT_OUT="$playwright_out" \
   pnpm --dir "$root/apps/web" exec playwright test \
     --config "$root/apps/web/playwright.config.ts" \
-    --project chromium \
     --reporter list 2>&1 | tee "$tmp/playwright.log"
 browser_status="${PIPESTATUS[0]}"
 set -e
@@ -333,5 +426,5 @@ passed="$(grep -E '[0-9]+ passed' "$tmp/playwright.log" | tail -1 | sed 's/^ *//
 ok "playwright: every scenario passed (${passed:-see the reporter output above})"
 
 # The printed summary: what was proven, in one place.
-printf '\nM3.5 verification passed: a screening created, priced at 12.50 and put on sale from the administration screens → refused locally when nothing changed and when the price carried a third decimal → the catalogue lists it at the venue hour and 12.50 → two seats chosen with the keyboard alone, held, paid, and a ticket the box office calls valid → its QR image served by the API and its PDF downloaded → the ticket list keeps what this tab opened, forgets a stale record, and distinguishes an empty list from an unreadable one → an unknown identifier answered as unknown, one h1 per screen, and no console error or hydration warning during the whole run.\n'
-printf 'what this gate does not prove: nothing about Firefox or WebKit (only Chromium is verified, because what is asserted is behaviour and not cross-browser parity), no real payment provider, no real object-storage credentials, no accessibility audit beyond the keyboard path, the focus ring, the heading count and aria-current, and no test of the mobile viewport beyond the rules the seat map itself applies.\n'
+printf '\nM3.5 verification passed: on an origin the browser does not treat as secure, in Chromium and in Firefox — a screening created, priced at 12.50 and put on sale from the administration screens → refused locally when nothing changed and when the price carried a third decimal → the catalogue lists it at the venue hour and 12.50 → two seats chosen with the keyboard alone, held, paid, and a ticket the box office calls valid → its QR image served by the API and its PDF downloaded → the ticket list keeps what this tab opened, forgets a stale record, and distinguishes an empty list from an unreadable one → an unknown identifier answered as unknown, one h1 per screen, and no console error or hydration warning during the whole run.\n'
+printf 'what this gate does not prove: WebKit (chromium and firefox only, because what is asserted is behaviour and not cross-engine parity), one origin family only — a private LAN address over plain HTTP, never a public host, a TLS origin or a CDN — so what a secure context gates *on* stays outside it, no real payment provider, no real object-storage credentials, no accessibility audit beyond the keyboard path, the focus ring, the heading count and aria-current, and no test of the mobile viewport beyond the rules the seat map itself applies.\n'

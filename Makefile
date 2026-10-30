@@ -102,8 +102,15 @@ verify-m35:
 	./scripts/verify_m35.sh
 
 # The Playwright suite alone, against a web server and an API that are already running
-# (`WEB_BASE_URL` and `API_BASE_URL` default to http://127.0.0.1:3000 and :8080). Useful
-# while iterating on a scenario; the milestone's evidence is `make verify-m35`, which
-# owns the whole stack.
+# (`API_BASE_URL` defaults to http://127.0.0.1:8080). Useful while iterating on a scenario.
+#
+# `WEB_BASE_URL` must name a **non-loopback** address: `e2e/insecure-origin.spec.ts` fails on
+# loopback by design, because a secure origin is precisely the blindness this gate exists to
+# remove. Serve the web broadly and point it at the machine's own address:
+#   WEB_BASE_URL=http://192.168.1.71:3000 make verify-e2e
+#
+# No `--project`: both configured engines are the gate's engines now, and naming one here is
+# how the gate went blind to the other. The milestone's evidence remains `make verify-m35`,
+# which owns the whole stack, the throwaway data and both browsers.
 verify-e2e:
-	pnpm --dir apps/web exec playwright test --project chromium
+	pnpm --dir apps/web exec playwright test
