@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+# One run per ref: a second push to the same branch cancels the first, so a superseded run
+# cannot finish red and leave the pull request marked with a failure that no longer exists.
+# PR runs live under their own ref, so they are never cancelled by a push to the branch — the
+# two are different questions (the merge result and the branch) and both are worth answering.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
