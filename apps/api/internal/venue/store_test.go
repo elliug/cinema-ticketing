@@ -1,14 +1,15 @@
-// PostgreSQL-only tests for the administrative screening and film reads and the price
-// write. They need a migrated isolated database and are gated on M3_CHECKOUT_DATABASE_URL,
-// so the default unit suite needs no database at all.
+// PostgreSQL-only tests for the administrative screening and film reads and the price and
+// status write. They need a migrated isolated database and are gated on
+// M3_CHECKOUT_DATABASE_URL, so the default unit suite needs no database at all.
 //
-// What only PostgreSQL can prove is here: that the price write is one statement whose
+// What only PostgreSQL can prove is here: that the update write is one statement whose
 // guard is in WHERE (an unknown event is not found instead of an invented success), that
-// the stored event comes back as the database holds it, that the column refuses a
-// negative value even when the application validation is bypassed, that changing a price
-// leaves the event's room, film, layout, start and status untouched, that both
-// administrative screening reads name the film, the room and the cinema in the same
-// statement, and that the film list answers the stored films in title order.
+// the stored event comes back as the database holds it, that the columns refuse a negative
+// price and an unknown status even when the application validation is bypassed, that
+// changing the price leaves the event's room, film, layout, start and status untouched (and
+// the other way round), that a draft becomes on_sale, that both administrative screening
+// reads name the film, the room and the cinema in the same statement, and that the film
+// list answers the stored films in title order.
 package venue_test
 
 import (
@@ -103,9 +104,9 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetEvent() before the write = unexpected error %v", err)
 		}
-		stored, err := store.SetEventPrice(ctx, fixtureEarly, 1250)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(1250)})
 		if err != nil {
-			t.Fatalf("SetEventPrice() = unexpected error %v", err)
+			t.Fatalf("UpdateEvent(price only) = unexpected error %v", err)
 		}
 		if stored.PriceCents != 1250 {
 			t.Fatalf("returned price = %d, want 1250", stored.PriceCents)
@@ -130,9 +131,9 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 	})
 
 	t.Run("an explicit zero is stored rather than refused", func(t *testing.T) {
-		stored, err := store.SetEventPrice(ctx, fixtureEarly, 0)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(0)})
 		if err != nil {
-			t.Fatalf("SetEventPrice(0) = unexpected error %v", err)
+			t.Fatalf("UpdateEvent(explicit zero) = unexpected error %v", err)
 		}
 		if stored.PriceCents != 0 {
 			t.Fatalf("returned price = %d, want zero", stored.PriceCents)
@@ -147,8 +148,8 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 	})
 
 	t.Run("the column refuses a negative price and changes nothing", func(t *testing.T) {
-		if _, err := store.SetEventPrice(ctx, fixtureEarly, -1); !errors.Is(err, venue.ErrConflict) {
-			t.Fatalf("SetEventPrice(-1) = %v, want the check violation as ErrConflict", err)
+		if _, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(-1)}); !errors.Is(err, venue.ErrConflict) {
+			t.Fatalf("UpdateEvent(-1) = %v, want the check violation as ErrConflict", err)
 		}
 		read, err := store.GetEvent(ctx, fixtureEarly)
 		if err != nil {
@@ -160,8 +161,8 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 	})
 
 	t.Run("the int4 maximum is accepted", func(t *testing.T) {
-		if _, err := store.SetEventPrice(ctx, fixtureEarly, venue.MaxPriceCents); err != nil {
-			t.Fatalf("SetEventPrice(%d) = unexpected error %v", venue.MaxPriceCents, err)
+		if _, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(venue.MaxPriceCents)}); err != nil {
+			t.Fatalf("UpdateEvent(%d) = unexpected error %v", venue.MaxPriceCents, err)
 		}
 		read, err := store.GetEvent(ctx, fixtureEarly)
 		if err != nil {
@@ -176,8 +177,8 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 		if _, err := store.GetEvent(ctx, fixtureAbsent); !errors.Is(err, venue.ErrNotFound) {
 			t.Fatalf("GetEvent(unknown) = %v, want ErrNotFound", err)
 		}
-		if _, err := store.SetEventPrice(ctx, fixtureAbsent, 500); !errors.Is(err, venue.ErrNotFound) {
-			t.Fatalf("SetEventPrice(unknown) = %v, want ErrNotFound", err)
+		if _, err := store.UpdateEvent(ctx, fixtureAbsent, venue.EventUpdate{PriceCents: ptrInt64(500)}); !errors.Is(err, venue.ErrNotFound) {
+			t.Fatalf("UpdateEvent(unknown) = %v, want ErrNotFound", err)
 		}
 		var count int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM cinema.events WHERE id = $1`, fixtureAbsent).Scan(&count); err != nil {
@@ -185,6 +186,131 @@ func TestEventPriceWriteAndAdministrativeReads(t *testing.T) {
 		}
 		if count != 0 {
 			t.Fatalf("the guarded write inserted %d rows for an unknown event", count)
+		}
+	})
+}
+
+// TestEventUpdateWritesTheStatusAndThePriceInOneGuardedStatement walks what the
+// administration needs to put a screening on sale: a draft that becomes on_sale, a price
+// and a status changed by one request, and the column the request did not name left as it
+// was. The identifier stays the guard, so an unknown screening writes nothing.
+func TestEventUpdateWritesTheStatusAndThePriceInOneGuardedStatement(t *testing.T) {
+	ctx := context.Background()
+	pool, url := venueTestPool(t, ctx)
+
+	seedEventPriceFixture(t, ctx, pool)
+	t.Cleanup(func() { cleanupEventPriceFixture(pool) })
+
+	store, err := venue.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open the venue store: %v", err)
+	}
+	defer store.Close()
+
+	// Every case starts from a known stored screening, so no case can pass only because an
+	// earlier one left the columns where it happened to need them.
+	resetFixture := func(t *testing.T, priceCents int64, status string) {
+		t.Helper()
+		if _, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{
+			PriceCents: ptrInt64(priceCents), Status: ptrString(status),
+		}); err != nil {
+			t.Fatalf("reset the fixture screening to %s at %d: %v", status, priceCents, err)
+		}
+	}
+	requireStored := func(t *testing.T, wantPrice int64, wantStatus string) {
+		t.Helper()
+		read, err := store.GetEvent(ctx, fixtureEarly)
+		if err != nil {
+			t.Fatalf("GetEvent() = unexpected error %v", err)
+		}
+		if read.Status != wantStatus || read.PriceCents != wantPrice {
+			t.Fatalf("stored event = status %q price %d, want status %q price %d",
+				read.Status, read.PriceCents, wantStatus, wantPrice)
+		}
+		// The update writes two columns and no others.
+		if read.RoomID != fixtureRoom || read.FilmID != fixtureFilm ||
+			read.LayoutVersionID != fixtureLayout || !read.StartsAt.Equal(fixtureEarlyAt) {
+			t.Fatalf("the update touched another column: %+v", read)
+		}
+	}
+
+	t.Run("a draft becomes on sale and keeps the price it had", func(t *testing.T) {
+		resetFixture(t, 1250, venue.EventDraft)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{Status: ptrString(venue.EventOnSale)})
+		if err != nil {
+			t.Fatalf("UpdateEvent(status only) = unexpected error %v", err)
+		}
+		if stored.Status != venue.EventOnSale {
+			t.Fatalf("returned status = %q, want on_sale", stored.Status)
+		}
+		if stored.PriceCents != 1250 {
+			t.Fatalf("returned price = %d, want the untouched 1250", stored.PriceCents)
+		}
+		requireStored(t, 1250, venue.EventOnSale)
+	})
+
+	t.Run("a price and a status are written by one request", func(t *testing.T) {
+		resetFixture(t, 0, venue.EventDraft)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{
+			PriceCents: ptrInt64(1750), Status: ptrString(venue.EventOnSale),
+		})
+		if err != nil {
+			t.Fatalf("UpdateEvent(both fields) = unexpected error %v", err)
+		}
+		if stored.Status != venue.EventOnSale || stored.PriceCents != 1750 {
+			t.Fatalf("returned event = status %q price %d, want on_sale at 1750", stored.Status, stored.PriceCents)
+		}
+		// RETURNING cannot join, so the write answers the stored columns and no name.
+		if stored.FilmTitle != "" || stored.RoomName != "" || stored.CinemaName != "" {
+			t.Fatalf("names = %q / %q / %q, want the write to answer only the stored columns",
+				stored.FilmTitle, stored.RoomName, stored.CinemaName)
+		}
+		requireStored(t, 1750, venue.EventOnSale)
+	})
+
+	t.Run("a price-only request leaves the status untouched", func(t *testing.T) {
+		resetFixture(t, 900, venue.EventOnSale)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(1000)})
+		if err != nil {
+			t.Fatalf("UpdateEvent(price only) = unexpected error %v", err)
+		}
+		if stored.Status != venue.EventOnSale || stored.PriceCents != 1000 {
+			t.Fatalf("returned event = status %q price %d, want the status kept and the price set to 1000",
+				stored.Status, stored.PriceCents)
+		}
+		requireStored(t, 1000, venue.EventOnSale)
+	})
+
+	t.Run("an unknown event is not found instead of a claimed success", func(t *testing.T) {
+		for name, update := range map[string]venue.EventUpdate{
+			"status only": {Status: ptrString(venue.EventOnSale)},
+			"price only":  {PriceCents: ptrInt64(500)},
+			"both":        {PriceCents: ptrInt64(500), Status: ptrString(venue.EventOnSale)},
+		} {
+			if _, err := store.UpdateEvent(ctx, fixtureAbsent, update); !errors.Is(err, venue.ErrNotFound) {
+				t.Fatalf("%s: UpdateEvent(unknown) = %v, want ErrNotFound", name, err)
+			}
+		}
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM cinema.events WHERE id = $1`, fixtureAbsent).Scan(&count); err != nil {
+			t.Fatalf("count the unknown event: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("the guarded write inserted %d rows for an unknown event", count)
+		}
+	})
+
+	t.Run("the column refuses a status the schema does not allow", func(t *testing.T) {
+		resetFixture(t, 1250, venue.EventDraft)
+		if _, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{Status: ptrString("sold_out")}); !errors.Is(err, venue.ErrConflict) {
+			t.Fatalf("UpdateEvent(sold_out) = %v, want the check violation as ErrConflict", err)
+		}
+		requireStored(t, 1250, venue.EventDraft)
+	})
+
+	t.Run("an update that names no field is refused before SQL", func(t *testing.T) {
+		if _, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{}); err == nil {
+			t.Fatalf("UpdateEvent(empty) = nil error, want a refusal instead of an UPDATE without a SET")
 		}
 	})
 }
@@ -381,9 +507,9 @@ func TestAdministrativeReadsNameWhatAScreeningIsAndListTheFilms(t *testing.T) {
 	})
 
 	t.Run("the price write still answers the stored columns without a name", func(t *testing.T) {
-		stored, err := store.SetEventPrice(ctx, fixtureEarly, 1250)
+		stored, err := store.UpdateEvent(ctx, fixtureEarly, venue.EventUpdate{PriceCents: ptrInt64(1250)})
 		if err != nil {
-			t.Fatalf("SetEventPrice() = unexpected error %v", err)
+			t.Fatalf("UpdateEvent(price only) = unexpected error %v", err)
 		}
 		if stored.PriceCents != 1250 {
 			t.Fatalf("returned price = %d, want 1250", stored.PriceCents)

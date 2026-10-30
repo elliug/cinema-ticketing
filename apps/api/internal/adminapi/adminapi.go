@@ -5,6 +5,12 @@
 // payment attempt's amount is fixed when it is created, so changing a price affects
 // future orders only. A stored attempt and an issued ticket keep the money actually
 // taken.
+//
+// A screening's status decides whether it can be sold at all: POST /admin/events stores
+// one as a draft and the public catalogue answers only an on_sale screening whose start is
+// still ahead, so PATCH /admin/events/{eventId} is the only way a screening reaches the
+// catalogue. What each status means for the buyer-facing surface is documented on that
+// handler, in events.go.
 package adminapi
 
 import (
@@ -36,7 +42,9 @@ type VenueService interface {
 	ListEventSeats(ctx context.Context, eventID string) ([]venue.EventSeat, error)
 	ListEvents(ctx context.Context) ([]venue.Event, error)
 	GetEvent(ctx context.Context, eventID string) (venue.Event, error)
-	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (venue.Event, error)
+	// UpdateEvent writes the price, the status, or both of one screening; a nil field was
+	// not sent and leaves its stored column untouched.
+	UpdateEvent(ctx context.Context, eventID string, update venue.EventUpdate) (venue.Event, error)
 }
 
 // Handler serves the administrative routes.
@@ -65,7 +73,7 @@ func (h *Handler) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /events", h.createEvent)
 	mux.HandleFunc("GET /events", h.listEvents)
 	mux.HandleFunc("GET /events/{eventId}", h.getEvent)
-	mux.HandleFunc("PATCH /events/{eventId}", h.setEventPrice)
+	mux.HandleFunc("PATCH /events/{eventId}", h.updateEvent)
 	mux.HandleFunc("GET /events/{eventId}/seats", h.listEventSeats)
 	return mux
 }

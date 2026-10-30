@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -318,7 +319,7 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, event Event) error {
 	return classifyError(err)
 }
 
-// eventColumns is the stored-column shape of a screening. The price write selects it so
+// eventColumns is the stored-column shape of a screening. The update write selects it so
 // its RETURNING and the reads below cannot drift apart; RETURNING cannot join, so the
 // administrative reads project the names separately in eventReadColumns.
 const eventColumns = `id, room_id, film_id, layout_version_id, starts_at, status, price_cents`
@@ -340,7 +341,7 @@ JOIN cinema.films f ON f.id = e.film_id
 JOIN cinema.rooms r ON r.id = e.room_id
 JOIN cinema.cinemas c ON c.id = r.cinema_id`
 
-// eventTargets is the scan destinations of eventColumns, shared by the price write.
+// eventTargets is the scan destinations of eventColumns, shared by the update write.
 func eventTargets(event *Event) []any {
 	return []any{&event.ID, &event.RoomID, &event.FilmID, &event.LayoutVersionID,
 		&event.StartsAt, &event.Status, &event.PriceCents}
@@ -387,15 +388,32 @@ WHERE e.id = $1`, eventID).Scan(eventReadTargets(&event)...)
 	return event, nil
 }
 
-// SetEventPrice updates only the price of one screening in a single statement. The event
-// is the guard in WHERE, so an unknown identifier updates no row and answers not found
-// instead of a success the database never produced. RETURNING answers the event as it is
-// now stored, not a value assembled from the arguments.
-func (s *PostgresStore) SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error) {
+// UpdateEvent updates the columns one screening's administration request named, in a single
+// statement. The SET list is built from the fields that were provided, so a field the
+// request did not carry is not written at all — neither to its stored value nor to zero.
+// The event is the guard in WHERE, so an unknown identifier updates no row and answers not
+// found instead of a success the database never produced. RETURNING answers the event as it
+// is now stored, not a value assembled from the arguments.
+func (s *PostgresStore) UpdateEvent(ctx context.Context, eventID string, update EventUpdate) (Event, error) {
+	assignments := make([]string, 0, 2)
+	args := []any{eventID}
+	if update.PriceCents != nil {
+		args = append(args, *update.PriceCents)
+		assignments = append(assignments, fmt.Sprintf("price_cents = $%d", len(args)))
+	}
+	if update.Status != nil {
+		args = append(args, *update.Status)
+		assignments = append(assignments, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if len(assignments) == 0 {
+		// The service refuses this before SQL; the store refuses it too rather than send an
+		// UPDATE with no SET list, which is not a statement at all.
+		return Event{}, NewInvalidError("", "nothing to change: provide priceCents or status")
+	}
 	var event Event
 	err := s.pool.QueryRow(ctx,
-		`UPDATE cinema.events SET price_cents = $2 WHERE id = $1 RETURNING `+eventColumns,
-		eventID, priceCents).
+		`UPDATE cinema.events SET `+strings.Join(assignments, ", ")+` WHERE id = $1 RETURNING `+eventColumns,
+		args...).
 		Scan(eventTargets(&event)...)
 	if err != nil {
 		return Event{}, classifyError(err)

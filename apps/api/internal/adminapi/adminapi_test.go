@@ -28,7 +28,7 @@ type fakeService struct {
 	lastEvent      venue.Event
 	lastCinema     venue.Cinema
 	lastEventID    string
-	lastPriceCents int64
+	lastUpdate     venue.EventUpdate
 	lastRequest    string
 }
 
@@ -115,16 +115,21 @@ func (f *fakeService) GetEvent(_ context.Context, eventID string) (venue.Event, 
 	return event, nil
 }
 
-func (f *fakeService) SetEventPrice(_ context.Context, eventID string, priceCents int64) (venue.Event, error) {
-	f.calls = append(f.calls, "SetEventPrice")
+func (f *fakeService) UpdateEvent(_ context.Context, eventID string, update venue.EventUpdate) (venue.Event, error) {
+	f.calls = append(f.calls, "UpdateEvent")
 	f.lastEventID = eventID
-	f.lastPriceCents = priceCents
+	f.lastUpdate = update
 	if f.createErr != nil {
 		return venue.Event{}, f.createErr
 	}
 	event := f.event
 	event.ID = eventID
-	event.PriceCents = priceCents
+	if update.PriceCents != nil {
+		event.PriceCents = *update.PriceCents
+	}
+	if update.Status != nil {
+		event.Status = *update.Status
+	}
 	return event, nil
 }
 

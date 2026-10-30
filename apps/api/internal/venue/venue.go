@@ -110,6 +110,37 @@ type EventSeat struct {
 	State        string
 }
 
+// Event statuses. The values are cinema.events.status's own CHECK constraint, spelled in
+// db/migrations/0002_venue_layout.up.sql, and are carried verbatim on the wire.
+const (
+	// EventDraft is a stored screening nobody has offered yet: it is not for sale.
+	EventDraft = "draft"
+	// EventPublished is a recording state this milestone does not act on.
+	EventPublished = "published"
+	// EventOnSale is the one status the public catalogue answers, and only while the start
+	// is still ahead.
+	EventOnSale = "on_sale"
+	// EventStarted and EventCompleted are recording states this milestone does not act on.
+	EventStarted   = "started"
+	EventCompleted = "completed"
+	// EventCancelled is a screening the ticket surface reports as cancelled.
+	EventCancelled = "cancelled"
+)
+
+// EventStatuses lists every value cinema.events.status accepts, in the schema's order. It
+// is the list the administration validates a status against and the list its refusal
+// spells, so the two cannot disagree.
+var EventStatuses = []string{EventDraft, EventPublished, EventOnSale, EventStarted, EventCompleted, EventCancelled}
+
+// EventUpdate is the set of screening columns the administration may change in one
+// request. A nil field was not sent and leaves its stored column untouched; a pointer to a
+// value was sent, including an explicit zero price, so "not sent" never means "set it to
+// zero" or "set it to nothing".
+type EventUpdate struct {
+	PriceCents *int64
+	Status     *string
+}
+
 // InvalidError reports caller input a domain rule rejected.
 type InvalidError struct {
 	Field   string
@@ -140,7 +171,7 @@ const MaxPriceCents int64 = 2147483647
 var eventIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // ValidateEventID rejects an event identifier that cannot name a stored event. It is
-// shared by the administrative read and the price write so both answer the same
+// shared by the administrative read and the price and status write so both answer the same
 // rejection for the same bad value instead of one reaching SQL and one not.
 func ValidateEventID(value string) error {
 	trimmed := strings.TrimSpace(value)
@@ -162,6 +193,38 @@ func ValidatePriceCents(priceCents int64) error {
 	}
 	if priceCents > MaxPriceCents {
 		return NewInvalidError("priceCents", "must be at most 2147483647")
+	}
+	return nil
+}
+
+// ValidateEventStatus rejects a status cinema.events.status would refuse, naming the field
+// and spelling the values the column allows. The comparison is exact: a status is one of
+// the schema's own spellings and never a value that looks like one.
+func ValidateEventStatus(status string) error {
+	for _, allowed := range EventStatuses {
+		if status == allowed {
+			return nil
+		}
+	}
+	return NewInvalidError("status", "must be one of "+strings.Join(EventStatuses, ", "))
+}
+
+// ValidateEventUpdate rejects an update that would change nothing and validates every
+// field it does carry. It is exported so the HTTP layer refuses a body with neither field
+// in the same words the service uses rather than in a second copy of the rule.
+func ValidateEventUpdate(update EventUpdate) error {
+	if update.PriceCents == nil && update.Status == nil {
+		return NewInvalidError("", "nothing to change: provide priceCents or status")
+	}
+	if update.PriceCents != nil {
+		if err := ValidatePriceCents(*update.PriceCents); err != nil {
+			return err
+		}
+	}
+	if update.Status != nil {
+		if err := ValidateEventStatus(*update.Status); err != nil {
+			return err
+		}
 	}
 	return nil
 }

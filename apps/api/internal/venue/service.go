@@ -25,7 +25,7 @@ type Store interface {
 	ListEventSeats(ctx context.Context, eventID string) ([]EventSeat, error)
 	ListEvents(ctx context.Context) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (Event, error)
-	SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error)
+	UpdateEvent(ctx context.Context, eventID string, update EventUpdate) (Event, error)
 }
 
 // Service applies M1 validation before persisting venue aggregates.
@@ -200,7 +200,7 @@ func (s *Service) CreateEvent(ctx context.Context, roomID, filmID, layoutVersion
 		FilmID:          filmID,
 		LayoutVersionID: layoutVersionID,
 		StartsAt:        startsAt.UTC(),
-		Status:          "draft",
+		Status:          EventDraft,
 	}
 	if err := s.store.CreateEvent(ctx, event); err != nil {
 		return Event{}, err
@@ -231,17 +231,22 @@ func (s *Service) GetEvent(ctx context.Context, eventID string) (Event, error) {
 	return s.store.GetEvent(ctx, eventID)
 }
 
-// SetEventPrice validates the identifier and the price, then lets the store write the
-// single guarded statement. A missing event is not found and an out-of-range value is a
-// rejected field, both before SQL; zero is accepted as a free screening.
-func (s *Service) SetEventPrice(ctx context.Context, eventID string, priceCents int64) (Event, error) {
+// UpdateEvent validates the identifier and the fields the request carries, then lets the
+// store write them in one guarded statement. A missing event is not found, an unknown
+// status and an out-of-range price are rejected fields, and a request that carries neither
+// is refused — all before SQL, except the identifier's own guard, which is the WHERE.
+//
+// The two fields are independent on purpose: a price-only request leaves the status where
+// it is, a status-only request leaves the price where it is, and only an explicit 0 is a
+// free screening. This is the only write that moves a screening into the public catalogue.
+func (s *Service) UpdateEvent(ctx context.Context, eventID string, update EventUpdate) (Event, error) {
 	if err := ValidateEventID(eventID); err != nil {
 		return Event{}, err
 	}
-	if err := ValidatePriceCents(priceCents); err != nil {
+	if err := ValidateEventUpdate(update); err != nil {
 		return Event{}, err
 	}
-	return s.store.SetEventPrice(ctx, eventID, priceCents)
+	return s.store.UpdateEvent(ctx, eventID, update)
 }
 
 func requireID(field, value string) error {

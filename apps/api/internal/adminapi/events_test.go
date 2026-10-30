@@ -43,7 +43,7 @@ func namedEventFixture() venue.Event {
 }
 
 // storedEventKeys is the shape a screening answered before the administrative reads
-// named what it is. It is what the create and the price write still answer.
+// named what it is. It is what the create and the update write still answer.
 var storedEventKeys = []string{"id", "roomId", "filmId", "layoutVersionId", "startsAt", "status", "priceCents", "priceDisplay"}
 
 // eventReadKeys is the administrative read's shape: the stored keys plus the three
@@ -148,11 +148,20 @@ func TestEventWriteResponsesKeepTheStoredColumnsOnly(t *testing.T) {
 		`{"roomId":"room-1","filmId":"film-1","layoutVersionId":"layout-1","startsAt":"2030-01-01T10:00:00Z"}`))
 	requireKeys(t, "created event", created, storedEventKeys)
 
-	// The fake holds the names, so the price write can only lose them by choosing to.
+	// The fake holds the names, so the write can only lose them by choosing to.
 	updated := decodeBody(t, do(t, &fakeService{event: namedEventFixture()}, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1250}`))
 	requireKeys(t, "updated event", updated, storedEventKeys)
 	if updated["priceCents"] != float64(1250) || updated["priceDisplay"] != "12.50" {
 		t.Fatalf("price = %v / %v, want 1250 and 12.50", updated["priceCents"], updated["priceDisplay"])
+	}
+
+	// A status write answers the same stored columns: the status change is not an excuse
+	// for a second shape, and RETURNING cannot join.
+	published := decodeBody(t, do(t, &fakeService{event: namedEventFixture()}, http.MethodPatch, "/events/"+testEventID,
+		`{"priceCents":1400,"status":"on_sale"}`))
+	requireKeys(t, "published event", published, storedEventKeys)
+	if published["status"] != venue.EventOnSale || published["priceCents"] != float64(1400) {
+		t.Fatalf("event = %v, want the stored on_sale screening at 1400", published)
 	}
 }
 
@@ -220,54 +229,175 @@ func TestEventReadFailureReturns503(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceAcceptsZero(t *testing.T) {
+func TestUpdateEventAcceptsZero(t *testing.T) {
+	// The stored screening is on sale at a price, so a price-only request can only leave
+	// the status as it is by choosing to.
 	event := eventFixture()
+	event.PriceCents = 1250
 	svc := &fakeService{event: event}
 	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"priceCents":0}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
 	}
-	if svc.lastPriceCents != 0 {
-		t.Fatalf("price = %d, want the explicit zero", svc.lastPriceCents)
+	if svc.lastUpdate.PriceCents == nil || *svc.lastUpdate.PriceCents != 0 {
+		t.Fatalf("price = %v, want the explicit zero", svc.lastUpdate.PriceCents)
+	}
+	// A price-only body says nothing about the status, so it must not carry one.
+	if svc.lastUpdate.Status != nil {
+		t.Fatalf("status = %v, want a price-only request to leave the status untouched", *svc.lastUpdate.Status)
 	}
 	body := decodeBody(t, w)
 	if body["priceCents"] != float64(0) || body["priceDisplay"] != "0.00" {
 		t.Fatalf("price = %v / %v, want 0 and 0.00", body["priceCents"], body["priceDisplay"])
 	}
-	if len(svc.calls) != 1 || svc.calls[0] != "SetEventPrice" {
-		t.Fatalf("calls = %v, want exactly SetEventPrice", svc.calls)
+	if len(svc.calls) != 1 || svc.calls[0] != "UpdateEvent" {
+		t.Fatalf("calls = %v, want exactly UpdateEvent", svc.calls)
 	}
 }
 
-func TestSetEventPriceSetsANonZeroPrice(t *testing.T) {
-	svc := &fakeService{event: eventFixture()}
+func TestUpdateEventSetsANonZeroPriceOnly(t *testing.T) {
+	// The stored status is a draft, so a price-only request that wrote a status would show
+	// here as a published screening.
+	event := eventFixture()
+	event.Status = venue.EventDraft
+	svc := &fakeService{event: event}
 	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1250}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
 	}
-	if svc.lastPriceCents != 1250 {
-		t.Fatalf("price = %d, want 1250", svc.lastPriceCents)
+	if svc.lastUpdate.PriceCents == nil || *svc.lastUpdate.PriceCents != 1250 {
+		t.Fatalf("price = %v, want 1250", svc.lastUpdate.PriceCents)
 	}
-	if body := decodeBody(t, w); body["priceCents"] != float64(1250) || body["priceDisplay"] != "12.50" {
-		t.Fatalf("event = %v, want the stored price and its display", body)
+	if svc.lastUpdate.Status != nil {
+		t.Fatalf("status = %v, want a price-only request to carry no status", *svc.lastUpdate.Status)
+	}
+	body := decodeBody(t, w)
+	if body["priceCents"] != float64(1250) || body["priceDisplay"] != "12.50" || body["status"] != venue.EventDraft {
+		t.Fatalf("event = %v, want the stored price and its display with the status kept", body)
 	}
 }
 
-func TestSetEventPriceMissingFieldIsNotZero(t *testing.T) {
+// A screening is stored as a draft and the public catalogue answers only an on_sale one,
+// so this request is the only way what the administration created becomes buyable.
+func TestUpdateEventPublishesADraftWithAStatusOnlyBody(t *testing.T) {
+	draft := eventFixture()
+	draft.Status = venue.EventDraft
+	draft.PriceCents = 1250
+	svc := &fakeService{event: draft}
+	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"status":"on_sale"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	if svc.lastUpdate.Status == nil || *svc.lastUpdate.Status != venue.EventOnSale {
+		t.Fatalf("status = %v, want on_sale", svc.lastUpdate.Status)
+	}
+	// The price was not in the body and must not be in the write either.
+	if svc.lastUpdate.PriceCents != nil {
+		t.Fatalf("price = %v, want a status-only request to carry no price", *svc.lastUpdate.PriceCents)
+	}
+	body := decodeBody(t, w)
+	requireKeys(t, "published event", body, storedEventKeys)
+	if body["status"] != venue.EventOnSale || body["priceCents"] != float64(1250) {
+		t.Fatalf("event = %v, want the stored on_sale screening at 1250", body)
+	}
+}
+
+// columnEventStatuses is cinema.events.status's own CHECK constraint, spelled out here from
+// db/migrations/0002_venue_layout.up.sql rather than read from the constant the handler
+// validates against, so a list that drifted from the column would fail this test instead of
+// agreeing with it.
+var columnEventStatuses = []string{"draft", "published", "on_sale", "started", "completed", "cancelled"}
+
+func TestUpdateEventAcceptsEveryStatusTheColumnAllows(t *testing.T) {
+	for _, status := range columnEventStatuses {
+		t.Run(status, func(t *testing.T) {
+			svc := &fakeService{event: eventFixture()}
+			w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"status":"`+status+`"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+			}
+			if svc.lastUpdate.Status == nil || *svc.lastUpdate.Status != status {
+				t.Fatalf("status = %v, want %q", svc.lastUpdate.Status, status)
+			}
+			if body := decodeBody(t, w); body["status"] != status {
+				t.Fatalf("answered status = %v, want %q", body["status"], status)
+			}
+		})
+	}
+}
+
+func TestUpdateEventRejectsAnUnknownStatus(t *testing.T) {
 	svc := &fakeService{event: eventFixture()}
-	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{}`)
+	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"status":"sold_out"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (%s)", w.Code, w.Body)
 	}
-	if body := decodeBody(t, w); body["code"] != "invalid_input" || body["detail"] != "priceCents: must be provided" {
-		t.Fatalf("problem = %v, want priceCents must be provided", body)
+	if body := decodeBody(t, w); body["code"] != "invalid_input" ||
+		body["detail"] != "status: must be one of draft, published, on_sale, started, completed, cancelled" {
+		t.Fatalf("problem = %v, want the status rejection naming the field", body)
 	}
 	if len(svc.calls) != 0 {
 		t.Fatalf("calls = %v, want no service call", svc.calls)
 	}
 }
 
-func TestSetEventPriceRejectsNegative(t *testing.T) {
+func TestUpdateEventRejectsANonStringStatus(t *testing.T) {
+	for _, body := range []string{
+		`{"status":1}`, `{"status":null}`, `{"status":true}`,
+		`{"status":["on_sale"]}`, `{"status":{"name":"on_sale"}}`,
+	} {
+		svc := &fakeService{event: eventFixture()}
+		w := do(t, svc, http.MethodPatch, "/events/"+testEventID, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want 400 (%s)", body, w.Code, w.Body)
+		}
+		if problem := decodeBody(t, w); problem["code"] != "invalid_input" || problem["detail"] != "status: must be a string" {
+			t.Fatalf("body %s: problem = %v, want the string rejection", body, problem)
+		}
+		if len(svc.calls) != 0 {
+			t.Fatalf("body %s: calls = %v, want no service call", body, svc.calls)
+		}
+	}
+}
+
+func TestUpdateEventSetsPriceAndStatusInOneRequest(t *testing.T) {
+	draft := eventFixture()
+	draft.Status = venue.EventDraft
+	svc := &fakeService{event: draft}
+	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1400,"status":"on_sale"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", w.Code, w.Body)
+	}
+	if svc.lastUpdate.PriceCents == nil || *svc.lastUpdate.PriceCents != 1400 ||
+		svc.lastUpdate.Status == nil || *svc.lastUpdate.Status != venue.EventOnSale {
+		t.Fatalf("update = %+v, want both fields in one request", svc.lastUpdate)
+	}
+	if len(svc.calls) != 1 || svc.calls[0] != "UpdateEvent" {
+		t.Fatalf("calls = %v, want exactly one write", svc.calls)
+	}
+	body := decodeBody(t, w)
+	if body["priceCents"] != float64(1400) || body["priceDisplay"] != "14.00" || body["status"] != venue.EventOnSale {
+		t.Fatalf("event = %v, want the stored on_sale screening at 14.00", body)
+	}
+}
+
+// A body that names neither field is refused instead of writing nothing: an empty update is
+// not a price of zero and not a status of anything.
+func TestUpdateEventRejectsABodyThatChangesNothing(t *testing.T) {
+	svc := &fakeService{event: eventFixture()}
+	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%s)", w.Code, w.Body)
+	}
+	if body := decodeBody(t, w); body["code"] != "invalid_input" || body["detail"] != "nothing to change: provide priceCents or status" {
+		t.Fatalf("problem = %v, want the nothing-to-change rejection", body)
+	}
+	if len(svc.calls) != 0 {
+		t.Fatalf("calls = %v, want no service call", svc.calls)
+	}
+}
+
+func TestUpdateEventRejectsNegative(t *testing.T) {
 	svc := &fakeService{event: eventFixture()}
 	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"priceCents":-1}`)
 	if w.Code != http.StatusBadRequest {
@@ -281,7 +411,7 @@ func TestSetEventPriceRejectsNegative(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsAboveInt4(t *testing.T) {
+func TestUpdateEventRejectsAboveInt4(t *testing.T) {
 	svc := &fakeService{event: eventFixture()}
 	w := do(t, svc, http.MethodPatch, "/events/"+testEventID, `{"priceCents":2147483648}`)
 	if w.Code != http.StatusBadRequest {
@@ -295,7 +425,7 @@ func TestSetEventPriceRejectsAboveInt4(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsNonInteger(t *testing.T) {
+func TestUpdateEventRejectsNonInteger(t *testing.T) {
 	for _, body := range []string{`{"priceCents":12.5}`, `{"priceCents":"12"}`, `{"priceCents":null}`} {
 		svc := &fakeService{event: eventFixture()}
 		w := do(t, svc, http.MethodPatch, "/events/"+testEventID, body)
@@ -311,7 +441,7 @@ func TestSetEventPriceRejectsNonInteger(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsMalformedIdentifier(t *testing.T) {
+func TestUpdateEventRejectsMalformedIdentifier(t *testing.T) {
 	svc := &fakeService{event: eventFixture()}
 	w := do(t, svc, http.MethodPatch, "/events/not-an-event", `{"priceCents":1250}`)
 	if w.Code != http.StatusBadRequest {
@@ -325,7 +455,7 @@ func TestSetEventPriceRejectsMalformedIdentifier(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceUnknownEventReturns404(t *testing.T) {
+func TestUpdateEventUnknownEventReturns404(t *testing.T) {
 	w := do(t, &fakeService{createErr: venue.ErrNotFound}, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1250}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", w.Code, w.Body)
@@ -333,9 +463,19 @@ func TestSetEventPriceUnknownEventReturns404(t *testing.T) {
 	if body := decodeBody(t, w); body["code"] != "not_found" {
 		t.Fatalf("problem = %v, want not_found", body)
 	}
+
+	// The identifier is the guard for both columns: a status-only request for a screening
+	// that does not exist is not found, never a success that published nothing.
+	w = do(t, &fakeService{createErr: venue.ErrNotFound}, http.MethodPatch, "/events/"+testEventID, `{"status":"on_sale"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a status-only request too (%s)", w.Code, w.Body)
+	}
+	if body := decodeBody(t, w); body["code"] != "not_found" {
+		t.Fatalf("problem = %v, want not_found", body)
+	}
 }
 
-func TestSetEventPriceStoreFailureReturns503(t *testing.T) {
+func TestUpdateEventStoreFailureReturns503(t *testing.T) {
 	w := do(t, &fakeService{createErr: context.DeadlineExceeded}, http.MethodPatch, "/events/"+testEventID, `{"priceCents":1250}`)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (%s)", w.Code, w.Body)
@@ -345,7 +485,7 @@ func TestSetEventPriceStoreFailureReturns503(t *testing.T) {
 	}
 }
 
-func TestSetEventPriceRejectsMalformedAndOversizedBodies(t *testing.T) {
+func TestUpdateEventRejectsMalformedAndOversizedBodies(t *testing.T) {
 	for name, body := range map[string]string{
 		"malformed": `{`,
 		"oversized": strings.Repeat("x", (1<<20)+1),
