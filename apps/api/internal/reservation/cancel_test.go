@@ -200,6 +200,75 @@ func TestCancelQueriesLoadTheEventIDWithTheStatementTheyAlreadyRun(t *testing.T)
 	}
 }
 
+// S16, query shape without a database: a cancel must not release a hold whose payment is
+// in flight, so the transition carries that refusal as a predicate of its own and the
+// read that decides takes the row lock. Both halves are proved against PostgreSQL, by
+// TestCancelRefusesWhileAPaymentAttemptIsPending and
+// TestCancelRacingACaptureNeverReleasesTheSeatsTheCaptureIsPayingFor; this test only pins
+// that the statements were not written without them, the way the event-id shape test
+// above pins the coordination key.
+func TestCancelQueriesLockTheRowAndRefuseAnOpenPaymentAttempt(t *testing.T) {
+	source, err := os.ReadFile("cancel.go")
+	if err != nil {
+		t.Fatalf("read cancel.go: %v", err)
+	}
+
+	hold := queryConstant(string(source), "cancelHoldQuery")
+	if hold == "" {
+		t.Fatal("cancelHoldQuery is not declared in cancel.go")
+	}
+	if !strings.Contains(hold, "payment_attempts") || !strings.Contains(hold, "NOT EXISTS") {
+		t.Errorf("cancelHoldQuery does not refuse a reservation with an open payment attempt:\n%s", hold)
+	}
+	if !strings.Contains(hold, "'pending'") {
+		t.Errorf("cancelHoldQuery does not name the pending attempt status:\n%s", hold)
+	}
+
+	state := queryConstant(string(source), "reservationCancelStateQuery")
+	if state == "" {
+		t.Fatal("reservationCancelStateQuery is not declared in cancel.go")
+	}
+	if !strings.Contains(state, "FOR UPDATE") {
+		t.Errorf("reservationCancelStateQuery does not lock the reservation row, so the decision can be overtaken between the read and the write:\n%s", state)
+	}
+	if !strings.Contains(state, "payment_attempts") {
+		t.Errorf("reservationCancelStateQuery does not report an open payment attempt, so a lost cancel could not say what refused it:\n%s", state)
+	}
+}
+
+// S16 (#79): a reservation whose payment is in flight is refused, and the refusal is not
+// flattened into a retryable failure: the durable layer's own answer reaches the caller
+// unchanged, and nothing is released in Redis — releasing there is what would free seats
+// the capture is paying for. The verdict itself needs a database (the cancel decision is
+// SQL), which is where the gated tests prove it.
+func TestCancelRefusesAPaymentInFlightWithoutReleasingItsSeats(t *testing.T) {
+	store := newFakeStore()
+	store.cancelErr = fmt.Errorf("%w: %s", reservation.ErrPaymentInFlight, cancelReservationID)
+	service, coordinator, _ := newTestService(t, store)
+	mustAcquire(t, coordinator, cancelEventID, cancelReservationID, testHoldTTL, 31)
+
+	cancellation, err := service.Cancel(context.Background(), cancelReservationID)
+	if !errors.Is(err, reservation.ErrPaymentInFlight) {
+		t.Fatalf("Cancel error = %v, want ErrPaymentInFlight", err)
+	}
+	// A conflict, never a retryable failure: waiting does not end the capture, and the
+	// captured order will not become cancellable afterwards.
+	if errors.Is(err, reservation.ErrUnavailable) {
+		t.Fatalf("Cancel error = %v, want the in-flight refusal kept apart from the retryable failure", err)
+	}
+	// Nor is it the paid answer: the sale has not been decided yet, and a caller told
+	// "already paid" would stop asking about a payment that may still decline.
+	if errors.Is(err, reservation.ErrAlreadyPaid) {
+		t.Fatalf("Cancel error = %v, want the in-flight refusal kept apart from the paid one", err)
+	}
+	if len(cancellation.SeatIDs) != 0 {
+		t.Fatalf("released seats = %v, want none", cancellation.SeatIDs)
+	}
+	if held := mustHeld(t, coordinator, cancelEventID, 31); !held[0] {
+		t.Fatal("the in-flight refusal released a seat the capture is paying for")
+	}
+}
+
 // S10: a durable layer that cannot be reached is a retryable failure, never a success
 // the buyer would read as "the seats are free".
 func TestCancelReportsAnUnreachableStore(t *testing.T) {

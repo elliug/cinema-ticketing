@@ -401,6 +401,7 @@ func mapDurableError(err error) error {
 		ErrEventNotFound,
 		ErrReservationNotFound,
 		ErrAlreadyPaid,
+		ErrPaymentInFlight,
 		ErrInvalidInput,
 	} {
 		if errors.Is(err, sentinel) {

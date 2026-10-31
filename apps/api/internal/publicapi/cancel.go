@@ -25,8 +25,9 @@ import (
 type CancellationService interface {
 	// Cancel ends a valid, unpaid hold and answers its new state as stored. A hold that
 	// was already cancelled, and one whose window closed, answer the same way with their
-	// own state; a paid order is a conflict; an identifier that names no reservation is
-	// an error wrapping reservation.ErrReservationNotFound.
+	// own state; a paid order is a conflict, and so is a hold whose payment is in flight;
+	// an identifier that names no reservation is an error wrapping
+	// reservation.ErrReservationNotFound.
 	Cancel(ctx context.Context, reservationID string) (reservation.Cancellation, error)
 }
 
@@ -74,9 +75,18 @@ func (h *Handler) cancelReservation(w http.ResponseWriter, r *http.Request) {
 //
 // The vocabulary is the one the routes next to it already use, so a client meeting both
 // surfaces reads one set of codes: an identifier that names no reservation is the read's
-// `404 not_found`, and a paid order is the payment route's `409 already_paid`.
+// `404 not_found`, a paid order is the payment route's `409 already_paid`, and a payment
+// still in flight is the payment route's `409 payment_in_flight`.
 func writeCancelError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, reservation.ErrPaymentInFlight):
+		// A capture is out with the provider and the attempt is stored as pending, so the
+		// seats are being paid for right now and this route cannot hand them back. Same
+		// code and same words as the payment route's refusal of a second charge, because
+		// it is the same fact seen from the other surface; the action it names is the one
+		// a cancelling client can take.
+		writeProblem(w, http.StatusConflict, "payment_in_flight", "Conflict",
+			"a payment for this reservation is already being processed; the hold cannot be cancelled until it ends")
 	case errors.Is(err, reservation.ErrAlreadyPaid):
 		// The money was taken and the tickets exist, so the seats cannot be handed back by
 		// this route. Same code and same words as the payment route's refusal, because it
