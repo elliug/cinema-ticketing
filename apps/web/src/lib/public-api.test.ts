@@ -1413,6 +1413,7 @@ const REDEMPTION_BODY = {
   startsAt: "2026-05-04T18:30:00Z",
   startsAtLocal: "2026-05-04T20:30:00+02:00",
   redeemedAt: "2026-05-04T20:14:00Z",
+  redeemedAtLocal: "2026-05-04T22:14:00+02:00",
   redeemedBy: "till-1",
   alreadyRedeemed: false,
 };

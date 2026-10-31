@@ -63,7 +63,9 @@ export interface SiteNavItem {
    * schedule and the layouts screens alike; without this field those two pages carry no
    * current entry at all, which the browser gate found. Only the entry that owns a wide
    * section declares one: a prefix on every entry would mark several entries current at
-   * once, which is worse than marking none.
+   * once, which is worse than marking none. A screen that has its own entry — the door —
+   * still wins on its own address, because [currentEntry] prefers the entry whose href is
+   * the page over the entry that only owns the section around it.
    */
   prefix?: string;
 }
@@ -73,6 +75,9 @@ export const SITE_NAV: readonly SiteNavItem[] = [
   { label: "Now showing", href: "/events" },
   { label: "My tickets", href: "/tickets" },
   { label: "Administration", href: "/admin/venues", prefix: "/admin" },
+  // The door is its own screen rather than a child of the venue screen: a cashier works there
+  // all evening and should not have to type an address or cross the venue editor to reach it.
+  { label: "Door", href: "/admin/door" },
 ];
 
 /** What a navigation entry that has no screen yet says instead of linking. */
@@ -108,8 +113,27 @@ export function isCurrentEntry(pathname: string, item: SiteNavItem): boolean {
   );
 }
 
+/**
+ * The one entry the navigation marks as the current page.
+ *
+ * A section entry (`Administration`, with its `/admin` prefix) claims every page below it,
+ * including the screens that have an entry of their own — so on `/admin/door` both entries
+ * would claim the page, and two `aria-current` links at once is worse than none. The screen
+ * wins: an entry whose own href is this path beats an entry that only owns the section around
+ * it.
+ */
+export function currentEntry(pathname: string): SiteNavItem | null {
+  const claiming = SITE_NAV.filter((item) => isCurrentEntry(pathname, item));
+  return (
+    claiming.find((item) => item.href !== null && isCurrentPath(pathname, item.href)) ??
+    claiming[0] ??
+    null
+  );
+}
+
 export function SiteHeader() {
   const pathname = usePathname();
+  const current = currentEntry(pathname);
 
   return (
     <header className="site-header">
@@ -134,9 +158,7 @@ export function SiteHeader() {
                   <Link
                     className="site-nav__link"
                     href={item.href}
-                    aria-current={
-                      isCurrentEntry(pathname, item) ? "page" : undefined
-                    }
+                    aria-current={current === item ? "page" : undefined}
                   >
                     {item.label}
                   </Link>
