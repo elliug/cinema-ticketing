@@ -101,7 +101,7 @@ cleanup() {
   # The reservation keys live in a dedicated logical database, and it is flushed only when
   # this run claimed it: a run that refused to touch an index must leave it exactly as it
   # found it, refusals included.
-  if [ "$redis_claimed" = "1" ]; then
+  if [ "$redis_owned" = "1" ]; then
     $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 \
       && printf 'flushed Redis logical database %s\n' "$redis_db" >>"$cleanup_log"
   fi
@@ -128,7 +128,7 @@ cleanup() {
 }
 # The flush below is conditional on this. The guards refuse an index that already holds data,
 # and exiting through such a refusal must leave that index exactly as it was found.
-redis_claimed=0
+redis_owned=0
 trap cleanup EXIT INT TERM
 
 # The names this script drops and deletes are checked before anything is created, so a
@@ -229,7 +229,7 @@ case "$dbsize" in
   "") fail "could not read the size of Redis logical database $redis_db, so this script cannot prove it owns it; is Redis reachable?" ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M41_REDIS_DB to a free database" ;;
 esac
-redis_claimed=1
+redis_owned=1
 
 $compose exec -T postgres createdb -U cinema "$db" || fail "could not create the throwaway database $db"
 schemas="$(psql_db -c "SELECT count(*) FROM pg_namespace WHERE nspname IN ('platform','cinema')")"

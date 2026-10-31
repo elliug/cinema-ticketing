@@ -381,3 +381,25 @@ Size: 479 authored lines, of which most are tests pinning the new tag and the ca
 Above the milestone's ~400-line rule; kept as one slice because the interface change, the four
 test doubles and the compatibility note are one idea, and splitting them would leave a tree that
 does not compile in between. Recorded as a deviation, like T9's.
+### L15 — T12: the flush guard belongs to every gate, not to the one that was reviewed
+
+T12 was registered as "verify_m2/m3 flush Redis on refusal". The sweep found something slightly
+different and worth writing down: `verify_m35.sh` **already had** the guard (`redis_owned`, plus
+`bucket_created` for the bucket) from T1, and `verify_m41.sh` got it when the review of #75 found
+`R1-redis-flush-unconditional`. The gates missing it were `m2` and `m3` — and `m35` still had the
+other half of the same defect, `case "$dbsize" in 0|"")`, which treats an unreadable answer as
+"empty" and therefore claims an index it never inspected.
+
+So the change is one rule, applied in all four gates, under one name: a run flushes the Redis
+index only when it proved the index held exactly 0 keys before it started, and an unreadable
+`dbsize` is a loud failure rather than proof of ownership.
+
+Evidence, canary in each gate's own index (9, 10, 8): the run refuses with exit 1, `dbsize` goes
+1 -> 1, the canary key is unchanged, and no `flushed Redis logical database <n>` line appears.
+Happy paths after the change: `make verify-m41` passes all eleven assertions and flushes the index
+it claimed (11), and `make verify-m2` passes whole — one winner in sixteen contenders, the worker
+expires an elapsed hold, a killed sweep recovers.
+
+The honest summary of the day: the native review found **one** instance of a data-loss defect; the
+sweep found the family. A guard that protects other people's data is worth grepping for, not just
+fixing where it was reported.
