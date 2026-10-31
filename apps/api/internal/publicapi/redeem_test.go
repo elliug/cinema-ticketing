@@ -162,10 +162,26 @@ func TestTicketRedemptionAdmitsAValidTicket(t *testing.T) {
 	keys := objectKeys(t, raw)
 	sort.Strings(keys)
 	want := []string{"alreadyRedeemed", "cinemaName", "eventId", "eventStatus", "filmTitle",
-		"redeemedAt", "redeemedBy", "roomName", "seats", "startsAt", "startsAtLocal",
-		"ticketId", "ticketStatus"}
+		"redeemedAt", "redeemedAtLocal", "redeemedBy", "roomName", "seats", "startsAt",
+		"startsAtLocal", "ticketId", "ticketStatus"}
 	if !equalKeys(keys, want) {
 		t.Fatalf("redeem keys = %v, want %v", keys, want)
+	}
+
+	// The venue's hour, not the machine's: the instant and its local form are asserted as a
+	// pair, because a door that reported UTC beside a screening in Madrid would be telling a
+	// cashier a time two hours off, and the fixed offset is what proves it did not.
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode the admission body: %v", err)
+	}
+	redeemedLocal, _ := fields["redeemedAtLocal"].(string)
+	if !strings.HasSuffix(redeemedLocal, "+02:00") {
+		t.Fatalf("redeemedAtLocal = %q, want the venue's own offset", redeemedLocal)
+	}
+	parsedLocal, err := time.Parse(time.RFC3339, redeemedLocal)
+	if err != nil || !parsedLocal.Equal(doorInstant) {
+		t.Fatalf("redeemedAtLocal = %q, want the same instant as redeemedAt (%s)", redeemedLocal, doorInstant)
 	}
 }
 

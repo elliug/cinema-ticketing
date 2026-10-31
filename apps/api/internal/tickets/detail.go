@@ -257,6 +257,15 @@ const localTimeLayout = "2006-01-02T15:04:05-07:00"
 // refused here too instead of being read as UTC (the schema already forbids it, so
 // a blank one means the row is broken, not that the venue sits in Greenwich).
 func (e EventDetail) LocalStartsAt() (string, error) {
+	return e.LocalTime(e.StartsAt)
+}
+
+// LocalTime renders any instant in the venue's own clock, with the same refusals as
+// LocalStartsAt and for the same reason. It exists because the door now answers *when* a
+// ticket was admitted: reporting that instant in UTC while the screening beside it is in the
+// venue's hour is an invitation to subtract the offset by hand, and a cashier reading 20:14
+// for a 22:14 screening has been told something false.
+func (e EventDetail) LocalTime(t time.Time) (string, error) {
 	if strings.TrimSpace(e.Timezone) == "" {
 		return "", fmt.Errorf("tickets: event %s has no venue timezone, so its local time cannot be presented", e.ID)
 	}
@@ -264,5 +273,5 @@ func (e EventDetail) LocalStartsAt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tickets: event %s has an unusable venue timezone %q: %w", e.ID, e.Timezone, err)
 	}
-	return e.StartsAt.In(location).Format(localTimeLayout), nil
+	return t.In(location).Format(localTimeLayout), nil
 }
