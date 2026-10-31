@@ -2,7 +2,7 @@
 
 M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. On top of it, four milestones are delivered: **M1** venues, rooms and versioned layouts; **M2** durable seat holds with per-seat exclusivity and expiry; **M3** the purchase path — a guest holds seats, pays through a simulated provider, and receives a ticket with a signed code and a PDF stored in S3; **M3.5** the product web — catalogue, keyboard-operable seat map, checkout, tickets, and an administration surface that can price and publish a screening.
 
-Identity, single-use redemption, reporting and audit do not exist yet. `## What this build does not do` lists them, with what each one currently costs.
+Identity, reporting and audit do not exist yet. `## What this build does not do` lists them, with what each one currently costs.
 
 ## Quick path
 
@@ -334,12 +334,11 @@ Its run scope is enforced rather than assumed. `M35_REDIS_DB=0` (the development
 
 ## What this build does not do
 
-Four milestones are delivered, and what they leave out is part of the delivery. Each line names what is missing and what that costs today, so nobody has to infer it from a green build.
+The milestones delivered so far, and what they leave out, are part of the delivery. Each line names what is missing and what that costs today, so nobody has to infer it from a green build.
 
 | Not there | What it costs today |
 |---|---|
 | **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
-| **Single-use redemption** | A ticket is issued and its code can be verified server-side, but nothing marks it as used. The same QR can be presented at a door indefinitely. This is the largest gap: the ticket is worth one admission and currently proves an infinite number. |
 | **Cashier, reporting and audit** | No takings and no record of who changed what: the door screen admits a ticket once, but nothing counts the evening's takings or says who held the till. The administrative surface is local-only and unauthenticated beyond a shared token. |
 | **Catalogue filters beyond time** | `GET /events` pages with a keyset cursor and bounds each page with `from`/`to`, and nothing else: there is no film or cinema filter until a deployment has more than one cinema. |
 | **Email** | The PDF is downloaded from the web. Nothing is mailed. |
@@ -354,4 +353,4 @@ The tagged acceptance test for the double-booking contract still runs as its own
 go test -tags=acceptance_m2 ./tests/concurrency
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and the milestone table, and the records in [`odd/tasks/`](odd/tasks): `m0-foundation.md`, `m1-venue-layout.md`, `m2-reservation-core.md`, `m3-checkout-tickets.md` and `m35-product-web.md`.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and the milestone table, [`GUIDE.md`](GUIDE.md) for what a customer and an administrator can do, and the records in [`odd/tasks/`](odd/tasks): `m0-foundation.md`, `m1-venue-layout.md`, `m2-reservation-core.md`, `m3-checkout-tickets.md`, `m35-product-web.md` and `m41-door-and-hardening.md`.
