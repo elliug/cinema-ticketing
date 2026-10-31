@@ -275,3 +275,37 @@ esac
 psql_target -q -f "$TIMEZONE_TEST_FILE"
 assert_versions "$(chain_upto 0007_repair_unresolvable_timezones)"
 log "M0, M1, M2, M3 checkout, M3 one-open-attempt and M4.1 timezone backfill up/down/up verification passed"
+
+# ── 0008: the redemption record ──────────────────────────────────────────────
+# A ticket that can be admitted exactly once is a column, a guard and a trigger. The cycle
+# proves the column and the trigger exist after up and are gone after down; the refusal that
+# protects admitted tickets is asserted by the primitive's own gated test, because arming it
+# here would need a whole sold ticket and that belongs to the checkout, not to a schema cycle.
+log "applying 0008_ticket_redemption"
+psql_target -q -f "$MIGRATIONS_DIR/0008_ticket_redemption.up.sql"
+redeem_schema="$(psql_target -tA -c "
+  SELECT count(*) FROM information_schema.columns
+   WHERE table_schema = 'cinema' AND table_name = 'tickets' AND column_name = 'redeemed_at';
+")"
+[ "$redeem_schema" = "1" ] || fail "0008 must add cinema.tickets.redeemed_at, found [$redeem_schema]"
+redeem_trigger="$(psql_target -tA -c "
+  SELECT count(*) FROM pg_trigger WHERE tgname = 'guard_ticket_redemption' AND NOT tgisinternal;
+")"
+[ "$redeem_trigger" = "1" ] || fail "0008 must add the guard_ticket_redemption trigger, found [$redeem_trigger]"
+assert_versions "$(chain_upto 0008_ticket_redemption)"
+log "rolling back 0008_ticket_redemption"
+psql_target -q -f "$MIGRATIONS_DIR/0008_ticket_redemption.down.sql"
+redeem_schema="$(psql_target -tA -c "
+  SELECT count(*) FROM information_schema.columns
+   WHERE table_schema = 'cinema' AND table_name = 'tickets' AND column_name = 'redeemed_at';
+")"
+[ "$redeem_schema" = "0" ] || fail "the 0008 rollback must remove redeemed_at, found [$redeem_schema]"
+redeem_trigger="$(psql_target -tA -c "
+  SELECT count(*) FROM pg_trigger WHERE tgname = 'guard_ticket_redemption' AND NOT tgisinternal;
+")"
+[ "$redeem_trigger" = "0" ] || fail "the 0008 rollback must remove its trigger, found [$redeem_trigger]"
+assert_versions "$(chain_upto 0007_repair_unresolvable_timezones)"
+log "reapplying 0008_ticket_redemption"
+psql_target -q -f "$MIGRATIONS_DIR/0008_ticket_redemption.up.sql"
+assert_versions "$(chain_upto 0008_ticket_redemption)"
+log "M0, M1, M2, M3 checkout, M3 one-open-attempt, M4.1 timezone backfill and M4.1 redemption up/down/up verification passed"

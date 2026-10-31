@@ -94,7 +94,7 @@ User / GuestCustomer ──< Reservation
 | `reservations` | Purchase intent and lifecycle | `id`, `event_id`, `customer_id`, `status`, `expires_at`, `currency`, `total_amount` |
 | `reservation_seats` | Seats in a reservation | `reservation_id`, `event_seat_id`, `unit_price` |
 | `payment_attempts` | Provider operation and idempotency ledger | `id`, `reservation_id`, `provider`, `provider_reference`, `status`, `idempotency_key` |
-| `tickets` | Final right of entry | `id`, `reservation_seat_id`, `barcode`, `issued_at`, `status` |
+| `tickets` | Final right of entry, admitted exactly once by the door's one guarded `UPDATE … WHERE redeemed_at IS NULL` (`0008_ticket_redemption`) | `id`, `reservation_seat_id`, `barcode`, `issued_at`, `status`, `redeemed_at`, `redeemed_by` |
 | `users` | Registered identities | `id`, `email`, `phone`, `role`, `status` |
 | `guest_customers` | PII for guest purchase/contact | `id`, `email`, `phone`, `verified_at` |
 | `audit_log` | Operator and security trace | actor, action, aggregate, before/after metadata, timestamp |
