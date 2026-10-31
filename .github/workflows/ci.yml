@@ -123,7 +123,10 @@ jobs:
           API_ENV: development
         run: make bootstrap
 
-      - name: Verify M4.1 door: admission, second presentation, forgery and the race
+      # Quoted because the step name carries a colon: an unquoted `: ` inside a plain scalar
+      # makes the whole workflow file unparseable, and GitHub then reports a run with zero
+      # jobs instead of an invalid-file error where a reader would look for it.
+      - name: "Verify M4.1 door: admission, second presentation, forgery and the race"
         run: make verify-m41
 
   # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
