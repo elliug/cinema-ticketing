@@ -65,7 +65,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T8 | S4, S5 | the door screen | 8 |
 | T9 | S1–S4 | `make verify-m41` and its CI job | 9 · `7084261` + `18c5d09` + the hardening commit (#75) |
 | T10 | S15 | Redis slot distribution | 10 |
-| T11 | S13, S14 | route-table truth; email decision then implementation | 11 · the docs sweep |
+| T11 | S13, S14 | route-table truth; email decision then implementation | 11 · (#78) |
 
 ## Log
 
