@@ -302,6 +302,16 @@ type Store interface {
 	// returns the attempt as stored, so a loser of a concurrent race answers with the
 	// winner's result instead of writing a second sale.
 	RecordOutcome(ctx context.Context, outcome AttemptOutcome) (Attempt, error)
+
+	// ListStaleAttempts reads the attempts that are still pending after olderThan,
+	// oldest first, each with the reservation it is paying for. It is the input of the
+	// reconciler (issue #87): an attempt whose process died during the provider call is
+	// the only kind a sweep must never settle on its own.
+	//
+	// The age is compared against the **database** clock inside the query, the same clock
+	// the hold trigger and the expiry sweep use, so "stale" cannot mean one thing in Go
+	// and another in PostgreSQL.
+	ListStaleAttempts(ctx context.Context, olderThan time.Duration, batch int) ([]PreparedAttempt, error)
 }
 
 // HoldReleaser frees the expiring coordination hold of a paid reservation. It is
@@ -412,6 +422,112 @@ func (s *Service) Charge(ctx context.Context, reservationID, idempotencyKey stri
 		return Result{}, mapStoreError(err)
 	}
 	return s.answered(ctx, prepared.Reservation, recorded), nil
+}
+
+// ReconcileResult is what one reconciliation tick did. Every count is read from what
+// actually happened, never from the size of the batch the store selected.
+type ReconcileResult struct {
+	// Candidates is how many stale attempts the store returned.
+	Candidates int
+	// Captured is how many of them the provider had already charged, which are now
+	// sales with tickets.
+	Captured int
+	// Declined is how many the provider refused, which are history and no longer
+	// pending, so the expiry sweep can release their holds.
+	Declined int
+	// Unresolved is how many could not be settled this tick: the provider gave no
+	// answer, or the store refused the verdict. They stay pending and are retried.
+	Unresolved int
+}
+
+// ReconcileStaleAttempts settles the attempts a dead process left pending: for each
+// one it asks the provider **again** with the attempt's own amount and its
+// deterministic reference, and records the answer the provider gives (issue #87).
+//
+// It never assigns a verdict. That is the whole safety argument: the provider is
+// idempotent per reference, so re-calling cannot charge twice, and an attempt stops
+// being pending only when the provider has said what happened. Marking a stale attempt
+// failed would let the sweep release the seats of a buyer the provider had charged —
+// exactly the defect #82 closed.
+//
+// A call that gets no answer leaves the attempt pending, and therefore leaves the seats
+// held: an unanswered call is not a verdict, and silent release is the one outcome this
+// design refuses.
+func (s *Service) ReconcileStaleAttempts(ctx context.Context, olderThan time.Duration, batch int) (ReconcileResult, error) {
+	if olderThan <= 0 {
+		return ReconcileResult{}, fmt.Errorf("%w: reconciliation needs a positive age bound, got %s", ErrInvalidInput, olderThan)
+	}
+	if batch <= 0 {
+		return ReconcileResult{}, fmt.Errorf("%w: reconciliation batch must be positive, got %d", ErrInvalidInput, batch)
+	}
+
+	stale, err := s.store.ListStaleAttempts(ctx, olderThan, batch)
+	if err != nil {
+		return ReconcileResult{}, mapStoreError(err)
+	}
+
+	result := ReconcileResult{Candidates: len(stale)}
+	for _, prepared := range stale {
+		// The buyer's own request may have settled this attempt between the read and
+		// here. An attempt that already carries a verdict is never sent to the provider
+		// again, so a reconciliation cannot become a second sale.
+		if prepared.Attempt.Decided() {
+			continue
+		}
+
+		answer, err := s.gateway.Charge(ctx, payment.Request{
+			AmountMinorUnits: prepared.Attempt.AmountCents,
+			Reference:        providerReference(prepared.Attempt.ID),
+		})
+		if err != nil || strings.TrimSpace(answer.Reference) == "" {
+			result.Unresolved++
+			continue
+		}
+
+		outcome, err := recordFrom(prepared, answer)
+		if err != nil {
+			result.Unresolved++
+			continue
+		}
+
+		if _, err := s.store.RecordOutcome(ctx, outcome); err != nil {
+			// A row the database refuses is that row's problem: it is counted and the
+			// next candidate is still tried. An unreachable store is the tick's problem
+			// and is returned, so the worker logs a real failure instead of a trickle of
+			// unresolvable rows.
+			if isSettlementRefusal(err) {
+				result.Unresolved++
+				continue
+			}
+			return result, mapStoreError(err)
+		}
+
+		if outcome.Status == StatusCaptured {
+			result.Captured++
+		} else {
+			result.Declined++
+		}
+	}
+	return result, nil
+}
+
+// isSettlementRefusal reports an error that belongs to one attempt instead of to the
+// whole tick. Each of these means "this attempt cannot be settled now", which is
+// exactly what the reconciler reports as unresolved and retries on the next tick.
+func isSettlementRefusal(err error) bool {
+	for _, refusal := range []error{
+		ErrReservationNotPayable,
+		ErrReservationNotFound,
+		ErrAlreadyPaid,
+		ErrAmountMismatch,
+		ErrSeatAlreadySold,
+		ErrProviderReferenceTaken,
+	} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 // answered builds the buyer's answer from the stored attempt and, once the sale is

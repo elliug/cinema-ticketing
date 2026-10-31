@@ -52,6 +52,10 @@ and a database that stops short of it will fail to admit anyone.
    provider, also idempotently. It always approves in this build; a decline needs
    `NewSimulatedWithDeclineRule`, which the wired simulator does not use. Both `approved` and
    `declined` are answered `200` — the payment status is in the body, not in the HTTP code.
+   A payment whose request dies mid-call is **settled later, not lost**: a worker asks the
+   provider again with the same reference, so the charge becomes either a ticket or a released
+   hold — never money taken without a ticket. While a payment is in flight its hold is never
+   released, which is why a seat can look stuck for the length of one hold window.
 6. **Get the tickets.** One ticket per seat. `GET /tickets/{ticketId}` is the presentation data,
    `/qr.svg` is the signed code as an image, and `/pdf` answers `302` to a short-lived pre-signed
    link rather than the document itself.
