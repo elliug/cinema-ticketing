@@ -99,7 +99,7 @@ func TestTicketDetailAnswersARealSale(t *testing.T) {
 		t.Fatalf("check the ticket schema: %v", err)
 	}
 	if !present {
-		t.Fatalf("%s is not migrated with 0005_checkout and 0006_one_open_payment_attempt", ticketDatabaseURLEnv)
+		t.Fatalf("%s is not migrated with 0005_checkout, 0006_one_open_payment_attempt and 0008_ticket_redemption", ticketDatabaseURLEnv)
 	}
 
 	// The tickets below are issued by the real checkout, not inserted by hand: the

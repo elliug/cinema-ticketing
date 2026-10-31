@@ -72,6 +72,16 @@ type TicketDetail struct {
 	Status string
 	// IssuedAt is the instant the ticket was issued, as the database recorded it.
 	IssuedAt time.Time
+	// RedeemedAt is the instant the door admitted this ticket, and nil while it has
+	// not been admitted. It is written by the one guarded statement of
+	// [PostgresStore.Redeem], so it is the same instant the door was answered with and
+	// the same one a second presentation is told.
+	RedeemedAt *time.Time
+	// RedeemedBy is the opaque label the door supplied when it admitted the ticket — a
+	// till, a gate, a shift — and empty when it supplied none. It is never a person:
+	// there are no accounts yet, so the package stores what the caller named and
+	// invents nothing.
+	RedeemedBy string
 	// ReservationID is the order the ticket was sold in. Two tickets of the same
 	// purchase share it, and it is how a confirmation surface groups the tickets of
 	// one order, since one reservation is one order.
@@ -163,27 +173,41 @@ const (
 // screening was not cancelled.
 //
 // This is the only place the two stored statuses are combined, so the web page and
-// the PDF cannot disagree about whether a ticket is good. Redemption ("used") is
-// not part of it: that is M4's cashier decision, and a ticket that has been used is
-// still a valid ticket.
+// the PDF cannot disagree about whether a ticket is good. Redemption is not part of it:
+// a ticket that has been used is still a valid ticket, and whether it can still be used
+// is [TicketDetail.Admissible].
 func (d TicketDetail) Valid() bool {
 	return d.Status == TicketStatusIssued && d.Event.Status != EventStatusCancelled
 }
+
+// Redeemed reports whether the door has already admitted this ticket.
+func (d TicketDetail) Redeemed() bool { return d.RedeemedAt != nil }
+
+// Admissible reports whether the ticket still admits its holder: it is [Valid] and no
+// door has admitted it yet. It is the door's question, answered from the projection the
+// caller already holds so a screen needs no second read to ask it.
+//
+// It is deliberately not folded into [TicketDetail.Valid] or
+// [TicketDetail.InvalidReason]: those two describe the sale and its screening, they
+// agree with each other exactly (a reason exists exactly when the ticket is not valid),
+// and an admission does not change either. A used ticket is still a valid ticket that
+// its holder owns; it is simply no longer a ticket that can be used again.
+func (d TicketDetail) Admissible() bool { return d.Valid() && !d.Redeemed() }
 
 // InvalidReason names why the ticket does not admit its holder, and answers the
 // empty string for a ticket that does. It is derived from the same two statuses as
 // [TicketDetail.Valid] and lives beside it, so the door, the web page and the PDF
 // cannot disagree; the two are exhaustive in this milestone, whose schema allows the
-// ticket statuses [TicketStatusIssued] and [TicketStatusVoid] only. A later status
-// (M4's redeemed ticket, for example) extends this function rather than each
-// renderer deriving its own answer.
+// ticket statuses [TicketStatusIssued] and [TicketStatusVoid] only. A later *status*
+// extends this function rather than each renderer deriving its own answer; a
+// redemption is not one (see [TicketDetail.Admissible]), because it leaves the sale
+// exactly as it was and only records that its holder has already walked in.
 func (d TicketDetail) InvalidReason() string {
 	switch {
 	case d.Valid():
 		return ""
 	case d.Status != TicketStatusIssued:
-		// A ticket is void (or, later, redeemed): the ticket is the reason, not the
-		// screening.
+		// A void ticket is the ticket's own reason, not the screening's.
 		return InvalidReasonVoided
 	default:
 		// The ticket was issued, so the screening is what makes it unusable.
