@@ -42,9 +42,10 @@ import (
 	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
-// maxVerifyBodyBytes bounds a verification request body. A QR token is a payload of
-// well under a hundred bytes plus its 32 byte signature, so a few kilobytes is
-// already generous; the bound exists so this public route cannot be used to make the
+// maxVerifyBodyBytes bounds a request body that carries a presented code: the
+// verification route and the admission route beside it take the same shape. A QR token is
+// a payload of well under a hundred bytes plus its 32 byte signature, so a few kilobytes
+// is already generous; the bound exists so a public route cannot be used to make the
 // process buffer an arbitrary request.
 const maxVerifyBodyBytes = 4 << 10
 
@@ -57,10 +58,7 @@ type verifyTicketRequest struct {
 func (h *Handler) verifyTicket(w http.ResponseWriter, r *http.Request) {
 	var req verifyTicketRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxVerifyBodyBytes)).Decode(&req); err != nil {
-		// The decoder's message can quote the body it refused, and the body may carry
-		// a token, so the caller is given a fixed sentence instead.
-		writeProblem(w, http.StatusBadRequest, "invalid_request", "Invalid request",
-			"request body must be valid JSON with a token")
+		writeMalformedTokenRequest(w)
 		return
 	}
 	// A blank code is not a code: it cannot verify, and it is answered exactly like a
@@ -72,18 +70,7 @@ func (h *Handler) verifyTicket(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.tickets.Verify(r.Context(), req.Token)
 	if err != nil {
-		switch {
-		case errors.Is(err, tickets.ErrInvalidToken):
-			writeInvalidToken(w)
-		case errors.Is(err, tickets.ErrInvalidKey):
-			// The deployment's signing key is unusable, so no code can be checked. That
-			// is our failure, not a verdict on the ticket.
-			writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable",
-				"the ticket check is not available right now; retry the request")
-		default:
-			writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable",
-				"the ticket check is temporarily unavailable; retry the request")
-		}
+		writeUnverifiableToken(w, err)
 		return
 	}
 
@@ -112,6 +99,33 @@ func (h *Handler) verifyTicket(w http.ResponseWriter, r *http.Request) {
 		body["reason"] = reason
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// writeUnverifiableToken maps a verification outcome to the answer the door is given. It
+// is one function because two routes answer the same question — POST /tickets/verify and
+// the admission route beside it — and a prober must not be able to tell from a refusal
+// which route, or which code, produced it. Both routes build the same bounded request
+// with writeMalformedTokenRequest for the same reason.
+func writeUnverifiableToken(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, tickets.ErrInvalidToken):
+		writeInvalidToken(w)
+	case errors.Is(err, tickets.ErrInvalidKey):
+		// The deployment's signing key is unusable, so no code can be checked. That is our
+		// failure, not a verdict on the ticket.
+		writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable",
+			"the ticket check is not available right now; retry the request")
+	default:
+		writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable",
+			"the ticket check is temporarily unavailable; retry the request")
+	}
+}
+
+// writeMalformedTokenRequest is the one refusal for a request body that is not JSON
+// carrying a token. The body may carry a code, so nothing of what was sent is repeated.
+func writeMalformedTokenRequest(w http.ResponseWriter) {
+	writeProblem(w, http.StatusBadRequest, "invalid_request", "Invalid request",
+		"request body must be valid JSON with a token")
 }
 
 // writeInvalidToken is the one refusal for every code that is not a ticket of ours:

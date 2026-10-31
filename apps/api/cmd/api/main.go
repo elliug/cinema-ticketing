@@ -426,6 +426,11 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 
 	var ticketDetails publicapi.TicketService
+	// ticketRedemptions is the same store, offered as the door's admission collaborator:
+	// the redemption is one guarded statement on the ticket row
+	// ([tickets.PostgresStore.Redeem]), and the schema probe above already requires the
+	// redemption columns, so a database that can serve a ticket can also admit it.
+	var ticketRedemptions publicapi.RedemptionService
 	if ticketPresent {
 		// The ticket surface signs the code the web page and the PDF both print, so it
 		// cannot be mounted without a usable key: a ticket route that could not sign
@@ -446,6 +451,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		// the confirmation page (T7) and the PDF (T6) read it from the projection instead
 		// of each minting a code of their own.
 		ticketDetails = tickets.NewService(ticketStore, signer)
+		ticketRedemptions = ticketStore
 	} else {
 		ticketStore.Close()
 		ticketStore = nil
@@ -536,7 +542,8 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			"required", "0005_checkout")
 	}
 
-	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).WithTicketPDFs(ticketPDFs).
+	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
+		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).
 		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
@@ -549,11 +556,13 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 	if ticketPresent {
 		// One line that the ticket codes are signed, without the key: the key is a secret
-		// and the fact that it is configured is what an operator needs to know. The two
-		// routes below are the code's two presentations: the SVG the page shows and the
-		// check a door scanner calls.
-		logger.Info("ticket QR codes are signed; code presentation and verification routes mounted",
-			"routes", []string{"/api/v1/tickets/{ticketId}/qr.svg", "/api/v1/tickets/verify"},
+		// and the fact that it is configured is what an operator needs to know. The routes
+		// below are the code's presentations and the two questions asked about it: the SVG
+		// the page shows, the check a door scanner calls, and the admission that writes the
+		// redemption.
+		logger.Info("ticket QR codes are signed; code presentation, verification and admission routes mounted",
+			"routes", []string{"/api/v1/tickets/{ticketId}/qr.svg", "/api/v1/tickets/verify",
+				"/api/v1/tickets/redeem"},
 			"key_bytes", len(cfg.TicketQRKey))
 	}
 	if ticketPDFs != nil {

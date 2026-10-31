@@ -8,8 +8,10 @@
 // public catalogue of screenings (GET /events), one screening of that catalogue
 // (GET /events/{eventID}) so the seat page keeps the film, the venue, the hour and the
 // price it arrived with, the confirmation's read of one order
-// (GET /reservations/{reservationId}), and the cancel route that ends a hold now instead
-// of waiting out its window (POST /reservations/{reservationId}/cancel).
+// (GET /reservations/{reservationId}), the cancel route that ends a hold now instead
+// of waiting out its window (POST /reservations/{reservationId}/cancel), and the door's
+// admission route, which verifies a presented code and admits the ticket it names exactly
+// once (POST /tickets/redeem).
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -47,13 +49,14 @@ type Handler struct {
 	catalog      CatalogService
 	reservations ReservationService
 	cancels      CancellationService
+	redeems      RedemptionService
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
-// PDF, ticket verification, catalogue and reservation read routes are attached
-// separately, by WithPayments, WithTickets, WithTicketPDFs, WithCatalog and
-// WithReservations, so a deployment without the checkout schema or without object
-// storage mounts none of them.
+// PDF, ticket admission, catalogue and reservation read routes are attached
+// separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption, WithCatalog,
+// WithReservations and WithCancellation, so a deployment without the checkout schema or
+// without object storage mounts none of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -99,6 +102,13 @@ func (h *Handler) Mux() *http.ServeMux {
 		// the ticket route for the same reason the verification route is: it draws the
 		// code that route serves.
 		mux.HandleFunc(ticketQRRoute, h.getTicketQR)
+		// The admission route is mounted with both halves of the act it performs: the code
+		// that route serves, which the verification route checks, and the guarded write that
+		// admits the ticket it names. A door that could check a code but not admit it would
+		// advertise half of what a door does, so both are required.
+		if h.redeems != nil {
+			mux.HandleFunc(redeemTicketRoute, h.redeemTicket)
+		}
 	}
 	// The download route needs both halves: a ticket to download and somewhere to store
 	// the document. A deployment without object storage never attaches the archive, so it
