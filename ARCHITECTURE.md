@@ -205,6 +205,8 @@ If the database detects a conflict after Redis claimed the keys, it wins. The AP
 
 A real external payment cannot be enclosed in a database transaction. The design therefore uses a durable outbox and idempotent provider references. A recovery worker reconciles payment attempts left in `processing` before treating them as failed.
 
+Email is **not** delivered in this version: there is no provider, no credentials and no sending queue, and nothing in the product claims an email was sent — the ticket PDF is downloaded from the web. The outbox carries one topic today, `ticket.issued`, written when a payment is captured and consumed by the PDF worker. Email, if it is implemented, is a new **consumer** of that same outbox — it reads the rows the sale already writes and records its own progress, exactly as the PDF worker does — and not a new delivery mechanism.
+
 ### Expiration and reconciliation
 
 Redis TTL only makes a key disappear. A background worker is responsible for durable release:
@@ -226,16 +228,16 @@ The tables below are the **target contract for v1**, not a description of the cu
 - `GET /api/v1/events` — one bounded page of the catalogue: `limit` (1–100, 20 when unnamed, refused out of range rather than clamped) and optional `from`/`to` bounds on the screening start, answered with a keyset cursor over `(starts_at, id)` that says how to ask for the next page (`null` on the last one).
 - `GET /api/v1/events/{eventId}/seats` — occupancy plus the layout projection (`rowLabel`, `seatNumber`, `kind`, `held`) in row and seat order.
 
-Everything else in these tables is planned. M3 adds the payment and ticket routes plus the PDF download.
+Rows marked **Planned, not implemented.** are the ones no caller can reach yet; every other row in these tables is mounted in the code and answers a request. M3 added the payment and ticket routes plus the PDF download.
 
 ### Public customer API
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/films` | Browse films and screening availability. |
+| `GET` | `/events` | One bounded page of the on-sale catalogue — `limit`, optional `from`/`to` and the keyset cursor described above. Films are browsed through this catalogue and `GET /events/{eventId}`; there is no public film list (the film list is `GET /admin/films`). |
 | `GET` | `/events/{eventId}` | Get event, price bands, and seat layout projection. |
 | `GET` | `/events/{eventId}/seats` | Snapshot event-seat availability. |
-| `GET` | `/events/{eventId}/stream` | SSE stream of availability updates. |
+| `GET` | `/events/{eventId}/stream` | **Planned, not implemented.** SSE stream of availability updates; today a seat count changes only on the next read of the snapshot above. |
 | `POST` | `/reservations/holds` | Atomically hold a complete seat selection. |
 | `GET` | `/reservations/{reservationId}` | Read reservation and expiry state. |
 | `POST` | `/reservations/{reservationId}/payment` | Start/replay payment confirmation. |
@@ -264,9 +266,9 @@ Success includes `reservationId`, canonical seat labels, server-calculated `tota
 | Route group | Role | Responsibilities |
 |---|---|---|
 | `/admin/cinemas`, `/admin/rooms`, `/admin/layouts` | `admin` | Venue and immutable layout-version management. |
-| `/admin/films`, `/admin/events`, `/admin/prices` | `admin` | Catalog, scheduling, on-sale state, price rules. |
-| `/cashier/reservations` | `cashier` | Assisted holds, payment simulation, print/reissue under policy. |
-| `/admin/reports` | `admin`, `analyst` | Sales, occupancy, hold expiry, refunds, and reconciliation data. |
+| `/admin/films`, `/admin/events` | `admin` | The film list and film records (there is no public one), scheduling, on-sale state. A screening's price is a field of the event create and update (`POST /admin/events`, `PATCH /admin/events/{eventId}`), not a route of its own. |
+| `/cashier/reservations` | `cashier` | **Planned, not implemented.** Assisted holds, payment simulation, print/reissue under policy; today nothing serves a cashier. |
+| `/admin/reports` | `admin`, `analyst` | **Planned, not implemented.** Sales, occupancy, hold expiry, refunds, and reconciliation data; today no report is served. |
 
 Every mutating administrative or cashier operation is audited with actor, role, correlation ID, target IDs, and before/after metadata excluding payment secrets and unnecessary PII.
 

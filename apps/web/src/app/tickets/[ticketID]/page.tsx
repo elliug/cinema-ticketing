@@ -109,7 +109,7 @@ async function TicketSurface({ ticketId }: { ticketId: string }) {
       <PageHeader
         eyebrow="Ticket · M3.5"
         title={title}
-        description={`${venue === "" ? "Venue not served." : `${venue}.`} Times are the venue's own clock. This page is opened by the ticket's own link: nothing here checks who you are, and the link is what opens it.`}
+        description={`${venue === "" ? "Venue not served." : `${venue}.`} Times are the venue's own clock. This page is opened by the ticket's own link: nothing here checks who you are, and the link is what opens it. The PDF is what you get and nothing is mailed.`}
       />
       <TicketView
         ticket={ticket}

@@ -65,7 +65,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T8 | S4, S5 | the door screen | 8 |
 | T9 | S1–S4 | `make verify-m41` and its CI job | 9 · `7084261` + `18c5d09` + the hardening commit (#75) |
 | T10 | S15 | Redis slot distribution | 10 |
-| T11 | S13, S14 | route-table truth; email decision then implementation | 11 |
+| T11 | S13, S14 | route-table truth; email decision then implementation | 11 · (#78) |
 
 ## Log
 
@@ -403,3 +403,46 @@ expires an elapsed hold, a killed sweep recovers.
 The honest summary of the day: the native review found **one** instance of a data-loss defect; the
 sweep found the family. A guard that protects other people's data is worth grepping for, not just
 fixing where it was reported.
+### L16 — T11: the table stopped naming surfaces nobody can call, and email is decided in writing
+
+The audit found five mismatches between `ARCHITECTURE.md`'s route tables and the code. What each
+one became, and why that repair instead of the other:
+
+| Mismatch | What it is now |
+|---|---|
+| `GET /films` listed as a **public** route | **Moved.** The film list is `GET /admin/films`, and the administrative row already owned `/admin/films`; the public row that replaces it is `GET /events`, whose Purpose says films are browsed through the catalogue and that there is no public film list. Marking it "not public" in the public table was the alternative — rejected because the surface really exists and really is reachable, so the truthful fix is the right table, not a warning label in the wrong one. |
+| `/admin/prices` named as a route group | **Removed as a route.** The row now says where the price actually lives: a field of the event create (`POST /admin/events`) and update (`PATCH /admin/events/{eventId}`), not a surface of its own. |
+| `GET /events` absent from the table | **Added**, with what it actually answers: `limit` (1–100, 20 when unnamed, refused out of range), optional `from`/`to` bounds and the keyset cursor over `(starts_at, id)` that says how to ask for the next page. It was the one mounted public route a reader could not find. |
+| `GET /events/{eventId}/stream` | **Marked**, not deleted: `**Planned, not implemented.**` and what a caller gets today (a seat count changes on the next read of the snapshot). |
+| `/cashier/reservations`, `/admin/reports` | The **same marking, in the same words**, at the row. Deleting them would have hidden a plan; leaving them unmarked was the defect. |
+
+One convention, taken from #57's own commit (`df5ea12`): `**Planned, not implemented.**` opens the
+row's Purpose cell and continues with what exists today, so the reader sees the status at the row
+rather than inferring it from a paragraph above the table. The paragraph above the tables was
+corrected for the same reason — it used to say "everything else in these tables is planned",
+which was true of nothing after M3.
+
+**#57's known-missing case is closed in the table too:** `POST /reservations/{reservationId}/cancel`
+is mounted (`apps/api/internal/publicapi/cancel.go`) and was verified by the parent in L8, so its
+`**Planned, not implemented.**` prefix is gone and no row carries that marking any more.
+
+**Email, decided and written down — not built.** The decision is the milestone's own, now stated in
+`ARCHITECTURE.md` beside the outbox: email is not delivered in this version; the outbox carries one
+topic today, `ticket.issued`, written when a payment is captured and consumed by the PDF worker;
+email, if it is implemented, is a new **consumer** of that same outbox and not a new delivery
+mechanism; and nothing in the product claims an email was sent. No provider, no credentials and no
+queue are described anywhere, because none exists — `README.md` already said the same thing in its
+own words ("The PDF is downloaded from the web. Nothing is mailed.") and is unchanged.
+
+**Said on screen, in one sentence per screen.** The buyer could reasonably expect a mail, and
+nothing under `apps/web/src` said otherwise, so both ticket surfaces now say the same thing in the
+voice they already use — "The PDF is what you get and nothing is mailed." — appended to the page
+header's description on `/tickets` and on `/tickets/[ticketID]`. No banner, no tooltip, no new
+component, and no second sentence.
+
+Checks: `pnpm --filter web run typecheck`, `pnpm --filter web run test` and `pnpm --filter web run
+lint` (the repository's own targets, found in `apps/web/package.json`), all green. The browser gates
+were deliberately not run: this slice changes no behaviour they assert. No test was added, because
+the change is documentation plus one description string on two server components and the allowed
+edit surfaces carry no test file; the sentences are pinned by nothing but review, which is stated
+here rather than dressed up as coverage.
