@@ -55,6 +55,9 @@ type Cancellation struct {
 	// ReservationID is the order the request named, and the owner value of its Redis
 	// seats.
 	ReservationID string
+	// EventID is the screening the hold belongs to, carried so the post-commit release
+	// addresses the same hash tag the acquire wrote.
+	EventID string
 	// Status is the reservation's state after the request: "cancelled" when this request
 	// cancelled the hold or found it already cancelled, and "expired" when the hold
 	// window had already closed — stored by the expiry sweep, or not yet, because the
@@ -95,7 +98,7 @@ func (s *Service) Cancel(ctx context.Context, reservationID string) (Cancellatio
 	// that decides that.
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cancelReleaseTimeout)
 	defer cancel()
-	_ = s.locker.Release(releaseCtx, cancellation.ReservationID, cancellation.SeatIDs)
+	_ = s.locker.Release(releaseCtx, cancellation.EventID, cancellation.ReservationID, cancellation.SeatIDs)
 	return cancellation, nil
 }
 
@@ -142,7 +145,7 @@ SET status = 'cancelled'
 WHERE id = $1
   AND status IN ('held', 'payment_pending')
   AND expires_at > now()
-RETURNING status`
+RETURNING status, event_id`
 
 	// releaseCancelledSeatsQuery frees the seat rows of the hold the statement above
 	// cancelled, in the same transaction, and returns them in seat order. released_at is
@@ -163,7 +166,7 @@ SELECT event_seat_id FROM released ORDER BY event_seat_id`
 	// matched nothing. `live` is the same deadline comparison the transition makes, in the
 	// same clock, so the two statements cannot disagree about a window.
 	reservationCancelStateQuery = `
-SELECT status, expires_at > now()
+SELECT status, expires_at > now(), event_id
 FROM cinema.reservations
 WHERE id = $1`
 )
@@ -181,7 +184,7 @@ func (s *PostgresStore) Cancel(ctx context.Context, reservationID string) (Cance
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	cancellation := Cancellation{ReservationID: reservationID, Status: statusCancelled}
-	err = tx.QueryRow(ctx, cancelHoldQuery, reservationID).Scan(&cancellation.Status)
+	err = tx.QueryRow(ctx, cancelHoldQuery, reservationID).Scan(&cancellation.Status, &cancellation.EventID)
 	switch {
 	case err == nil:
 		seatIDs, err := releaseCancelledSeats(ctx, tx, reservationID)
@@ -204,7 +207,7 @@ func (s *PostgresStore) Cancel(ctx context.Context, reservationID string) (Cance
 		storedStatus string
 		live         bool
 	)
-	err = tx.QueryRow(ctx, reservationCancelStateQuery, reservationID).Scan(&storedStatus, &live)
+	err = tx.QueryRow(ctx, reservationCancelStateQuery, reservationID).Scan(&storedStatus, &live, &cancellation.EventID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Cancellation{}, fmt.Errorf("%w: %s", ErrReservationNotFound, reservationID)
 	}

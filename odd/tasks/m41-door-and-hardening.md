@@ -332,3 +332,52 @@ The slice is 600+ authored lines across three commits, above the milestone's ~40
 stays one PR: it is already open and under review, and splitting a published slice to satisfy a
 line count would cost more review than it saves. Recorded here as a deviation, not as a rule.
 
+**T9 closed.** #75 is merged at `1ae55b7` after its native review reached `approved` — the
+correction above was validated by the provider's targeted validator and the receipt was burned
+(`gentle-ai.review-acknowledged/v1`). One advisory finding stays open as follow-up, not as a
+blocker: `R1-cleanup-abort-empty-compose` (SUGGESTION), the cleanup calling compose when the
+stack never started.
+
+### L14 — T10: the hash tag is the event; the alternatives are recorded and rejected
+
+The instruction for this slice, verbatim:
+
+> tag por evento pero deja documentadas las otras opciones por si en un futuro retomamos, no sé
+> cuál es el mejor lugar para dejarlo indicado
+
+**Where the alternatives live.** This entry is the full record: the decision, the two rejected
+options and the consequence that killed each one. `ARCHITECTURE.md`, beside the corrected key
+pattern, carries five lines of it, because that is where someone reads the key scheme and would
+otherwise have to re-derive this analysis. The Log is the durable place — it survives the PR and
+the review — and the architecture note is the pointer to it.
+
+**Decision: the tag is the event.** `reservation:{hold}:seat:<eventSeatID>` becomes
+`reservation:{event:<eventID>}:seat:<eventSeatID>`. Today every hold of every screening in the
+whole system hashes into one cluster slot; now the seats of one screening share a slot — which is
+what keeps the claim atomic — while different screenings distribute.
+
+**Rejected: the tag is the hold.** `{hold:<ownerID>}` distributes more finely and needs no new
+parameter, but it puts the owner in the key: two owners racing for the same seat would write two
+different keys and both would win. Mutual exclusion is the reason this layer exists, so the tag
+cannot depend on who is holding.
+
+**Rejected: the tag is the seat.** `{seat:<id>}` distributes maximally and the key stays unique per
+seat, but the multi-seat claim is one Lua `EVAL` over all the keys, and a `EVAL` cannot span slots.
+Keeping the atomic all-or-nothing claim would mean rebuilding it as per-key `SET NX` plus a
+compensating rollback with a partial-failure window — a milestone, not a slice, and a worse
+invariant than the one we have.
+
+Consequences accepted with the decision: `Locker` carries the event id (so do `Acquire`, `Release`
+and the test-only `Held`), `Cancellation` loads `event_id` in the statement it already runs, four
+test doubles outside `reservation/` gained only the parameter, and an event id containing `{` or
+`}` is refused because a brace would forge a different tag. Holds written under the previous
+scheme are not read; the PostgreSQL partial unique index and claim trigger remain the durable
+guard, so the worst case is a slower refusal, never a double booking. Recorded in `doc.go` and
+beside the key builder as S15 asks.
+
+
+
+Size: 479 authored lines, of which most are tests pinning the new tag and the cancel plumbing.
+Above the milestone's ~400-line rule; kept as one slice because the interface change, the four
+test doubles and the compatibility note are one idea, and splitting them would leave a tree that
+does not compile in between. Recorded as a deviation, like T9's.

@@ -91,7 +91,7 @@ var (
 // reads, and there is no Redis hold behind the fixture reservations.
 type noSeatRelease struct{}
 
-func (noSeatRelease) Release(context.Context, string, []int64) error { return nil }
+func (noSeatRelease) Release(context.Context, string, string, []int64) error { return nil }
 
 // TestCatalogReadsARealSaleAndItsNeighbourhood walks both reads over a database in
 // which one order was really sold, one hold is still live and one hold already

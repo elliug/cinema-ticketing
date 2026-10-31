@@ -92,7 +92,7 @@ type postgresReleaser struct {
 	seats   [][]int64
 }
 
-func (r *postgresReleaser) Release(_ context.Context, holdID string, eventSeatIDs []int64) error {
+func (r *postgresReleaser) Release(_ context.Context, eventID, holdID string, eventSeatIDs []int64) error {
 	r.holdIDs = append(r.holdIDs, holdID)
 	r.seats = append(r.seats, append([]int64(nil), eventSeatIDs...))
 	return nil

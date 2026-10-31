@@ -139,8 +139,8 @@ type SeatAvailability struct {
 
 // Locker is the expiring coordination layer, satisfied by Coordinator.
 type Locker interface {
-	Acquire(ctx context.Context, holdID string, eventSeatIDs []int64, ttl time.Duration) error
-	Release(ctx context.Context, holdID string, eventSeatIDs []int64) error
+	Acquire(ctx context.Context, eventID, holdID string, eventSeatIDs []int64, ttl time.Duration) error
+	Release(ctx context.Context, eventID, holdID string, eventSeatIDs []int64) error
 }
 
 // Store is the durable layer. PostgreSQL is the source of truth; the interface
@@ -221,7 +221,7 @@ func (s *Service) CreateHold(ctx context.Context, idempotencyKey, eventID string
 		ExpiresAt: time.Now().Add(s.ttl),
 		Status:    statusHoldCreated,
 	}
-	if err := s.locker.Acquire(ctx, hold.ID, seats, s.ttl); err != nil {
+	if err := s.locker.Acquire(ctx, hold.EventID, hold.ID, seats, s.ttl); err != nil {
 		return Hold{}, mapCoordinationError(err)
 	}
 
@@ -234,7 +234,7 @@ func (s *Service) CreateHold(ctx context.Context, idempotencyKey, eventID string
 		ExpiresAt:     time.Now().Add(idempotencyRetention),
 	}
 	if err := s.store.RecordHold(ctx, hold, record); err != nil {
-		releaseErr := s.locker.Release(ctx, hold.ID, seats)
+		releaseErr := s.locker.Release(ctx, hold.EventID, hold.ID, seats)
 		if errors.Is(err, ErrIdempotencyKeyTaken) {
 			// A concurrent request with the same key committed first: its
 			// stored result answers this one, and the seats this request

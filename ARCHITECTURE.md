@@ -176,10 +176,17 @@ Redis prevents high-contention users from repeatedly colliding at the database a
 
 1. Validate the event is on sale and every requested seat belongs to it.
 2. Create or replay the idempotent request result. Reject duplicate seat IDs.
-3. Run a Redis Lua script over keys `hold:{eventId}:{eventSeatId}`:
+3. Run a Redis Lua script over keys `reservation:{event:eventId}:seat:eventSeatId`:
    - if any key exists, return its conflicting seat identifiers;
    - otherwise set every key to the same `reservationId` using `PX holdTTL`;
    - return success only after every key was set.
+
+   The braces are the Redis Cluster hash tag, and it is the event: every seat of one screening
+   lands in one slot, so the multi-seat claim stays a single atomic EVAL, while different
+   screenings distribute across slots. A per-hold tag was rejected because two owners of one
+   seat would write two different keys and mutual exclusion would vanish. A per-seat tag was
+   rejected because it breaks that single-EVAL claim. `eventId` containing a brace is refused,
+   since it would forge a different tag.
 4. Begin a PostgreSQL transaction. Lock the affected `event_seats` in stable sorted ID order (`FOR UPDATE`).
 5. Verify every row is `available` and belongs to the event, calculate authoritative prices, create the reservation, insert reservation seats, and transition rows to `held` with the same expiry.
 6. Commit. If the transaction fails, delete only Redis keys whose value matches this reservation ID using a compare-and-delete Lua script.
