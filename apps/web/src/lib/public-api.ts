@@ -330,16 +330,62 @@ export interface PublicScreening {
   availableSeats: number;
 }
 
+/**
+ * Where one page of the catalogue ends, as `GET /events` reports it beside the list.
+ *
+ * It is a sibling of `events`, not a replacement: the list is unchanged and this says where
+ * it stopped. `hasMore` is the read's own answer — it exists because a row exists beyond
+ * this page, not because the page happens to be full — so a client never has to guess
+ * whether to offer the next one.
+ */
+export interface PublicCataloguePage {
+  /** Whether a screening exists beyond this page. */
+  hasMore: boolean;
+  /** The cursor that reaches the next page, or null on the last page. */
+  nextCursor: string | null;
+}
+
+/** One page of the public catalogue: the screenings it answered, then where it ended. */
+export interface PublicCatalogue {
+  events: PublicScreening[];
+  page: PublicCataloguePage;
+}
+
+export interface CataloguePageInput {
+  /**
+   * The cursor a link carried, sent back to the API exactly as it was received.
+   *
+   * Only the catalogue can read a cursor, so this client does not parse it, trim it or
+   * re-encode it into one of its own: a bookmark is either the page the API issued or a
+   * value the API refuses by name, and both are its answers to give. Absent or blank means
+   * the first page, because a blank `cursor` is one the API refuses as empty.
+   */
+  cursor?: string;
+}
+
 export interface PublicClient {
   /**
-   * The screenings a buyer can buy right now, in the API's screening order.
+   * The screenings of the catalogue's first page, in the API's screening order.
    *
    * The order is the API's (screening time, then whatever it breaks ties by), so
    * callers render the array as served: re-sorting it here would be a second
    * opinion about a sequence one read already decided. An empty catalogue is an
    * empty array, never an error.
+   *
+   * This is the page's entries alone, which is what the catalogue answered before it
+   * paged: a caller that only wants screenings keeps reading the array it always read.
+   * A screen that has to offer the next page reads [listCataloguePage], which answers the
+   * same entries with the `page` sibling beside them.
    */
   listEvents(): Promise<PublicResult<PublicScreening[]>>;
+  /**
+   * One page of the catalogue, and the cursor that reaches the next one.
+   *
+   * The entries are exactly what [listEvents] answers; the sibling is where they stopped.
+   * A caller that renders the next page as a link needs both, which is why this read
+   * exists instead of widening the one above.
+   */
+  listCataloguePage(input?: CataloguePageInput): Promise<PublicResult<PublicCatalogue>>;
   /**
    * One screening, whatever its status, so a buyer who followed a link to a
    * screening that is no longer offered is told so instead of being answered with a
@@ -538,18 +584,36 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
     return { ok: true, value: parsed.value as T };
   }
 
-  return {
-    async listEvents() {
-      const result = await send<unknown>("/events", {
+  // One page request, used by both catalogue reads so the entries cannot disagree and the
+  // parser below is the only place a response is interpreted.
+  async function readCatalogue(
+    input: CataloguePageInput = {},
+  ): Promise<PublicResult<PublicCatalogue>> {
+    const cursor = namedCursor(input.cursor);
+    const result = await send<unknown>(
+      cursor === null ? "/events" : `/events?cursor=${encodeURIComponent(cursor)}`,
+      {
         method: "GET",
         headers: { Accept: "application/json" },
         cache: "no-store",
-      });
-      if (!result.ok) {
-        return result;
+      },
+    );
+    if (!result.ok) {
+      return result;
+    }
+    return parseCatalogue(result.value);
+  }
+
+  return {
+    async listEvents() {
+      const catalogue = await readCatalogue();
+      if (!catalogue.ok) {
+        return catalogue;
       }
-      return parseCatalog(result.value);
+      return { ok: true, value: catalogue.value.events };
     },
+
+    listCataloguePage: readCatalogue,
 
     async getEvent(eventId) {
       const id = eventId.trim();
@@ -1228,7 +1292,7 @@ function servedString(value: unknown): string | undefined {
   return value.trim() === "" ? undefined : value;
 }
 
-function parseCatalog(value: unknown): PublicResult<PublicScreening[]> {
+function parseCatalogue(value: unknown): PublicResult<PublicCatalogue> {
   if (!isRecord(value) || !Array.isArray(value.events)) {
     return {
       ok: false,
@@ -1248,9 +1312,62 @@ function parseCatalog(value: unknown): PublicResult<PublicScreening[]> {
     events.push(event.value);
   }
 
+  const page = parseCataloguePage(value.page);
+  if (!page.ok) {
+    return page;
+  }
+
   // Served order, untouched: the API answers the catalogue in screening order and
   // a client that sorted again could disagree with it.
-  return { ok: true, value: events };
+  return { ok: true, value: { events, page: page.value } };
+}
+
+/**
+ * The `page` sibling of the catalogue.
+ *
+ * It is optional because it is additive: an API from before the catalogue paged answers one
+ * list and no page, and that list *was* the whole programme, so "nothing more" is the honest
+ * reading rather than a broken contract. The `limit` the API also serves is deliberately not
+ * carried: a screen cannot print a bound it never asked for, and carrying it here would
+ * invite one to.
+ *
+ * When the sibling is served, it decides. A `hasMore` that is not a boolean is refused, and so
+ * is a page that claims more without a cursor to reach it — the one thing a screen must never
+ * do is tell a buyer there is more and then offer nothing to continue with.
+ */
+function parseCataloguePage(value: unknown): PublicResult<PublicCataloguePage> {
+  if (value === undefined || value === null) {
+    return { ok: true, value: { hasMore: false, nextCursor: null } };
+  }
+  if (!isRecord(value) || typeof value.hasMore !== "boolean") {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        "the catalogue page carries no hasMore flag, so whether another page exists is unknown",
+      ),
+    };
+  }
+
+  const nextCursor = optionalString(value.nextCursor) ?? null;
+  if (value.hasMore && nextCursor === null) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        "the catalogue says another page exists but carries no nextCursor to reach it",
+      ),
+    };
+  }
+  return { ok: true, value: { hasMore: value.hasMore, nextCursor } };
+}
+
+/** The cursor a page read continues from, or null when the caller named none. */
+function namedCursor(cursor: string | undefined): string | null {
+  if (cursor === undefined || cursor.trim() === "") {
+    return null;
+  }
+  return cursor;
 }
 
 function parseScreening(value: unknown): PublicResult<PublicScreening> {
