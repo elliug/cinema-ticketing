@@ -63,7 +63,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T6 | S12 | timezone backfill migration | 6 |
 | T7 | S1, S2, S3 | redemption schema and `POST /tickets/redeem` | 7 |
 | T8 | S4, S5 | the door screen | 8 |
-| T9 | S1–S4 | `make verify-m41` and its CI job | 9 |
+| T9 | S1–S4 | `make verify-m41` and its CI job | 9 · `7084261` + `18c5d09` + the hardening commit (#75) |
 | T10 | S15 | Redis slot distribution | 10 |
 | T11 | S13, S14 | route-table truth; email decision then implementation | 11 |
 
@@ -290,3 +290,45 @@ how many pages exist and inventing a count is the same class of claim the milest
 One flake, recorded and not filtered: a pull-request run failed in Firefox with an RSC
 `Error in input stream` while the push run of the same commit passed. Re-running was green. If it
 returns, it is a real intermittent defect and becomes a task; it is not an allowlist entry.
+
+### L13 — T9: the gate ran, the workflow did not; and a relay that refuses one lens
+
+The instruction for this slice, verbatim:
+
+> 1) diagnosticar y arreglar el workflow, 2) CI verde, 3) revisión nativa de #75 (inspect →
+> START con risk + resilience), 4) reconocer y mergear, 5) T10 (Redis {hold}), T11 (barrido
+> documental + cerrar #58) y los defectos registrados T12 y T13.
+
+**The instrument failed before the product did, twice.** The first failure was ours: `ci.yml`
+named a step `Verify M4.1 door: admission, ...`, and an unquoted `: ` makes a YAML plain scalar
+illegal. The whole workflow file was rejected, so run `41195198339` reported `failure` with zero
+jobs, zero check-runs and no annotation — a red mark with nothing to read, pointing at the job
+when the defect was a character of punctuation in a step name. `18c5d09` quotes the name and
+leaves a note beside it; a full parse of the file plus a structural check of all four jobs is now
+part of fixing this class of typo. Both runs of `18c5d09` (`41203758602` push, `41203763079`
+pull request) are green and `m41-door` ran the gate on the runner — the eleven assertions, then
+the cleanup lines for the API process, the database, Redis 11 and the bucket. A green job alone
+proved nothing; its log did.
+
+**The second failure is not ours.** Native review admitted `review-risk` and refused
+`review-resilience` twice with `json: unknown field "evidence"`, leaving the slot unconsumed. The
+relay replays identical bytes (same `raw_sha256`, 151 ms, no model run), so a retry cannot help
+and the lineage `review-2258318f2857bd80` cannot be closed as it stands. The preserved payload is
+evidence, not a verdict: `.git/gentle-ai/rejected-results/review-2258318f2857bd80/`.
+
+**Decision taken by the human**, when asked how to proceed: fix the two advisory findings from
+the refused payload and retry with a new lineage. Both were `WARNING` under `review-resilience`:
+`R4-curl-timeout` (the gate's `curl` calls carried no `--max-time`, so an unresponsive API was
+bounded only by the job's 30-minute timeout) and `R4-polling-load` (fixed 0.25 s readiness polls,
+with the "amplifying load" half of the claim overstated for a gate that starts one stack). The
+hardening gives every request in `scripts/verify_m41.sh` a bound — 30 s with a 5 s connect
+budget, 10 s in the `EXIT` trap's cleanup, 2 s for the readiness probes themselves — and replaces
+both fixed-step polls with a delay that doubles to a cap inside an explicit deadline, so the
+promised wall time is still 40 s and 30 s. `make verify-m41` passes locally with the same eleven
+assertions. It is a real improvement and it does **not** unblock the relay: if the transport
+emits the same shape again, a fresh lineage is refused the same way.
+
+The slice is 600+ authored lines across three commits, above the milestone's ~400-line rule. It
+stays one PR: it is already open and under review, and splitting a published slice to satisfy a
+line count would cost more review than it saves. Recorded here as a deviation, not as a rule.
+

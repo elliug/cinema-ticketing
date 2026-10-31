@@ -103,12 +103,14 @@ cleanup() {
   $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 \
     && printf 'flushed Redis logical database %s\n' "$redis_db" >>"$cleanup_log"
   # The bucket is emptied and removed, so a failed run leaves no objects behind.
-  if curl --silent --fail "$s3_endpoint/$bucket?list-type=2" >"$tmp/cleanup-list.xml" 2>/dev/null; then
+  # Bounded like every other request: cleanup runs from the EXIT trap, so a hung object store
+  # here would delay the exit that reports why the gate failed in the first place.
+  if curl --silent --fail --max-time 10 "$s3_endpoint/$bucket?list-type=2" >"$tmp/cleanup-list.xml" 2>/dev/null; then
     local key
     for key in $(grep -o '<Key>[^<]*</Key>' "$tmp/cleanup-list.xml" | sed 's/<[^>]*>//g'); do
-      curl --silent --output /dev/null -X DELETE "$s3_endpoint/$bucket/$key" || true
+      curl --silent --max-time 10 --output /dev/null -X DELETE "$s3_endpoint/$bucket/$key" || true
     done
-    if curl --silent --output /dev/null -w '%{http_code}' -X DELETE "$s3_endpoint/$bucket" 2>/dev/null | grep -q '^204$'; then
+    if curl --silent --max-time 10 --output /dev/null -w '%{http_code}' -X DELETE "$s3_endpoint/$bucket" 2>/dev/null | grep -q '^204$'; then
       printf 'deleted bucket %s (objects first)\n' "$bucket" >>"$cleanup_log"
     else
       printf 'emptied bucket %s but it could not be deleted\n' "$bucket" >>"$cleanup_log"
@@ -161,13 +163,22 @@ redisurl="redis://127.0.0.1:6379/$redis_db"
 
 psql_db() { $compose exec -T postgres psql -X -q -tA -v ON_ERROR_STOP=1 -U cinema -d "$db" "$@"; }
 
+# Every HTTP request in this gate is bounded. An API or object store that stops answering must
+# fail this gate in seconds, naming the route, instead of idling until the CI job's own timeout
+# decides for us: a hung stack would then look like a slow gate. The readiness probes below use
+# a shorter bound of their own, because a probe that outlives the next attempt is already stale.
+curl_max_time=30
+curl_connect_timeout=5
+
 # call <method> <url> [curl args...] — sets STATUS, writes $body and $headers.
 call() {
   local method="$1" url="$2"
   shift 2
-  STATUS="$(curl --silent --show-error --dump-header "$headers" --output "$body" \
+  STATUS="$(curl --silent --show-error --max-time "$curl_max_time" \
+    --connect-timeout "$curl_connect_timeout" \
+    --dump-header "$headers" --output "$body" \
     --write-out '%{http_code}' -X "$method" "$@" "$url")" \
-    || fail "curl could not complete $method $url"
+    || fail "curl could not complete $method $url within ${curl_max_time}s"
 }
 expect_status() {
   local label="$1" want="$2"
@@ -269,19 +280,26 @@ API_TICKET_QR_KEY="$qr_key" \
 api_pid=$!
 
 # Readiness is waited for, never slept through, and the log is read so a port collision is
-# named instead of timing out.
+# named instead of timing out. The delay doubles from 0.25s to 2s: prompt while a healthy
+# service converges, quiet once it is up or genuinely stuck, so a slow start is not hammered
+# with ten requests a second for the whole deadline. The whole wait is still bounded at 40s
+# because the deadline, not the attempt count, is what the caller is promised.
 ready=""
-for _ in $(seq 1 160); do
+deadline=$(( $(date +%s) + 40 ))
+delay_ms=250
+while [ "$(date +%s)" -lt "$deadline" ]; do
   if grep -q 'address already in use' "$api_log" 2>/dev/null; then
     cat "$api_log" >&2
     fail "port $port is already in use; stop the process holding it"
   fi
-  if curl --fail --silent "$base/health/live" >/dev/null 2>&1 \
-    && curl --fail --silent "$base/health/ready" >/dev/null 2>&1; then
+  if curl --fail --silent --max-time 2 "$base/health/live" >/dev/null 2>&1 \
+    && curl --fail --silent --max-time 2 "$base/health/ready" >/dev/null 2>&1; then
     ready=1
     break
   fi
-  sleep 0.25
+  sleep "$(printf '%d.%03d' $((delay_ms / 1000)) $((delay_ms % 1000)))"
+  delay_ms=$(( delay_ms * 2 ))
+  if [ "$delay_ms" -gt 2000 ]; then delay_ms=2000; fi
 done
 [ -n "$ready" ] || { cat "$api_log" >&2; fail "the API did not become ready on $base within 40s"; }
 
@@ -374,19 +392,27 @@ ok "sale: hold $reservation, one payment key, approved for $expected_amount cent
 # The PDF exists before anybody goes to the door, which is what makes "unchanged by the
 # admission" a comparison rather than a claim. It is rendered by the checkout's outbox
 # worker, so its readiness is waited for, never slept through.
+# The same bounded backoff as the readiness wait, for the same reason: a worker writes this
+# row, so it is polled rather than slept through, with the whole wait bounded at 30s.
 published=""
-for _ in $(seq 1 60); do
+deadline=$(( $(date +%s) + 30 ))
+delay_ms=250
+while [ "$(date +%s)" -lt "$deadline" ]; do
   published="$(psql_db -c "SELECT count(*) FILTER (WHERE published_at IS NOT NULL) || ':' || count(*) FILTER (WHERE published_at IS NULL) FROM cinema.outbox WHERE topic = 'ticket.issued'")"
-  [ "$published" = "1:0" ] && break
-  sleep 0.5
+  if [ "$published" = "1:0" ]; then break; fi
+  sleep "$(printf '%d.%03d' $((delay_ms / 1000)) $((delay_ms % 1000)))"
+  delay_ms=$(( delay_ms * 2 ))
+  if [ "$delay_ms" -gt 1000 ]; then delay_ms=1000; fi
 done
 [ "$published" = "1:0" ] || fail "the ticket.issued outbox row is not published (published:unpublished = $published)"
 
 # fetch_pdf <location> <output> <label> — the pre-signed link must serve a document.
 fetch_pdf() {
   local status
-  status="$(curl --silent --show-error --output "$2" --write-out '%{http_code}' "$1")" \
-    || fail "$3: curl could not download the pre-signed URL"
+  status="$(curl --silent --show-error --max-time "$curl_max_time" \
+    --connect-timeout "$curl_connect_timeout" \
+    --output "$2" --write-out '%{http_code}' "$1")" \
+    || fail "$3: curl could not download the pre-signed URL within ${curl_max_time}s"
   [ "$status" = "200" ] || fail "$3: the pre-signed URL answered $status, expected 200"
   [ -s "$2" ] || fail "$3: the pre-signed URL answered an empty document"
 }
@@ -500,7 +526,8 @@ race_payload="$(jq -nc --arg token "$token_three" '{token: $token, label: "puert
 race_pids=()
 for n in 1 2; do
   (
-    curl --silent --show-error --output "$race_dir/$n.json" --write-out '%{http_code}' \
+    curl --silent --show-error --max-time "$curl_max_time" --connect-timeout "$curl_connect_timeout" \
+      --output "$race_dir/$n.json" --write-out '%{http_code}' \
       -X POST -H 'Content-Type: application/json' -d "$race_payload" \
       "$public/tickets/redeem" >"$race_dir/$n.status" 2>"$race_dir/$n.err"
   ) &
