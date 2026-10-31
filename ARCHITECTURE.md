@@ -235,14 +235,14 @@ Rows marked **Planned, not implemented.** are the ones no caller can reach yet; 
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/events` | One bounded page of the on-sale catalogue — `limit`, optional `from`/`to` and the keyset cursor described above. Films are browsed through this catalogue and `GET /events/{eventId}`; there is no public film list (the film list is `GET /admin/films`). |
-| `GET` | `/events/{eventId}` | Get event, price bands, and seat layout projection. |
+| `GET` | `/events/{eventId}` | One screening: film, venue and room, the hour in the venue's timezone, its price and how many seats are available. The seat snapshot is the route below, not this one. |
 | `GET` | `/events/{eventId}/seats` | Snapshot event-seat availability. |
 | `GET` | `/events/{eventId}/stream` | **Planned, not implemented.** SSE stream of availability updates; today a seat count changes only on the next read of the snapshot above. |
 | `POST` | `/reservations/holds` | Atomically hold a complete seat selection. |
 | `GET` | `/reservations/{reservationId}` | Read reservation and expiry state. |
 | `POST` | `/reservations/{reservationId}/payment` | Start/replay payment confirmation. |
 | `POST` | `/reservations/{reservationId}/cancel` | Cancel a valid, unpaid hold: releases its seats and answers the reservation's new state. Cancelling twice answers the same cancelled reservation; a paid one is refused with `409 already_paid`. |
-| `GET` | `/tickets/{ticketId}` | Retrieve ticket presentation data for its owner. |
+| `GET` | `/tickets/{ticketId}` | Retrieve ticket presentation data. There is no ownership check: in a build with no identity, the link is the credential, and that is recorded rather than implied. |
 | `GET` | `/tickets/{ticketId}/pdf` | Download the stored ticket PDF through a short-lived pre-signed link. |
 | `GET` | `/tickets/{ticketId}/qr.svg` | Render the ticket's signed QR code as an image for the page and the printout. |
 | `POST` | `/tickets/verify` | Verify a presented ticket code against the stored ticket. |
@@ -250,7 +250,7 @@ Rows marked **Planned, not implemented.** are the ones no caller can reach yet; 
 
 The web app serves the ticket's QR image and PDF at its **own** origin (`/api/tickets/{id}/qr.svg`, `/api/tickets/{id}/pdf`) and forwards to the two routes above from the server. An absolute API address only means something on the machine running the API; linked directly, a page opened from another device asked that device for the ticket and got a blank image and a page-not-found download, both without an error anyone would notice.
 
-`POST /reservations/holds` requires `Idempotency-Key`, a customer session/guest verification token, and this body shape:
+`POST /reservations/holds` requires `Idempotency-Key` and this body shape:
 
 ```json
 {
@@ -259,7 +259,16 @@ The web app serves the ticket's QR image and PDF at its **own** origin (`/api/ti
 }
 ```
 
-Success includes `reservationId`, canonical seat labels, server-calculated `totalAmount`, `currency`, and ISO-8601 `expiresAt`. A conflict includes only the requested seat labels that were unavailable; it never exposes another buyer's identity or reservation.
+Success answers the hold itself: its identifier, the event, the seats it claimed, its status and the ISO-8601 `expiresAt` deadline. A replay with the same `Idempotency-Key` answers that same hold instead of claiming a second one. A conflict includes only the requested seat labels that were unavailable; it never exposes another buyer's identity or reservation.
+
+### Operational routes
+
+Mounted on the same server, outside both API prefixes, and unauthenticated because they answer one boolean each:
+
+| Method | Route | Answers |
+|---|---|---|
+| `GET` | `/health/live` | `200` while the process is up; it proves nothing about its dependencies. |
+| `GET` | `/health/ready` | `200` or `503` from bounded probes of the dependencies; the readiness line matters, the liveness line does not. |
 
 ### Administrative and cashier API
 
@@ -271,6 +280,8 @@ Success includes `reservationId`, canonical seat labels, server-calculated `tota
 | `/admin/reports` | `admin`, `analyst` | **Planned, not implemented.** Sales, occupancy, hold expiry, refunds, and reconciliation data; today no report is served. |
 
 Every mutating administrative or cashier operation is audited with actor, role, correlation ID, target IDs, and before/after metadata excluding payment secrets and unnecessary PII.
+
+**The guard that exists today is narrower than that sentence, and the difference is deliberate.** There are no roles in this build: the `admin`, `cashier` and `analyst` names above describe intent. The administrative prefix is refused unless the local admin flag is on, the environment is `development`, a token is configured, the request arrives from loopback, and `Authorization: Bearer <token>` matches in constant time — and anything else is answered `404`, indistinguishable on purpose from a route that does not exist. Reporting, the cashier surface and the audit trail are still unbuilt; when they arrive, they bring the role model with them.
 
 ## Frontend architecture
 
