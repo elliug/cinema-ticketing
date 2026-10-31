@@ -22,7 +22,9 @@ const (
 	// ticketDetailQuery is the single read of the projection. Each column is the
 	// authority for one field, and none of them is derived from another:
 	//
-	//   * the ticket row is the right of entry, its status and its issue instant;
+	//   * the ticket row is the right of entry, its status, its issue instant and, once
+	//     the door has admitted it, when and under which label — the redemption is a
+	//     guard written by [PostgresStore.Redeem] and read here, never recomputed;
 	//   * the event, its film, its room and its cinema give the screening, and the
 	//     cinema row carries the timezone the local presentation is computed from;
 	//   * the amount comes from the reservation's captured payment attempt — the
@@ -52,6 +54,8 @@ const (
 SELECT t.id::text,
        t.status,
        t.issued_at,
+       t.redeemed_at,
+       COALESCE(t.redeemed_by, ''),
        t.reservation_id::text,
        e.id::text,
        f.title,
@@ -90,7 +94,10 @@ WHERE t.id = $1`
 	// ticketDetailSchemaQuery is the closed-surface check: the process advertises
 	// the ticket route only against a database that carries every table this read
 	// touches. A database migrated to 0004 has the venue and reservation tables but
-	// no tickets and no payment attempts, so it has nothing to serve here.
+	// no tickets and no payment attempts, so it has nothing to serve here; a database
+	// stopped at 0007 has the tickets but not the redemption columns, and would answer
+	// every ticket read as an error instead of a ticket. Every version this read
+	// depends on is named here, never assumed.
 	ticketDetailSchemaQuery = `
 SELECT to_regclass('cinema.tickets') IS NOT NULL
    AND to_regclass('cinema.payment_attempts') IS NOT NULL
@@ -101,7 +108,11 @@ SELECT to_regclass('cinema.tickets') IS NOT NULL
    AND to_regclass('cinema.cinemas') IS NOT NULL
    AND to_regclass('cinema.event_seats') IS NOT NULL
    AND to_regclass('cinema.layout_seats') IS NOT NULL
-   AND to_regclass('cinema.layout_rows') IS NOT NULL`
+   AND to_regclass('cinema.layout_rows') IS NOT NULL
+   AND EXISTS (
+     SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'cinema' AND table_name = 'tickets' AND column_name = 'redeemed_at'
+   )`
 )
 
 // seatDocument is the seat list as the query aggregates it. Its JSON keys are the
@@ -178,6 +189,8 @@ func (s *PostgresStore) Detail(ctx context.Context, ticketID string) (TicketDeta
 		&detail.TicketID,
 		&detail.Status,
 		&detail.IssuedAt,
+		&detail.RedeemedAt,
+		&detail.RedeemedBy,
 		&detail.ReservationID,
 		&detail.Event.ID,
 		&detail.Event.FilmTitle,
