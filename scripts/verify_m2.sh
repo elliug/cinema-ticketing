@@ -39,11 +39,17 @@ cleanup() {
   [ -z "$api_pid" ] || kill "$api_pid" 2>/dev/null || true
   [ -z "$api_pid" ] || wait "$api_pid" 2>/dev/null || true
   $compose exec -T postgres dropdb -U cinema --if-exists "$db" >/dev/null 2>&1 || true
-  # The reservation keys live in a dedicated logical database, so the development
-  # keyspace is never flushed.
-  $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 || true
+  # The reservation keys live in a dedicated logical database, and it is flushed only when
+  # this run claimed it: a run that refused to touch an index must leave it exactly as it
+  # found it, refusals included.
+  if [ "$redis_owned" = 1 ]; then
+    $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmp"
 }
+# The flush below is conditional on this. The guard refuses an index that already holds
+# data, and exiting through such a refusal must leave that index exactly as it was found.
+redis_owned=0
 trap cleanup EXIT INT TERM
 
 case "$db" in cinema_m2_smoke_[0-9]*) ;; *) fail "refusing to drop an unexpected database name" ;; esac
@@ -71,12 +77,14 @@ id_of() { jq -r '.id' <"$tmp/body.json"; }
 # Dependencies, then a fresh database with the full M2 schema.
 $compose up -d --wait postgres redis >/dev/null || fail "the compose dependencies did not become healthy"
 
-# This script flushes one Redis logical database on cleanup, so it must own it.
-# A developer using the same database for something else loses nothing: the run
-# stops before touching it.
-dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || echo 0)"
+# This script flushes one Redis logical database on cleanup, so it must own it — and it can
+# only claim what it could actually read: an unreadable dbsize is not proof of an empty
+# index, and treating it as such is how a refused run destroys data on the way out.
+# A developer using the same database for something else loses nothing.
+dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || true)"
 case "$dbsize" in
-  0|"") ;;
+  0) redis_owned=1 ;;
+  "") fail "could not read the size of Redis logical database $redis_db, so this script cannot prove it owns it; is Redis reachable?" ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M2_REDIS_DB to a free database" ;;
 esac
 $compose exec -T postgres createdb -U cinema "$db"

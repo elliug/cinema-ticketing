@@ -296,9 +296,10 @@ ok "dependencies: postgres, redis and floci are healthy"
 # This script flushes one Redis logical database on cleanup, so it must own it. A
 # developer using the same index for something else loses nothing: the run stops before
 # touching it, and it stops before claiming it.
-dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || echo 0)"
+dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || true)"
 case "$dbsize" in
-  0|"") redis_owned=1 ;;
+  0) redis_owned=1 ;;
+  "") fail "could not read the size of Redis logical database $redis_db, so this script cannot prove it owns it; is Redis reachable?" ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M35_REDIS_DB to a free database" ;;
 esac
 

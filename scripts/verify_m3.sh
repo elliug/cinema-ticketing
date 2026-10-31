@@ -92,10 +92,13 @@ cleanup() {
   fi
   $compose exec -T postgres dropdb -U cinema --if-exists "$db" >/dev/null 2>&1 \
     && printf 'dropped database %s\n' "$db" >>"$cleanup_log"
-  # The reservation keys live in a dedicated logical database, so the development
-  # keyspace (index 0) is never flushed.
-  $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 \
-    && printf 'flushed Redis logical database %s\n' "$redis_db" >>"$cleanup_log"
+  # The reservation keys live in a dedicated logical database, and it is flushed only when
+  # this run claimed it: a run that refused to touch an index must leave it exactly as it
+  # found it, refusals included.
+  if [ "$redis_owned" = 1 ]; then
+    $compose exec -T redis redis-cli -n "$redis_db" flushdb >/dev/null 2>&1 \
+      && printf 'flushed Redis logical database %s\n' "$redis_db" >>"$cleanup_log"
+  fi
   # The bucket is emptied and removed, so a failed run leaves no objects behind.
   if curl --silent --fail "$s3_endpoint/$bucket?list-type=2" >"$tmp/cleanup-list.xml" 2>/dev/null; then
     local key
@@ -115,6 +118,9 @@ cleanup() {
   rm -rf "$tmp"
   exit "$status"
 }
+# The flush below is conditional on this. The guard refuses an index that already holds
+# data, and exiting through such a refusal must leave that index exactly as it was found.
+redis_owned=0
 trap cleanup EXIT INT TERM
 
 case "$db" in cinema_m3_verify_[0-9]*) ;; *) fail "refusing to drop an unexpected database name" ;; esac
@@ -190,12 +196,14 @@ note "isolation: database $db, Redis database $redis_db, API port $port, bucket 
 # Dependencies, then a fresh database migrated by the project's own runner.
 $compose up -d --wait postgres redis floci >/dev/null || fail "the compose dependencies did not become healthy"
 
-# This script flushes one Redis logical database on cleanup, so it must own it. A
-# developer using the same index for something else loses nothing: the run stops
-# before touching it.
-dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || echo 0)"
+# This script flushes one Redis logical database on cleanup, so it must own it — and it can
+# only claim what it could actually read: an unreadable dbsize is not proof of an empty
+# index, and treating it as such is how a refused run destroys data on the way out.
+# A developer using the same index for something else loses nothing.
+dbsize="$($compose exec -T redis redis-cli -n "$redis_db" dbsize 2>/dev/null | tr -d '\r' || true)"
 case "$dbsize" in
-  0|"") ;;
+  0) redis_owned=1 ;;
+  "") fail "could not read the size of Redis logical database $redis_db, so this script cannot prove it owns it; is Redis reachable?" ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M3_REDIS_DB to a free database" ;;
 esac
 
