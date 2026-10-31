@@ -12,9 +12,9 @@
 #      keyspace), and against an object store that is not on loopback, because this gate
 #      flushes the index it uses and creates and deletes a bucket in the store it is
 #      pointed at. Each refusal names the override and how to choose a safe value.
-#   2. The project's own migration runner brings that database to 0006, the project's own
-#      bootstrap command seeds it (a cinema, a room, a published layout, two films and two
-#      screenings) and creates the bucket the ticket PDFs are stored in.
+#   2. The project's own migration runner brings that database to every migration on disk,
+#      the project's own bootstrap command seeds it (a cinema, a room, a published layout,
+#      two films and two screenings) and creates the bucket the ticket PDFs are stored in.
 #   3. The web application is **built once and served**, never run through `next dev`, so
 #      a developer's dev server and this gate cannot collide over `.next`, and it is
 #      served on the machine's own non-loopback IPv4 address rather than on loopback.
@@ -308,12 +308,23 @@ $compose exec -T postgres createdb -U cinema "$db" || fail "could not create the
 versions="$(psql_db -c "SELECT count(*) FROM pg_namespace WHERE nspname IN ('platform','cinema')")"
 [ "$versions" = "0" ] || fail "the throwaway database must start with no schema, found $versions schemas"
 
-note "waiting for the project's migration runner to finish on $db (0001 through 0006)"
+note "waiting for the project's migration runner to finish on $db (every migration on disk)"
 migration_output="$($compose --profile tools run --rm -e DB_NAME="$db" migrate-all 2>&1)" \
   || { printf '%s\n' "$migration_output" >&2; fail "the migration runner failed on $db"; }
 applied_versions="$(psql_db -c "SELECT string_agg(version, ',' ORDER BY version) FROM platform.schema_migrations")"
-[ "$applied_versions" = "0001_init,0002_venue_layout,0003_reservation,0004_idempotency,0005_checkout,0006_one_open_payment_attempt" ] \
-  || fail "the migration runner recorded [$applied_versions], expected 0001_init through 0006_one_open_payment_attempt"
+# The expected chain is derived from the migration directory, never enumerated: the
+# directory is what the runner mounts, so a version added there cannot disagree with a list
+# written down in this script, and no migration has to be edited into it before its own
+# database can be verified. The assertion is the same strength as the literal list was —
+# every migration on disk is recorded, in order, and nothing else is.
+expected_versions=""
+for file in "$root"/db/migrations/*.up.sql; do
+  [ -e "$file" ] || fail "no *.up.sql migration found in $root/db/migrations"
+  name="$(basename "$file" .up.sql)"
+  expected_versions="${expected_versions:+$expected_versions,}$name"
+done
+[ "$applied_versions" = "$expected_versions" ] \
+  || fail "the migration runner recorded [$applied_versions], expected [$expected_versions]"
 ok "migrations: scripts/migrations/apply_all.sh brought $db to [$applied_versions]"
 
 go build -o "$tmp/api" ./apps/api/cmd/api || fail "the API did not build"

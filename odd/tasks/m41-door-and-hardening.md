@@ -274,3 +274,19 @@ to be sliced small; the only thing standing in the way was this document not say
 mean; the screen ignores the `page` sibling until T5b, so it renders at most 20 screenings with no
 way to ask for more. That gap is the slice, and it is one screen wide: T5b is not allowed to
 re-open the API.
+
+### L12 — T5 complete: the catalogue is paged end to end
+
+#66 (`26f23ea`) taught the client to read one page; #67 (`77c8459`) is the screen that asks for
+it, with the cursor as the address so the next page is a link a person can bookmark, share and
+reload. Both were split out of one 619-line slice, and both came in around 300 lines — the first
+time the milestone's own size rule produced two PRs that read in one sitting each.
+
+Two sentences on that screen had become false the moment it started paging ("Every screening on
+sale right now", "N screenings are on sale") and were corrected in the same PR rather than left
+for someone to notice. The last page says nothing about a next one, because the API does not say
+how many pages exist and inventing a count is the same class of claim the milestone forbids.
+
+One flake, recorded and not filtered: a pull-request run failed in Firefox with an RSC
+`Error in input stream` while the push run of the same commit passed. Re-running was green. If it
+returns, it is a real intermittent defect and becomes a task; it is not an allowlist entry.

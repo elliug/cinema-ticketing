@@ -7,8 +7,8 @@
 # payment-attempt counts, and the outbox row):
 #   1. A run-scoped stack: its own database, its own Redis logical database, its own
 #      API port and its own bucket, so it can never touch the development data.
-#   2. The project's own migration runner brings that database to 0006, and the
-#      bootstrap command creates the bucket the tickets are stored in.
+#   2. The project's own migration runner brings that database to every migration on
+#      disk, and the bootstrap command creates the bucket the tickets are stored in.
 #   3. The purchase: hold two seats, pay them with one Idempotency-Key, and the
 #      answer carries an approved payment and one ticket per seat.
 #   4. Each ticket answers its own seat, the amount taken for the order, the
@@ -205,8 +205,19 @@ versions="$(psql_db -c "SELECT count(*) FROM pg_namespace WHERE nspname IN ('pla
 migration_output="$($compose --profile tools run --rm -e DB_NAME="$db" migrate-all 2>&1)" \
   || { printf '%s\n' "$migration_output" >&2; fail "the migration runner failed on $db"; }
 applied_versions="$(psql_db -c "SELECT string_agg(version, ',' ORDER BY version) FROM platform.schema_migrations")"
-[ "$applied_versions" = "0001_init,0002_venue_layout,0003_reservation,0004_idempotency,0005_checkout,0006_one_open_payment_attempt" ] \
-  || fail "the migration runner recorded [$applied_versions], expected 0001_init through 0006_one_open_payment_attempt"
+# The expected chain is derived from the migration directory, never enumerated: the
+# directory is what the runner mounts, so a version added there cannot disagree with a list
+# written down in this script, and no migration has to be edited into it before its own
+# database can be verified. The assertion is the same strength as the literal list was —
+# every migration on disk is recorded, in order, and nothing else is.
+expected_versions=""
+for file in "$root"/db/migrations/*.up.sql; do
+  [ -e "$file" ] || fail "no *.up.sql migration found in $root/db/migrations"
+  name="$(basename "$file" .up.sql)"
+  expected_versions="${expected_versions:+$expected_versions,}$name"
+done
+[ "$applied_versions" = "$expected_versions" ] \
+  || fail "the migration runner recorded [$applied_versions], expected [$expected_versions]"
 ok "migrations: scripts/migrations/apply_all.sh brought $db to [$applied_versions]"
 
 # The bucket, through the bootstrap command the project uses (never an ad-hoc PUT):

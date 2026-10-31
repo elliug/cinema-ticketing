@@ -83,7 +83,7 @@ User / GuestCustomer ──< Reservation
 
 | Entity | Responsibility | Important fields |
 |---|---|---|
-| `cinemas` | Venue identity and locale | `id`, `name`, `timezone`, `address` |
+| `cinemas` | Venue identity and locale; `timezone` is an IANA name the ticket page resolves with `time.LoadLocation`, so the API refuses a name that does not resolve and `0007_repair_unresolvable_timezones` repairs the ones stored before that guard to `UTC` | `id`, `name`, `timezone`, `address` |
 | `rooms` | A physical screening room | `id`, `cinema_id`, `name`, `active_layout_version_id` |
 | `layout_versions` | Immutable, reusable room geometry | `id`, `room_id`, `version`, `status` |
 | `layout_rows` | Ordered row in one layout | `id`, `layout_version_id`, `label`, `position` |

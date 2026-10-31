@@ -9,9 +9,30 @@ MIGRATIONS_DIR="${MIGRATIONS_DIR:-/workspace/db/migrations}"
 MIGRATION_DIRECTION="${MIGRATION_DIRECTION:-up}"
 MIGRATION_VERSION="${MIGRATION_VERSION:-0001_init}"
 
-case "$MIGRATION_VERSION" in
-  0001_init|0002_venue_layout|0003_reservation|0004_idempotency|0005_checkout|0006_one_open_payment_attempt) ;;
-  *) printf 'MIGRATION_VERSION must be 0001_init, 0002_venue_layout, 0003_reservation, 0004_idempotency, 0005_checkout or 0006_one_open_payment_attempt\n' >&2; exit 2 ;;
+# The accepted versions are the migration files that exist, derived from the directory
+# rather than enumerated here. A version number written down in this script is a second
+# place that can disagree with the directory — it has to be edited before the migration it
+# does not name can be applied at all — and the directory is what actually gets run.
+#
+# What the derivation keeps is the whole point of the list: a version with no file is
+# refused here, with the versions that do exist named, instead of reaching psql as a
+# missing path and failing halfway through an apply.
+available=""
+for file in "$MIGRATIONS_DIR"/*.up.sql; do
+  if [ ! -e "$file" ]; then
+    printf 'no *.up.sql migration found in %s\n' "$MIGRATIONS_DIR" >&2
+    exit 2
+  fi
+  base="$(basename "$file" .up.sql)"
+  case "$base" in
+    [0-9][0-9][0-9][0-9]_*) ;;
+    *) printf '%s is not named NNNN_name.up.sql\n' "$file" >&2; exit 2 ;;
+  esac
+  available="${available:+$available, }$base"
+done
+case ", $available, " in
+  *", $MIGRATION_VERSION, "*) ;;
+  *) printf 'MIGRATION_VERSION must be one of the versions in %s: %s\n' "$MIGRATIONS_DIR" "$available" >&2; exit 2 ;;
 esac
 case "$MIGRATION_DIRECTION" in
   up|down) migration="$MIGRATIONS_DIR/$MIGRATION_VERSION.$MIGRATION_DIRECTION.sql" ;;

@@ -1,0 +1,21 @@
+-- Roll back only the record that 0007_repair_unresolvable_timezones ran. The repaired
+-- values, and every other row in the database, stay exactly as they are.
+--
+-- The original values are not recoverable, and this file does not pretend otherwise: the
+-- repair overwrote each unresolvable zone with 'UTC' and, by design (see the up file),
+-- nothing stored the value it replaced. The one place that value survives is the NOTICE
+-- the up migration printed, so a rolled back database cannot put it back from the schema.
+--
+-- This rollback therefore does not refuse, unlike 0005_checkout.down.sql. A rollback that
+-- raised would break the up/down/up cycle of every later migration on any database that
+-- ever carried an unresolvable zone, and it would protect nothing, because there is no
+-- data left to protect: the rows are already repaired and renderable.
+--
+-- What up-then-down-then-up means for the data, stated so nobody reads the cycle as a
+-- reversal: the first up repairs and reports, the down leaves the repaired data in place
+-- and only forgets that this version ran, and the second up finds nothing to repair —
+-- every stored zone now resolves — and reports `repaired 0 cinema(s)`. The repair is
+-- idempotent because it is defined by a predicate over the stored values, not by having
+-- run once; and a database rolled back and never reapplied keeps its renderable rows,
+-- which is the outcome this migration exists for.
+DELETE FROM platform.schema_migrations WHERE version = '0007_repair_unresolvable_timezones';
