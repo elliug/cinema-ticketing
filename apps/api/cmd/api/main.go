@@ -117,6 +117,18 @@ func run() int {
 		}()
 	}
 
+	// The payment reconciler belongs to the process too: it settles the attempts a dead
+	// process left pending, so their seats stop being held for nothing. Without the
+	// checkout schema there is nothing to reconcile and the worker is not built.
+	var reconcileStopped chan struct{}
+	if reservationProcess != nil && reservationProcess.reconciler != nil {
+		reconcileStopped = make(chan struct{})
+		go func() {
+			defer close(reconcileStopped)
+			reservationProcess.reconciler.Run(ctx)
+		}()
+	}
+
 	// The ticket PDF worker belongs to the process in the same way: it stores the
 	// document of every ticket the checkout issued, and it stops with the process so
 	// shutdown never polls a closed pool. A deployment without storage or without the
@@ -148,6 +160,7 @@ func run() int {
 		stopped chan struct{}
 	}{
 		{"expiry sweep", sweepStopped},
+		{"payment reconciliation", reconcileStopped},
 		{"ticket PDF worker", pdfWorkerStopped},
 	} {
 		if worker.stopped == nil {
@@ -188,6 +201,15 @@ const (
 // instead of holding the worker in one long loop.
 const expirySweepMaxBatches = 8
 
+// The payment reconciler's bounds (issue #87). One tick settles at most a hundred stale
+// attempts and may spend thirty seconds on them, including the provider calls, so a
+// provider that stops answering leaves them pending for the next tick instead of
+// wedging the worker.
+const (
+	reconcileBatch   = 100
+	reconcileTimeout = 30 * time.Second
+)
+
 // startupTimeout bounds the database work that happens before the server starts
 // listening. Without it a database that accepts the connection but never answers
 // would stall startup forever, which is worse than failing fast.
@@ -211,6 +233,7 @@ type reservationProcess struct {
 	outboxStore   *pdf.OutboxStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
+	reconciler    *checkout.Reconciler
 	pdfWorker     *pdf.Worker
 }
 
@@ -389,8 +412,29 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	// payments and ticketDetails are nil interfaces unless their schema is present,
 	// which is exactly what keeps each route unmounted.
 	var payments publicapi.PaymentService
+	// reconciler settles the attempts a dead process left pending (issue #87). It is
+	// built only where the payment route is, because it needs the same checkout schema
+	// and the same provider the route charges with.
+	var reconciler *checkout.Reconciler
 	if checkoutPresent {
-		payments = checkout.NewService(newPaymentGateway(), checkoutStore, reservation.NewCoordinator(client), payment.ProviderName)
+		checkoutService := checkout.NewService(newPaymentGateway(), checkoutStore, reservation.NewCoordinator(client), payment.ProviderName)
+		payments = checkoutService
+		reconciler, err = checkout.NewReconciler(checkoutService, checkout.ReconcilerConfig{
+			Interval: cfg.ExpiryInterval,
+			// The age bound is the hold window, reused rather than configured: a pending
+			// attempt older than the hold it belongs to cannot be a live provider call,
+			// and a new knob would need a default nobody can justify yet.
+			Age:     cfg.HoldTTL,
+			Batch:   reconcileBatch,
+			Timeout: reconcileTimeout,
+			Logger:  logger,
+		})
+		if err != nil {
+			checkoutStore.Close()
+			_ = client.Close()
+			store.Close()
+			return nil, fmt.Errorf("configure the payment reconciler: %w", err)
+		}
 	} else {
 		checkoutStore.Close()
 		checkoutStore = nil
@@ -573,7 +617,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
 		catalogStore: catalogStore, outboxStore: outboxStore, redis: client, sweeper: sweeper,
-		pdfWorker: pdfWorker}, nil
+		reconciler: reconciler, pdfWorker: pdfWorker}, nil
 }
 
 // newTicketArchive builds the artefact archive over the S3 adapter. The adapter

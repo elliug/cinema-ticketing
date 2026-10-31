@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -133,6 +134,34 @@ INSERT INTO cinema.outbox (id, topic, payload) VALUES ($1, $2, $3::jsonb)`
 
 	ticketIDsQuery = `
 SELECT id::text FROM cinema.tickets WHERE reservation_id = $1 ORDER BY event_seat_id`
+
+	// listStaleAttemptsQuery selects the attempts a dead process left pending, oldest
+	// first, each with the reservation it is paying for.
+	//
+	// The age bound is applied by the **database** clock, not by the caller: `now()` here
+	// is the same clock the hold trigger and the expiry sweep use, so a reconciler in Go
+	// and a sweep in PostgreSQL can never disagree about what "older than the hold
+	// window" means. Passing a deadline computed in the process would make the two
+	// disagree during clock skew, which is how a hold gets released before the payment
+	// question is answered.
+	//
+	// The seats are the reservation's still-active rows, ascending, which is the seat set
+	// the tickets are issued from: a reconciliation may release nothing, but it may issue.
+	listStaleAttemptsQuery = `
+SELECT a.id::text, a.reservation_id::text, a.provider, COALESCE(a.provider_reference, ''),
+       a.amount_cents, COALESCE(a.outcome, ''), a.status, a.idempotency_key, a.request_fingerprint,
+       r.event_id::text, r.status, r.expires_at, e.price_cents,
+       ARRAY(SELECT rs.event_seat_id
+             FROM cinema.reservation_seats rs
+             WHERE rs.reservation_id = a.reservation_id AND rs.released_at IS NULL
+             ORDER BY rs.event_seat_id) AS seats
+FROM cinema.payment_attempts a
+JOIN cinema.reservations r ON r.id = a.reservation_id
+JOIN cinema.events e ON e.id = r.event_id
+WHERE a.status = 'pending'
+  AND a.created_at <= now() - ($1::bigint * interval '1 microsecond')
+ORDER BY a.created_at, a.id
+LIMIT $2`
 
 	// checkoutSchemaQuery is the closed-surface check: the payment route is only
 	// mounted against a database that actually carries the checkout objects, and the
@@ -335,6 +364,45 @@ func (s *PostgresStore) RecordOutcome(ctx context.Context, outcome AttemptOutcom
 		return Attempt{}, err
 	}
 	return stored, nil
+}
+
+// ListStaleAttempts reads the attempts still pending after olderThan, with the
+// reservation each one is paying for. It locks nothing: the caller then calls the
+// provider, which is I/O, and holding a row lock across that call would serialize the
+// reconciliation of unrelated payments. `RecordOutcome` takes the lock that matters.
+func (s *PostgresStore) ListStaleAttempts(ctx context.Context, olderThan time.Duration, batch int) ([]PreparedAttempt, error) {
+	if olderThan <= 0 {
+		return nil, fmt.Errorf("%w: reconciliation needs a positive age bound, got %s", ErrInvalidInput, olderThan)
+	}
+	if batch <= 0 {
+		return nil, fmt.Errorf("%w: reconciliation batch must be positive, got %d", ErrInvalidInput, batch)
+	}
+
+	rows, err := s.pool.Query(ctx, listStaleAttemptsQuery, olderThan.Microseconds(), batch)
+	if err != nil {
+		return nil, classifyCheckoutError(err)
+	}
+	defer rows.Close()
+
+	stale := make([]PreparedAttempt, 0, batch)
+	for rows.Next() {
+		var prepared PreparedAttempt
+		if err := rows.Scan(
+			&prepared.Attempt.ID, &prepared.Attempt.ReservationID, &prepared.Attempt.Provider,
+			&prepared.Attempt.ProviderReference, &prepared.Attempt.AmountCents, &prepared.Attempt.Outcome,
+			&prepared.Attempt.Status, &prepared.Attempt.IdempotencyKey, &prepared.Attempt.Fingerprint,
+			&prepared.Reservation.EventID, &prepared.Reservation.Status, &prepared.Reservation.ExpiresAt,
+			&prepared.Reservation.PriceCents, &prepared.Reservation.Seats,
+		); err != nil {
+			return nil, classifyCheckoutError(err)
+		}
+		prepared.Reservation.ID = prepared.Attempt.ReservationID
+		stale = append(stale, prepared)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyCheckoutError(err)
+	}
+	return stale, nil
 }
 
 // capture writes the sale: the paid reservation, the sold seats, one ticket per

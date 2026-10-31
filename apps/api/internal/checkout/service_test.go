@@ -52,6 +52,10 @@ type fakeStore struct {
 
 	prepareCalls []checkout.AttemptRequest
 	outcomes     []checkout.AttemptOutcome
+	// listCalls records the reads the reconciler asked for.
+	listCalls []staleQuery
+	// listErr replaces the reconciler's read with a failure.
+	listErr error
 }
 
 func newFakeStore(j *journal, reservation checkout.Reservation) *fakeStore {
@@ -127,6 +131,29 @@ func (f *fakeStore) RecordOutcome(_ context.Context, outcome checkout.AttemptOut
 		f.reservation.Status = "paid"
 	}
 	return f.attempt, nil
+}
+
+// staleQuery records one read of the reconciler's input, so a test can pin that the
+// service passes the caller's age bound through instead of inventing one.
+type staleQuery struct {
+	olderThan time.Duration
+	batch     int
+}
+
+// ListStaleAttempts answers the reconciler's read. It deliberately returns the stored
+// attempt whatever its status, unlike the PostgreSQL query which filters on 'pending':
+// that is how a test drives the race where the buyer's own request settles the attempt
+// between the read and the reconciliation loop.
+func (f *fakeStore) ListStaleAttempts(_ context.Context, olderThan time.Duration, batch int) ([]checkout.PreparedAttempt, error) {
+	f.journal.add("list-stale")
+	f.listCalls = append(f.listCalls, staleQuery{olderThan: olderThan, batch: batch})
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if !f.stored {
+		return nil, nil
+	}
+	return []checkout.PreparedAttempt{{Reservation: f.reservation, Attempt: f.attempt}}, nil
 }
 
 // fakeGateway answers every charge with one configured outcome, recording what it
