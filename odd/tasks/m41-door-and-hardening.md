@@ -71,7 +71,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T9 | S1–S4 | `make verify-m41` and its CI job | 9 · `7084261` + `18c5d09` + the hardening commit (#75) |
 | T10 | S15 | Redis slot distribution | 10 |
 | T11 | S13, S14 | route-table truth; email decision then implementation | 11 · (#78) |
-| T13 | S16 | cancel cannot steal a hold mid-capture | 12 · (#79) |
+| T13 | S16 | cancel cannot steal a hold mid-capture | 12 · `13de503` (#81) |
 
 ## Log
 
@@ -512,3 +512,36 @@ because it failed `make verify-m2` reproducibly on `TestExpirySweepRecoversFromA
 sweep never blocked on the seat row lock") while passing in isolation and against a freshly migrated
 database, so the guard moved to its own issue with that evidence rather than being published
 unexplained.
+
+### L18 — the milestone closes, and what it leaves open
+
+T13 is in `main` as `13de503` (#81). A cancel now decides under `SELECT ... FOR UPDATE` of
+the reservation row — the lock `PrepareAttempt` already takes — and refuses a reservation with an
+attempt in `status = 'pending'` with `409 payment_in_flight`, a code the payment path already
+spoke. Proven against PostgreSQL: the race test starts a capture, cancels, and asserts exactly one
+winner, and the seats the capture is paying for stay held. An independent verifier, requested
+through a Task Size escalation for concurrency on the money path, confirmed the mechanism, re-ran
+the gated tests on its own fresh databases and designed four probes of its own; all agreed with
+the decided semantics.
+
+**Everything the milestone promised is in `main`**: T1–T14, with #58 closed on evidence (#75, #76,
+#77, #78, #81 and the slices before them).
+
+**What it does not promise, and where that lives.** Three things were found and none of them was
+smuggled in as "known flaky":
+
+- **#82** — the expiry sweep can release the seats a payment is paying for. The guard was written
+  here, passes in isolation, and fails `make verify-m2` reproducibly while `main` passes. It came
+  out of the slice: a change that cannot be explained and cannot pass the project's own gate does
+  not ship, however right its theory is. The issue names the instrumentation still owed.
+- **#80** — an intermittent React hydration mismatch on `/tickets` under Firefox, caught by the
+  browser gate, not reproduced on rerun. Recorded rather than allowlisted.
+- The gate's own advisory `R1-cleanup-abort-empty-compose`, plus the latent `failed`-attempt
+  re-decide window the verifier named inside #82.
+
+**The lesson this milestone keeps teaching, in one line:** the instrument failed before the product
+did, every single time. A step name with a colon turned a whole workflow into a run with zero jobs;
+a cleanup trap destroyed the data its own guards protected; a reviewer's payload and the thing that
+reads it disagreed about a field name; and a test that never ran was accepted as passing twice
+before somebody ran it against a real database. The verifications worth trusting were the ones
+where the failure was watched first.
