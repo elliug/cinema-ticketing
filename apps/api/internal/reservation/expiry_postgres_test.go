@@ -41,6 +41,9 @@ const (
 	recoveryEvent  = "00000000-0000-0000-0000-00000000c0b1"
 	recoveryHold   = "00000000-0000-0000-0000-00000000c0c1"
 	recoveryKey    = "m2-recovery-key"
+	// recoveryAttempt is the payment attempt of the guard test: the row that says a
+	// provider call is paying for this hold's seats right now.
+	recoveryAttempt = "00000000-0000-0000-0000-00000000c0e1"
 )
 
 // TestExpirySweepRecoversFromAKilledWorker is the S8 worker-recovery evidence:
@@ -159,6 +162,96 @@ func TestExpirySweepRecoversFromAKilledWorker(t *testing.T) {
 	}
 	if again != (reservation.ExpiryResult{}) {
 		t.Fatalf("third sweep = %+v, want a no-op", again)
+	}
+}
+
+// TestExpirySweepLeavesAHoldAPaymentIsPayingFor is the payment-guard evidence for
+// issue #82: a hold whose window closes while a payment is in flight must not be a
+// sweep candidate, because the capture that is paying for its seats has to find the
+// reservation still 'held'.
+//
+// The scenario is the real one, not a contrived one. Prepare stores the attempt as
+// 'pending' before the provider is called, the call runs for seconds with no
+// transaction held, and requirePayable only ever protected the *start* of the
+// payment. Before the guard the sweep expired such a hold and released its seat,
+// and capture's markPaidQuery (“WHERE id = $1 AND status = 'held'“) matched no
+// row: money taken by the provider, nothing sold, the seat back on sale.
+func TestExpirySweepLeavesAHoldAPaymentIsPayingFor(t *testing.T) {
+	ctx := context.Background()
+	pool, url := recoveryPool(t, ctx)
+	defer pool.Close()
+
+	seedRecoveryFixture(t, ctx, pool)
+	defer cleanupRecoveryFixture(ctx, t, pool)
+
+	store, err := reservation.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open reservation store: %v", err)
+	}
+	defer store.Close()
+
+	// The payment in flight: an open attempt, exactly what Prepare commits before
+	// it calls the provider.
+	if _, err := pool.Exec(ctx, `INSERT INTO cinema.payment_attempts
+		 (id, reservation_id, provider, amount_cents, status, idempotency_key, request_fingerprint)
+		 VALUES ($1, $2, 'simulated', 2500, 'pending', 'm2-guard-key', 'fp')`,
+		recoveryAttempt, recoveryHold); err != nil {
+		t.Fatalf("store the pending payment attempt: %v", err)
+	}
+
+	deadline, err := store.DatabaseNow(ctx)
+	if err != nil {
+		t.Fatalf("read the database clock: %v", err)
+	}
+
+	// The hold is past its deadline and a payment is paying for it. Neither half of
+	// the rule may move: not the status, not the seat.
+	result, err := store.ExpireHolds(ctx, deadline, 10)
+	if err != nil {
+		t.Fatalf("the guarded sweep returned error: %v", err)
+	}
+	if result.ReservationsExpired != 0 || result.SeatsReleased != 0 {
+		t.Fatalf("sweep = %+v, want no hold expired and no seat released while a payment is pending", result)
+	}
+	if status := holdStatus(t, ctx, pool); status != "held" {
+		t.Fatalf("hold status during the payment = %q, want held", status)
+	}
+	if released := releasedSeats(t, ctx, pool); released != 0 {
+		t.Fatalf("the sweep released %d seat row(s) a payment is paying for, want none", released)
+	}
+
+	// The half that costs money when it is wrong: the capture's own predicate still
+	// matches, so the money the provider took can still become a sale.
+	var payable int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM cinema.reservations WHERE id = $1 AND status = 'held'`,
+		recoveryHold).Scan(&payable); err != nil {
+		t.Fatalf("check the capture predicate: %v", err)
+	}
+	if payable != 1 {
+		t.Fatalf("rows matching the capture predicate = %d, want 1: money captured must still be able to become a sale", payable)
+	}
+
+	// The guard defers the sweep, it never cancels it. Once the attempt settles the
+	// hold is expired by the next sweep, so a dead payment cannot keep seats out of
+	// circulation for ever.
+	if _, err := pool.Exec(ctx,
+		`UPDATE cinema.payment_attempts SET status = 'failed', updated_at = now() WHERE id = $1`,
+		recoveryAttempt); err != nil {
+		t.Fatalf("settle the payment attempt: %v", err)
+	}
+	settled, err := store.ExpireHolds(ctx, deadline, 10)
+	if err != nil {
+		t.Fatalf("the sweep after the attempt settled returned error: %v", err)
+	}
+	if settled.ReservationsExpired != 1 || settled.SeatsReleased != 1 {
+		t.Fatalf("sweep after the attempt settled = %+v, want exactly 1 expired hold and 1 released seat", settled)
+	}
+	if status := holdStatus(t, ctx, pool); status != "expired" {
+		t.Fatalf("hold status after the attempt settled = %q, want expired", status)
+	}
+	if released := releasedSeats(t, ctx, pool); released != 1 {
+		t.Fatalf("released seat rows after the attempt settled = %d, want 1", released)
 	}
 }
 
@@ -508,6 +601,7 @@ func seedRecoveryFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 func cleanupRecoveryFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, sql := range []string{
+		`DELETE FROM cinema.payment_attempts WHERE reservation_id = '` + recoveryHold + `'`,
 		`DELETE FROM cinema.idempotency_keys WHERE hold_id = '` + recoveryHold + `'`,
 		`DELETE FROM cinema.reservation_seats WHERE reservation_id = '` + recoveryHold + `'`,
 		`DELETE FROM cinema.reservations WHERE id = '` + recoveryHold + `'`,

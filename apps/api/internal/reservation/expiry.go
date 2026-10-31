@@ -83,11 +83,26 @@ WHERE k.idempotency_key = p.idempotency_key`
 	//   - SKIP LOCKED makes a second worker instance walk past the rows this one
 	//     already owns instead of waiting for them, which is what stops two
 	//     processes from double-expiring or deadlocking.
+	//   - NOT EXISTS (pending payment attempt) is the payment guard, and it is why
+	//     this sweep cannot take the seats a capture is paying for. An attempt lives
+	//     in status 'pending' for the whole provider call, which is seconds outside
+	//     any transaction, so a hold whose window closes in that gap must not be a
+	//     candidate: the capture's markPaidQuery still finds the reservation 'held'
+	//     and the money the provider took becomes a sale. The guard only ever
+	//     defers work, never cancels it — once the attempt settles (captured or
+	//     failed) it stops being pending and the next sweep expires the hold if it
+	//     is still live. Expiring it here instead is money taken and nothing sold,
+	//     which is the defect issue #82 records. The predicate is served by
+	//     payment_attempts_open_per_reservation, the partial unique index over the
+	//     pending rows.
 	lockExpiredHoldsQuery = `
 SELECT r.id::text
 FROM cinema.reservations r
 WHERE r.status IN ('held', 'payment_pending')
   AND r.expires_at <= $1
+  AND NOT EXISTS (
+    SELECT 1 FROM cinema.payment_attempts p
+    WHERE p.reservation_id = r.id AND p.status = 'pending')
 ORDER BY r.expires_at, r.id
 LIMIT $2
 FOR NO KEY UPDATE SKIP LOCKED`
@@ -96,20 +111,37 @@ FOR NO KEY UPDATE SKIP LOCKED`
 	// released_at IS NULL is what makes a partially released hold safe: a seat a
 	// re-claim takeover already freed keeps its original released_at, and the
 	// reservation still transitions to expired below.
+	//
+	// The payment predicate repeats the candidate rule of lockExpiredHoldsQuery, and
+	// it is not redundant: FOR NO KEY UPDATE does not conflict with the KEY SHARE an
+	// attempt's foreign key takes, so an attempt can be stored after the candidate
+	// selection. Re-checking here is what keeps the three statements of one batch
+	// agreeing with each other — without it a hold could keep its status while its
+	// seat was freed to somebody else, which is the same defect wearing the other
+	// half of its clothes.
 	releaseExpiredSeatsQuery = `
-UPDATE cinema.reservation_seats
+UPDATE cinema.reservation_seats rs
 SET released_at = $1
-WHERE released_at IS NULL
-  AND reservation_id = ANY($2::uuid[])`
+WHERE rs.released_at IS NULL
+  AND rs.reservation_id = ANY($2::uuid[])
+  AND NOT EXISTS (
+    SELECT 1 FROM cinema.payment_attempts p
+    WHERE p.reservation_id = rs.reservation_id AND p.status = 'pending')`
 
 	// expireHoldsQuery closes the holds themselves. The status predicate repeats
 	// the candidate rule so only a live hold can become expired, and re-checking
-	// it here means the sweep can never rewrite a status it did not select.
+	// it here means the sweep can never rewrite a status it did not select. The
+	// payment predicate is repeated for the same reason as in the seat release: a
+	// hold a payment is paying for keeps its status, so the sale can still be
+	// recorded.
 	expireHoldsQuery = `
-UPDATE cinema.reservations
+UPDATE cinema.reservations r
 SET status = 'expired'
-WHERE id = ANY($1::uuid[])
-  AND status IN ('held', 'payment_pending')`
+WHERE r.id = ANY($1::uuid[])
+  AND r.status IN ('held', 'payment_pending')
+  AND NOT EXISTS (
+    SELECT 1 FROM cinema.payment_attempts p
+    WHERE p.reservation_id = r.id AND p.status = 'pending')`
 )
 
 // validateSweepParams rejects a sweep that could never make progress, before any

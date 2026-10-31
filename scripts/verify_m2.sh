@@ -87,18 +87,38 @@ case "$dbsize" in
   "") fail "could not read the size of Redis logical database $redis_db, so this script cannot prove it owns it; is Redis reachable?" ;;
   *) fail "Redis database $redis_db already holds $dbsize keys; set M2_REDIS_DB to a free database" ;;
 esac
-$compose exec -T postgres createdb -U cinema "$db"
-for migration in 0001_init 0002_venue_layout 0003_reservation 0004_idempotency; do
-  psql_db < "db/migrations/$migration.up.sql" || fail "migration $migration did not apply"
+$compose exec -T postgres createdb -U cinema "$db" || fail "could not create the throwaway database $db"
+# The schema this gate builds must be the schema the binary it starts actually runs on, and
+# that binary is built from this checkout. Enumerating an M2-era prefix here made the gate
+# lie: once the sweep's own queries referenced a checkout table (0005), this database had no
+# such table, so the candidate lock failed with "relation cinema.payment_attempts does not
+# exist" and the killed-worker test reported "the sweep never blocked on the seat row lock".
+# An instrument error was wearing the clothes of a product regression, and it cost issue #82 a
+# shipped guard. The runner and the directory are the two sources of truth, exactly as in
+# scripts/verify_m3.sh: the runner mounts the directory, so no migration has to be written
+# into a list in this script before the code that uses it can be verified.
+migration_output="$($compose --profile tools run --rm -e DB_NAME="$db" migrate-all 2>&1)" \
+  || { printf '%s\n' "$migration_output" >&2; fail "the migration runner failed on $db"; }
+applied_versions="$(psql_db -tA -c "SELECT string_agg(version, ',' ORDER BY version) FROM platform.schema_migrations")"
+expected_versions=""
+for file in "$root"/db/migrations/*.up.sql; do
+  [ -e "$file" ] || fail "no *.up.sql migration found in $root/db/migrations"
+  name="$(basename "$file" .up.sql)"
+  expected_versions="${expected_versions:+$expected_versions,}$name"
 done
+[ "$applied_versions" = "$expected_versions" ] \
+  || fail "the migration runner recorded [$applied_versions], expected [$expected_versions]"
+printf 'M2 schema: every migration on disk applied to %s (%s)\n' "$db" "$applied_versions"
 
 # S8 worker-recovery evidence. It runs before the API starts: its fixture is an
 # elapsed hold that the running worker would otherwise sweep out from under it.
 M2_RECOVERY_DATABASE_URL="$dburl" \
-  go test -count=1 -v -run 'TestExpirySweepRecoversFromAKilledWorker|TestPostgresStoreClassifiesAnUnknownReference|TestListSeatAvailabilityProjectsTheSeededLayout' \
+  go test -count=1 -v -run 'TestExpirySweepRecoversFromAKilledWorker|TestExpirySweepLeavesAHoldAPaymentIsPayingFor|TestPostgresStoreClassifiesAnUnknownReference|TestListSeatAvailabilityProjectsTheSeededLayout' \
   ./apps/api/internal/reservation/ 2>&1 | tee "$tmp/recovery.log"
 grep -q -- '--- PASS: TestExpirySweepRecoversFromAKilledWorker' "$tmp/recovery.log" \
   || fail "the killed-worker recovery evidence did not pass"
+grep -q -- '--- PASS: TestExpirySweepLeavesAHoldAPaymentIsPayingFor' "$tmp/recovery.log" \
+  || fail "the payment guard on the expiry sweep did not pass"
 grep -q -- '--- PASS: TestListSeatAvailabilityProjectsTheSeededLayout' "$tmp/recovery.log" \
   || fail "the availability projection did not pass against PostgreSQL"
 
