@@ -308,7 +308,7 @@ type Store interface {
 // satisfied by reservation.Coordinator, whose Release only deletes the seats the
 // given hold still owns.
 type HoldReleaser interface {
-	Release(ctx context.Context, holdID string, eventSeatIDs []int64) error
+	Release(ctx context.Context, eventID, holdID string, eventSeatIDs []int64) error
 }
 
 // Result is the answered checkout, which is what the buyer is told and what a
@@ -441,7 +441,7 @@ func (s *Service) answered(ctx context.Context, reservation Reservation, attempt
 	}
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	_ = s.holds.Release(releaseCtx, reservation.ID, reservation.Seats)
+	_ = s.holds.Release(releaseCtx, reservation.EventID, reservation.ID, reservation.Seats)
 	return result
 }
 

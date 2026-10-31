@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"cinema.local/ticketing/apps/api/internal/reservation"
@@ -20,11 +22,17 @@ import (
 // owner value its seats carry in Redis, which is what makes the release its own.
 const cancelReservationID = "00000000-0000-0000-0000-00000000d0f1"
 
+// cancelEventID is the screening the fixture hold's seats belong to. It is the tag of
+// the coordination keys the acquire wrote, so a release that addresses any other
+// event leaves the keys behind.
+const cancelEventID = "00000000-0000-0000-0000-00000000d0e1"
+
 // cancelledHold is the durable outcome the store reports for a request that cancelled
 // the hold and released these seats.
 func cancelledHold(eventSeatIDs ...int64) reservation.Cancellation {
 	return reservation.Cancellation{
 		ReservationID: cancelReservationID,
+		EventID:       cancelEventID,
 		Status:        "cancelled",
 		SeatIDs:       eventSeatIDs,
 	}
@@ -36,7 +44,7 @@ func TestCancelReleasesTheHeldSeats(t *testing.T) {
 	store := newFakeStore()
 	store.cancelResult = cancelledHold(21, 22)
 	service, coordinator, server := newTestService(t, store)
-	mustAcquire(t, coordinator, cancelReservationID, testHoldTTL, 21, 22)
+	mustAcquire(t, coordinator, cancelEventID, cancelReservationID, testHoldTTL, 21, 22)
 
 	cancellation, err := service.Cancel(context.Background(), cancelReservationID)
 	if err != nil {
@@ -52,7 +60,7 @@ func TestCancelReleasesTheHeldSeats(t *testing.T) {
 
 	// The seats stop being held: no key of the hold survives, so the seats are
 	// selectable again.
-	if held := mustHeld(t, coordinator, 21, 22); held[0] || held[1] {
+	if held := mustHeld(t, coordinator, cancelEventID, 21, 22); held[0] || held[1] {
 		t.Fatalf("held after cancel = %v, want both seats free", held)
 	}
 	if keys := holdKeys(server); len(keys) != 0 {
@@ -67,7 +75,7 @@ func TestCancelAnswersTheSameHoldTwiceWithoutReleasingAgain(t *testing.T) {
 	store := newFakeStore()
 	store.cancelResult = cancelledHold(21, 22)
 	service, coordinator, _ := newTestService(t, store)
-	mustAcquire(t, coordinator, cancelReservationID, testHoldTTL, 21, 22)
+	mustAcquire(t, coordinator, cancelEventID, cancelReservationID, testHoldTTL, 21, 22)
 
 	first, err := service.Cancel(context.Background(), cancelReservationID)
 	if err != nil {
@@ -92,8 +100,8 @@ func TestCancelAnswersTheSameHoldTwiceWithoutReleasingAgain(t *testing.T) {
 	// A seat re-acquired by a different hold — the state a Redis key that outlived its
 	// use leaves behind — must survive the second cancel: a request that released
 	// nothing must touch nothing.
-	mustAcquire(t, coordinator, "00000000-0000-0000-0000-00000000d0f2", testHoldTTL, 21, 22)
-	if held := mustHeld(t, coordinator, 21, 22); !held[0] || !held[1] {
+	mustAcquire(t, coordinator, cancelEventID, "00000000-0000-0000-0000-00000000d0f2", testHoldTTL, 21, 22)
+	if held := mustHeld(t, coordinator, cancelEventID, 21, 22); !held[0] || !held[1] {
 		t.Fatalf("held after the second cancel = %v, want both seats still held by the other hold", held)
 	}
 }
@@ -105,7 +113,7 @@ func TestCancelRefusesAPaidReservationWithoutReleasingItsSeats(t *testing.T) {
 	store := newFakeStore()
 	store.cancelErr = fmt.Errorf("%w: %s", reservation.ErrAlreadyPaid, cancelReservationID)
 	service, coordinator, _ := newTestService(t, store)
-	mustAcquire(t, coordinator, cancelReservationID, testHoldTTL, 31)
+	mustAcquire(t, coordinator, cancelEventID, cancelReservationID, testHoldTTL, 31)
 
 	_, err := service.Cancel(context.Background(), cancelReservationID)
 	if !errors.Is(err, reservation.ErrAlreadyPaid) {
@@ -116,7 +124,7 @@ func TestCancelRefusesAPaidReservationWithoutReleasingItsSeats(t *testing.T) {
 	if errors.Is(err, reservation.ErrUnavailable) {
 		t.Fatalf("Cancel error = %v, want the paid refusal kept apart from the retryable failure", err)
 	}
-	if held := mustHeld(t, coordinator, 31); !held[0] {
+	if held := mustHeld(t, coordinator, cancelEventID, 31); !held[0] {
 		t.Fatal("the paid refusal released a seat that belongs to a sold order")
 	}
 }
@@ -130,7 +138,7 @@ func TestCancelReportsAnExpiredHoldAndReleasesNothing(t *testing.T) {
 	service, coordinator, _ := newTestService(t, store)
 	// A key that still exists is the hardest case: an expired hold must not delete
 	// anybody's seat.
-	mustAcquire(t, coordinator, "00000000-0000-0000-0000-00000000d0f3", testHoldTTL, 41)
+	mustAcquire(t, coordinator, cancelEventID, "00000000-0000-0000-0000-00000000d0f3", testHoldTTL, 41)
 
 	cancellation, err := service.Cancel(context.Background(), cancelReservationID)
 	if err != nil {
@@ -139,7 +147,7 @@ func TestCancelReportsAnExpiredHoldAndReleasesNothing(t *testing.T) {
 	if cancellation.Status != "expired" {
 		t.Fatalf("status = %q, want expired", cancellation.Status)
 	}
-	if held := mustHeld(t, coordinator, 41); !held[0] {
+	if held := mustHeld(t, coordinator, cancelEventID, 41); !held[0] {
 		t.Fatal("cancelling an expired hold released a seat")
 	}
 }
@@ -172,19 +180,39 @@ func TestCancelRefusesAnImpossibleIdentifierBeforeAnyQuery(t *testing.T) {
 	}
 }
 
+// S15, query shape without a database: the durable cancel has to carry the event id,
+// because that is the hash tag of the coordination keys the acquire wrote. It is loaded
+// by the statement that already decides the transition, not by a second round trip. The
+// value is proved against PostgreSQL by TestCancelReleasesTheSeatsSoTheyCanBeHeldAgain.
+func TestCancelQueriesLoadTheEventIDWithTheStatementTheyAlreadyRun(t *testing.T) {
+	source, err := os.ReadFile("cancel.go")
+	if err != nil {
+		t.Fatalf("read cancel.go: %v", err)
+	}
+	for _, name := range []string{"cancelHoldQuery", "reservationCancelStateQuery"} {
+		query := queryConstant(string(source), name)
+		if query == "" {
+			t.Fatalf("%s is not declared in cancel.go", name)
+		}
+		if !strings.Contains(query, "event_id") {
+			t.Errorf("%s does not load event_id, so the release would have no tag:\n%s", name, query)
+		}
+	}
+}
+
 // S10: a durable layer that cannot be reached is a retryable failure, never a success
 // the buyer would read as "the seats are free".
 func TestCancelReportsAnUnreachableStore(t *testing.T) {
 	store := newFakeStore()
 	store.cancelErr = errors.New("connection refused")
 	service, coordinator, _ := newTestService(t, store)
-	mustAcquire(t, coordinator, cancelReservationID, testHoldTTL, 21)
+	mustAcquire(t, coordinator, cancelEventID, cancelReservationID, testHoldTTL, 21)
 
 	_, err := service.Cancel(context.Background(), cancelReservationID)
 	if !errors.Is(err, reservation.ErrUnavailable) {
 		t.Fatalf("Cancel error = %v, want ErrUnavailable", err)
 	}
-	if held := mustHeld(t, coordinator, 21); !held[0] {
+	if held := mustHeld(t, coordinator, cancelEventID, 21); !held[0] {
 		t.Fatal("a failed cancel released a seat although nothing was stored")
 	}
 }

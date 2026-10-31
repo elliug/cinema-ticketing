@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -122,8 +121,10 @@ func (f *fakeStore) ListSeatAvailability(_ context.Context, eventID string) ([]r
 // failingLocker is a coordination layer that cannot be reached.
 type failingLocker struct{ err error }
 
-func (f failingLocker) Acquire(context.Context, string, []int64, time.Duration) error { return f.err }
-func (f failingLocker) Release(context.Context, string, []int64) error                { return nil }
+func (f failingLocker) Acquire(context.Context, string, string, []int64, time.Duration) error {
+	return f.err
+}
+func (f failingLocker) Release(context.Context, string, string, []int64) error { return nil }
 
 func newTestService(t *testing.T, store reservation.Store) (*reservation.Service, *reservation.Coordinator, *miniredis.Miniredis) {
 	t.Helper()
@@ -131,8 +132,10 @@ func newTestService(t *testing.T, store reservation.Store) (*reservation.Service
 	return reservation.NewService(coordinator, store, testHoldTTL), coordinator, server
 }
 
+// seatKey is the coordination key of one seat of the screening every CreateHold
+// test below uses.
 func seatKey(eventSeatID int64) string {
-	return holdKeyPrefix + strconv.FormatInt(eventSeatID, 10)
+	return seatKeyOf("evt-1", eventSeatID)
 }
 
 func wantSeatIDs(t *testing.T, got, want []int64) {
@@ -216,7 +219,7 @@ func TestCreateHoldClaimsTheWholeSelectionDurably(t *testing.T) {
 func TestCreateHoldRejectsASeatOwnedByAnotherHold(t *testing.T) {
 	store := newFakeStore()
 	service, coordinator, server := newTestService(t, store)
-	mustAcquire(t, coordinator, "other-hold", time.Minute, 31)
+	mustAcquire(t, coordinator, "evt-1", "other-hold", time.Minute, 31)
 
 	hold, err := service.CreateHold(context.Background(), "key-conflict", "evt-1", []int64{31, 32})
 	if !errors.Is(err, reservation.ErrSeatsUnavailable) {
@@ -603,14 +606,14 @@ func TestCreateHoldRejectsWindowBelowOneMillisecond(t *testing.T) {
 // countingLocker records whether the coordination layer was touched at all.
 type countingLocker struct{ calls int }
 
-func (c *countingLocker) Acquire(context.Context, string, []int64, time.Duration) error {
+func (c *countingLocker) Acquire(context.Context, string, string, []int64, time.Duration) error {
 	c.calls++
 	return nil
 }
 
-func (c *countingLocker) Release(context.Context, string, []int64) error { return nil }
+func (c *countingLocker) Release(context.Context, string, string, []int64) error { return nil }
 
-func (c *countingLocker) Held(context.Context, []int64) ([]bool, error) { return nil, nil }
+func (c *countingLocker) Held(context.Context, string, []int64) ([]bool, error) { return nil, nil }
 
 // Advisory (T4 review): an unreasonable seat count is rejected before any I/O,
 // so a caller cannot make the service build an unbounded Redis key list or an

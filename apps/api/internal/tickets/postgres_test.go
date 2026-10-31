@@ -74,7 +74,7 @@ var fixtureStartsAt = time.Date(2026, time.May, 4, 18, 30, 0, 0, time.UTC)
 // the ticket read, and there is no Redis hold behind the fixture reservations.
 type noRelease struct{}
 
-func (noRelease) Release(context.Context, string, []int64) error { return nil }
+func (noRelease) Release(context.Context, string, string, []int64) error { return nil }
 
 // TestTicketDetailAnswersARealSale walks the projection over a ticket a real
 // checkout issued, then over the same ticket once it is voided, and over the ticket

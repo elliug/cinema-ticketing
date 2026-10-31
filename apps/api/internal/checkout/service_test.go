@@ -159,7 +159,7 @@ type fakeReleaser struct {
 	seats   [][]int64
 }
 
-func (r *fakeReleaser) Release(_ context.Context, holdID string, eventSeatIDs []int64) error {
+func (r *fakeReleaser) Release(_ context.Context, eventID, holdID string, eventSeatIDs []int64) error {
 	r.journal.add("release")
 	r.holdIDs = append(r.holdIDs, holdID)
 	r.seats = append(r.seats, append([]int64(nil), eventSeatIDs...))

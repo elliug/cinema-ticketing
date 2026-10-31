@@ -5,16 +5,32 @@
 //
 // # Key scheme
 //
-// One key per event seat, in the namespace "reservation:{hold}:seat:<eventSeatID>":
+// One key per event seat, in the namespace
+// "reservation:{event:<eventID>}:seat:<eventSeatID>":
 //
-//	reservation:{hold}:seat:4711 -> "hold-9f3c..."
+//	reservation:{event:8f2c...}:seat:4711 -> "hold-9f3c..."
 //
 // The value is the identifier of the hold that currently owns the seat, and the
-// key's TTL is that hold's remaining window. Event seat identifiers are the
-// globally unique cinema.event_seats.id values, so the key needs no event scope;
-// the event is implied by the seat. The braces around "hold" are a Redis Cluster
-// hash tag: they place every hold key in one slot so a single script or MGET can
-// address a multi-seat set on a clustered deployment too.
+// key's TTL is that hold's remaining window. The tag between the braces is the
+// event, so every seat of one screening hashes to one Redis Cluster slot while
+// different screenings distribute across slots: a multi-seat claim stays legal as
+// a single script, and two screenings no longer share a slot. A per-hold tag was
+// rejected because two owners of one seat would then write two different keys and
+// mutual exclusion would vanish; a per-seat tag was rejected because it breaks the
+// single-EVAL atomic claim. Event seat identifiers are still the globally unique
+// cinema.event_seats.id values, but the tag cannot be derived from them without
+// spreading one hold over many slots, so the event id is carried explicitly and a
+// value containing a brace — which would forge a different tag — is refused.
+//
+// # Compatibility with holds written before the per-event tag
+//
+// Keys written by the previous scheme live under "reservation:{hold}:seat:*", and
+// this code does not read them. For at most one hold TTL a pre-existing hold's
+// Redis claim is therefore invisible here, so a competing claim on one of its seats
+// is admitted by Redis and refused afterwards by the durable guard: the PostgreSQL
+// partial unique index plus the claim trigger, which decide occupancy from the
+// reservation rows and never from Redis. The worst case is a slower refusal — one
+// failed transaction — and never a double booking.
 //
 // # Atomicity
 //

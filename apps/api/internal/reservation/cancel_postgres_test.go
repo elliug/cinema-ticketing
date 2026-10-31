@@ -79,6 +79,11 @@ func TestCancelReleasesTheSeatsSoTheyCanBeHeldAgain(t *testing.T) {
 	if cancellation.Status != "cancelled" {
 		t.Fatalf("status = %q, want the stored cancelled state", cancellation.Status)
 	}
+	// The value carries the event, which is the tag of the coordination keys the
+	// acquire wrote: a cancel that had to guess it would address the wrong keys.
+	if cancellation.EventID != cancelEvent {
+		t.Fatalf("event id = %q, want %q", cancellation.EventID, cancelEvent)
+	}
 	if len(cancellation.SeatIDs) != 2 {
 		t.Fatalf("released seats = %v, want the hold's two seats", cancellation.SeatIDs)
 	}
