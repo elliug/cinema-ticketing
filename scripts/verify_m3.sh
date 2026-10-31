@@ -228,6 +228,21 @@ done
   || fail "the migration runner recorded [$applied_versions], expected [$expected_versions]"
 ok "migrations: scripts/migrations/apply_all.sh brought $db to [$applied_versions]"
 
+# The checkout package's gated tests against that same database, one package at a time.
+# Nothing in this project used to set M3_CHECKOUT_DATABASE_URL, so every one of these
+# tests skipped itself and the gate reported green while a thousand lines of capture
+# guards — the one-open-attempt index, the amount and fingerprint rules, the sale writes
+# — never ran. A skip is not a pass: the two assertions below are what turn "the suite
+# ran and passed" into a claim this gate can make.
+M3_CHECKOUT_DATABASE_URL="$dburl" \
+  go test -count=1 -p 1 -v ./apps/api/internal/checkout/ 2>&1 | tee "$tmp/checkout-gated.log"
+grep -q -- '--- PASS: TestReconcileStaleAttemptsOnPostgres' "$tmp/checkout-gated.log" \
+  || fail "the payment reconciliation evidence did not pass against PostgreSQL"
+if grep -q -- '--- SKIP' "$tmp/checkout-gated.log"; then
+  fail "a gated checkout test skipped itself, so this gate proves less than it claims"
+fi
+ok "checkout: the gated payment suite passed against $db, and none of it skipped"
+
 # The bucket, through the bootstrap command the project uses (never an ad-hoc PUT):
 # this is the same path `make bootstrap` and CI take.
 go build -o "$tmp/api" ./apps/api/cmd/api || fail "the API did not build"
