@@ -53,6 +53,13 @@ const (
 	cancelTicket  = "00000000-0000-0000-0000-00000000e0d2"
 	// cancelReclaim is the second hold the tests try to place on seats a cancel released.
 	cancelReclaim = "00000000-0000-0000-0000-00000000e0c4"
+
+	// The in-flight fixture (#79) is a second screening of the same room, because the
+	// layout holds four seats and the three orders above already own all four: its own
+	// event is the only way one more hold gets a seat set of its own.
+	cancelBusyEvent   = "00000000-0000-0000-0000-00000000e0b3"
+	cancelBusyHold    = "00000000-0000-0000-0000-00000000e0c5"
+	cancelBusyAttempt = "00000000-0000-0000-0000-00000000e0d3"
 )
 
 // TestCancelReleasesTheSeatsSoTheyCanBeHeldAgain is the first required behaviour: a
@@ -189,6 +196,138 @@ func TestCancelOfAnUnknownReservationIsNotFound(t *testing.T) {
 
 	if _, err := store.Cancel(ctx, cancelAbsent); !errors.Is(err, reservation.ErrReservationNotFound) {
 		t.Fatalf("Cancel(unknown) = %v, want ErrReservationNotFound", err)
+	}
+}
+
+// TestCancelRefusesWhileAPaymentAttemptIsPending is the decided semantics of #79: a
+// reservation whose checkout already stored a pending attempt — the provider has been
+// called and no transaction is held — is not cancellable, because the capture that is
+// about to pay for those seats takes no lock either. The refusal is its own answer, told
+// apart from an already paid order, and it releases nothing.
+func TestCancelRefusesWhileAPaymentAttemptIsPending(t *testing.T) {
+	ctx := context.Background()
+	pool, url := cancelPool(t, ctx)
+	defer pool.Close()
+
+	seedCancelFixture(t, ctx, pool)
+	defer cleanupCancelFixture(ctx, t, pool)
+
+	store, err := reservation.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open reservation store: %v", err)
+	}
+	defer store.Close()
+
+	cancellation, err := store.Cancel(ctx, cancelBusyHold)
+	if !errors.Is(err, reservation.ErrPaymentInFlight) {
+		t.Fatalf("Cancel(payment in flight) = %+v, %v; want ErrPaymentInFlight", cancellation, err)
+	}
+	if errors.Is(err, reservation.ErrAlreadyPaid) {
+		t.Fatalf("Cancel(payment in flight) = %v, want the in-flight refusal kept apart from the paid one", err)
+	}
+	if errors.Is(err, reservation.ErrUnavailable) {
+		t.Fatalf("Cancel(payment in flight) = %v, want a conflict rather than a retryable failure", err)
+	}
+	if len(cancellation.SeatIDs) != 0 {
+		t.Fatalf("the refusal released seats = %v, want none", cancellation.SeatIDs)
+	}
+	if status := cancelStatus(t, ctx, pool, cancelBusyHold); status != "held" {
+		t.Fatalf("stored status = %q, want the hold untouched", status)
+	}
+	if live := activeCancelSeats(t, ctx, pool, cancelBusyHold); live != 1 {
+		t.Fatalf("the refusal left %d active seat row(s), want the hold's seat untouched", live)
+	}
+
+	// The capture the refusal protected still pays, and it pays for the seats the cancel
+	// did not release: one winner, and it is the payment.
+	tag, err := pool.Exec(ctx,
+		`UPDATE cinema.reservations SET status = 'paid' WHERE id = $1 AND status = 'held'`, cancelBusyHold)
+	if err != nil {
+		t.Fatalf("capture the in-flight reservation: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("the capture marked %d reservation(s) paid, want 1: the refusal cost the sale", tag.RowsAffected())
+	}
+	if status := cancelStatus(t, ctx, pool, cancelBusyHold); status != "paid" {
+		t.Fatalf("stored status = %q, want paid", status)
+	}
+	if live := activeCancelSeats(t, ctx, pool, cancelBusyHold); live != 1 {
+		t.Fatalf("the paid order left %d active seat row(s), want its sold seat kept", live)
+	}
+}
+
+// TestCancelRacingACaptureNeverReleasesTheSeatsTheCaptureIsPayingFor races the two
+// requests #79 is about. The attempt is already pending, which is the window the provider
+// call opens: the cancel and the capture's own guarded writes start together.
+//
+// Exactly one of them wins, and it is never the pair the defect produced — the cancel
+// releasing the seats while the capture records the money for nothing. The attempt is
+// pending before either starts, so the decided semantics leave the cancel one way to lose
+// early: refused by the row-locked decision, or refused because the capture had already
+// committed and the order is paid.
+func TestCancelRacingACaptureNeverReleasesTheSeatsTheCaptureIsPayingFor(t *testing.T) {
+	ctx := context.Background()
+	pool, url := cancelPool(t, ctx)
+	defer pool.Close()
+
+	seedCancelFixture(t, ctx, pool)
+	defer cleanupCancelFixture(ctx, t, pool)
+
+	store, err := reservation.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open reservation store: %v", err)
+	}
+	defer store.Close()
+
+	var (
+		cancellation reservation.Cancellation
+		cancelErr    error
+		captured     bool
+		captureErr   error
+	)
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	done.Add(2)
+	go func() {
+		defer done.Done()
+		<-start
+		cancellation, cancelErr = store.Cancel(ctx, cancelBusyHold)
+	}()
+	go func() {
+		defer done.Done()
+		<-start
+		captured, captureErr = capturePendingAttempt(ctx, pool, cancelBusyHold, cancelBusyAttempt)
+	}()
+	close(start)
+	done.Wait()
+
+	if captureErr != nil {
+		t.Fatalf("the concurrent capture failed: %v", captureErr)
+	}
+	if cancelErr == nil {
+		t.Fatalf("Cancel(payment in flight) = %+v, want a refusal: it released %v while the payment was in flight",
+			cancellation, cancellation.SeatIDs)
+	}
+	if !errors.Is(cancelErr, reservation.ErrPaymentInFlight) && !errors.Is(cancelErr, reservation.ErrAlreadyPaid) {
+		t.Fatalf("Cancel(payment in flight) = %v, want the in-flight refusal or the paid one", cancelErr)
+	}
+	if !captured {
+		t.Fatalf("the capture matched no payable reservation (the cancel answered %v), so the money was taken and nothing was sold", cancelErr)
+	}
+
+	var attemptStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM cinema.payment_attempts WHERE id = $1`, cancelBusyAttempt).Scan(&attemptStatus); err != nil {
+		t.Fatalf("read the attempt status: %v", err)
+	}
+	if attemptStatus != "captured" {
+		t.Fatalf("attempt status = %q, want captured: the winner of the encounter is the sale", attemptStatus)
+	}
+	if status := cancelStatus(t, ctx, pool, cancelBusyHold); status != "paid" {
+		t.Fatalf("stored status = %q, want paid", status)
+	}
+	if live := activeCancelSeats(t, ctx, pool, cancelBusyHold); live != 1 {
+		t.Fatalf("%d active seat row(s) of the paid order, want none released: a captured payment keeps its seats", live)
 	}
 }
 
@@ -359,6 +498,20 @@ func seedCancelFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		 SELECT '` + cancelTicket + `', '` + cancelPaid + `', event_id, event_seat_id
 		 FROM cinema.reservation_seats WHERE reservation_id = '` + cancelPaid + `'`},
 		{"paid deadline", `UPDATE cinema.reservations SET expires_at = now() - interval '1 hour' WHERE id = '` + cancelPaid + `'`},
+		// The in-flight order (#79): a live hold whose checkout stored the attempt and then
+		// went to the provider, so the money is in flight outside any transaction. The
+		// attempt is written with no provider reference and no outcome, exactly as
+		// insertPendingAttemptQuery writes it.
+		{"in-flight event", `INSERT INTO cinema.events (id, room_id, film_id, layout_version_id, starts_at, status, price_cents)
+		 VALUES ('` + cancelBusyEvent + `','` + cancelRoom + `','` + cancelFilm + `','` + cancelLayout + `',now(),'on_sale',1250)`},
+		{"in-flight hold", `INSERT INTO cinema.reservations (id, event_id, status, expires_at)
+		 VALUES ('` + cancelBusyHold + `','` + cancelBusyEvent + `','held', now() + interval '1 hour')`},
+		{"in-flight hold seat", `INSERT INTO cinema.reservation_seats (reservation_id, event_id, event_seat_id)
+		 SELECT '` + cancelBusyHold + `', event_id, id FROM cinema.event_seats
+		 WHERE event_id = '` + cancelBusyEvent + `' ORDER BY id LIMIT 1`},
+		{"open attempt", `INSERT INTO cinema.payment_attempts
+		 (id, reservation_id, provider, amount_cents, status, idempotency_key, request_fingerprint)
+		 VALUES ('` + cancelBusyAttempt + `','` + cancelBusyHold + `','simulated',1250,'pending','cancel-busy-key','fp')`},
 	} {
 		if _, err := pool.Exec(ctx, statement.sql); err != nil {
 			t.Fatalf("seed %s: %v", statement.what, err)
@@ -394,15 +547,16 @@ func cleanupCancelFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool)
 	t.Helper()
 	for _, sql := range []string{
 		`DELETE FROM cinema.tickets WHERE reservation_id = '` + cancelPaid + `'`,
-		`DELETE FROM cinema.payment_attempts WHERE reservation_id = '` + cancelPaid + `'`,
+		`DELETE FROM cinema.payment_attempts WHERE reservation_id IN
+		   ('` + cancelPaid + `','` + cancelBusyHold + `')`,
 		`DELETE FROM cinema.reservation_seats WHERE reservation_id = '` + cancelReclaim + `'`,
 		`DELETE FROM cinema.reservations WHERE id = '` + cancelReclaim + `'`,
 		`DELETE FROM cinema.reservation_seats WHERE reservation_id IN
-		   ('` + cancelHold + `','` + cancelPaid + `','` + cancelLapsed + `')`,
+		   ('` + cancelHold + `','` + cancelPaid + `','` + cancelLapsed + `','` + cancelBusyHold + `')`,
 		`DELETE FROM cinema.reservations WHERE id IN
-		   ('` + cancelHold + `','` + cancelPaid + `','` + cancelLapsed + `')`,
-		`DELETE FROM cinema.event_seats WHERE event_id = '` + cancelEvent + `'`,
-		`DELETE FROM cinema.events WHERE id = '` + cancelEvent + `'`,
+		   ('` + cancelHold + `','` + cancelPaid + `','` + cancelLapsed + `','` + cancelBusyHold + `')`,
+		`DELETE FROM cinema.event_seats WHERE event_id IN ('` + cancelEvent + `','` + cancelBusyEvent + `')`,
+		`DELETE FROM cinema.events WHERE id IN ('` + cancelEvent + `','` + cancelBusyEvent + `')`,
 		`DELETE FROM cinema.films WHERE id = '` + cancelFilm + `'`,
 	} {
 		if _, err := pool.Exec(ctx, sql); err != nil {
@@ -411,6 +565,52 @@ func cleanupCancelFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool)
 			}
 		}
 	}
+}
+
+// capturePendingAttempt writes the sale the way checkout.PostgresStore.capture does once
+// the provider has answered: one transaction, the verdict stored on the attempt, the
+// reservation marked paid by the guarded statement, the seat sold — and nothing written at
+// all when the reservation is no longer payable, which is the shape that leaves a buyer
+// charged with nothing sold. It reports whether the sale was recorded.
+//
+// The statements are the checkout's own, restated here rather than imported: this package
+// must not depend on the checkout, and the test needs to run the write, not to exercise
+// the checkout's service.
+func capturePendingAttempt(ctx context.Context, pool *pgxpool.Pool, reservationID, attemptID string) (bool, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE cinema.payment_attempts
+		    SET status = 'captured', outcome = 'approved', provider_reference = $2, updated_at = now()
+		  WHERE id = $1 AND status IN ('pending', 'failed')`,
+		attemptID, "payment_attempt:"+attemptID); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE cinema.reservations SET status = 'paid' WHERE id = $1 AND status = 'held'`, reservationID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		// The hold stopped being payable before the capture decided, so the attempt
+		// verdict is rolled back with it — and the money the provider took is the loss.
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE cinema.event_seats SET state = 'sold'
+		  WHERE event_id = (SELECT event_id FROM cinema.reservations WHERE id = $1)
+		    AND id IN (SELECT event_seat_id FROM cinema.reservation_seats WHERE reservation_id = $1)`,
+		reservationID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // cancelStatus reads the stored status of one reservation.

@@ -49,6 +49,11 @@ because none of them adds a surface a buyer sees and all three close holes a gre
   and a delivery story this milestone does not assume.
 - **S15 — The Redis `{hold}` hash tag stops concentrating every hold key in one cluster slot**,
   with a compatibility note for holds written by the previous scheme.
+- **S16 — A cancel never takes a hold out from under a payment that is in flight.** The cancel
+  decides under the reservation row lock and refuses while an attempt is pending, answering the
+  payment route's own `409 payment_in_flight`; the capture keeps deciding for itself, so of one
+  cancel and one capture exactly one wins and the pair is never "the money was taken and the seats
+  were released". ([#79](https://github.com/elliug/prueba-gentle/issues/79))
 
 ## Tasks
 
@@ -66,6 +71,7 @@ because none of them adds a surface a buyer sees and all three close holes a gre
 | T9 | S1–S4 | `make verify-m41` and its CI job | 9 · `7084261` + `18c5d09` + the hardening commit (#75) |
 | T10 | S15 | Redis slot distribution | 10 |
 | T11 | S13, S14 | route-table truth; email decision then implementation | 11 · (#78) |
+| T13 | S16 | cancel cannot steal a hold mid-capture | 12 · (#79) |
 
 ## Log
 
@@ -446,3 +452,63 @@ were deliberately not run: this slice changes no behaviour they assert. No test 
 the change is documentation plus one description string on two server components and the allowed
 edit surfaces carry no test file; the sentences are pinned by nothing but review, which is stated
 here rather than dressed up as coverage.
+
+### L17 — T13 (#79): the cancel decides under the row lock, so the capture keeps its seats
+
+The defect L8 found and deliberately left as T13: a capture stores its attempt as `pending`,
+commits, and then calls the provider with **no transaction held** for seconds. A cancel arriving
+inside that window matched its own transition (`status IN ('held','payment_pending')` is true) and
+released the seats; the capture's `markPaid` then matched nothing, so the buyer was charged for an
+order that no longer existed. Neither path locked the row at the moment it decided.
+
+The semantics decided by the human, not by the writer: **the cancel loses.** Waiting does not
+resolve an in-flight payment — only the capture's verdict does, and after that the order is paid,
+which the same route already refuses by name. The refusal is `409 payment_in_flight` with the
+payment route's own code and title (`apps/api/internal/publicapi/payment.go`), because it is one
+fact seen from two surfaces and a client must not learn a second word for it.
+
+Three changes, each one line of meaning:
+
+| Where | What |
+|---|---|
+| `reservation.cancelHoldQuery` | `AND NOT EXISTS (SELECT 1 FROM cinema.payment_attempts WHERE reservation_id = $1 AND status = 'pending')` — the refusal is a predicate of the deciding statement, not a read the writer could pass before the attempt is inserted. |
+| `reservation.reservationCancelStateQuery` | reads the reservation `FOR UPDATE` and reports the open attempt, so the status, the window and the attempt answer cannot change between the read and the write. This is what orders the two paths: the checkout's `prepareAttempt` takes the same lock before it stores a pending attempt, so whichever transaction gets it first decides and the other sees the committed result. |
+| `reservation.ErrPaymentInFlight` | the refusal, a sentinel of `reservation` rather than an import of `checkout.ErrPaymentInFlight`: the dependency runs the other way, and the public API maps both to one code. |
+
+The state that used to be explained after a lost write is now read before it, and the decision
+follows from it: paid, cancelled, expired and lapsed answer as they did; a live hold in a
+cancellable status either transitions or is refused with the in-flight conflict. The case where the
+guarded write matches nothing although the locked row is live, cancellable and carries no attempt
+is reported as `ErrUnavailable`, never as a success: the old code had the same defensive branch for
+the same reason.
+
+**Not changed, and said out loud:** the capture path. Its decided semantics are right — a
+reservation that is no longer `held` is not payable, the attempt verdict is rolled back and the
+caller is told `reservation_not_payable` — and the money the provider already took is a recovery
+question this slice does not open. What changed is that the cancel can no longer be the reason that
+answer arrives.
+
+Tests, and what each one is worth. Two PostgreSQL-gated tests in
+`apps/api/internal/reservation/cancel_postgres_test.go`: the deterministic refusal (a pending
+attempt is seeded, the cancel is refused with `ErrPaymentInFlight` while the status and the seat row
+are untouched, and the capture that follows still marks one reservation paid) and the race itself
+(the attempt is pending, both paths start together, the cancel never wins, the attempt ends
+`captured`, the order ends `paid` and no seat row is released). Both are **skipped without
+`M3_CHECKOUT_DATABASE_URL`**, so their evidence is a later run, not this one. Everything else is
+pinned without a database and honestly limited: the service refuses the sentinel without touching
+the Redis hold, the transport answers `409 Conflict payment_in_flight` and reads nothing, and the
+two SQL statements are pinned by their shape — the predicate in the transition, the `FOR UPDATE` and
+the attempt answer in the lock read — the way the S15 event-id shape test already pins a query this
+suite cannot execute. The interleaving itself is not provable without the database, and no fake was
+invented to pretend otherwise.
+
+S16 was added to the Specs for this: L8 recorded T13 without one, and a log entry citing a spec
+number that does not exist is the kind of record that rots.
+
+**The sweep has the same hole and was deliberately left out of this branch.**
+`lockExpiredHoldsQuery` and `expireHoldsQuery` (expiry.go) still expire a hold whose window closes
+during the provider call; the same `pending`-attempt guard was written here and taken out again
+because it failed `make verify-m2` reproducibly on `TestExpirySweepRecoversFromAKilledWorker` ("the
+sweep never blocked on the seat row lock") while passing in isolation and against a freshly migrated
+database, so the guard moved to its own issue with that evidence rather than being published
+unexplained.

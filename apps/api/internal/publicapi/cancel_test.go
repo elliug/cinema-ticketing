@@ -227,6 +227,33 @@ func TestCancelRouteRefusesAPaidReservationWith409(t *testing.T) {
 	}
 }
 
+// S16 (#79): a cancel that arrives while the reservation's payment is in flight is
+// refused with the payment route's own `409 payment_in_flight`, not with a code of its
+// own: it is the same fact seen from the other surface, and the caller may act on it.
+func TestCancelRouteRefusesACancelWhileAPaymentIsInFlight(t *testing.T) {
+	detail := fixtureHeldOrder()
+	reader := &fakeReservationReader{detail: detail}
+	canceller := &fakeCanceller{err: fmt.Errorf("%w: %s", reservation.ErrPaymentInFlight, detail.ID)}
+
+	response := postCancel(t, mountedCancelServer(t, canceller, reader), detail.ID)
+	if response.StatusCode != http.StatusConflict {
+		body := readBody(t, response)
+		t.Fatalf("POST cancel with a payment in flight status = %d, want 409 (body %s)", response.StatusCode, body)
+	}
+	problem := decodeBody[problemBody](t, response)
+	if problem.Code != "payment_in_flight" || problem.Status != http.StatusConflict || problem.Title != "Conflict" {
+		t.Fatalf("problem = %+v, want a 409 Conflict payment_in_flight document", problem)
+	}
+	if problem.Detail == "" {
+		t.Fatalf("problem document carries no detail: %+v", problem)
+	}
+	// The refusal is decided before anything is read, so it never renders an order body
+	// a client could mistake for a cancelled reservation.
+	if got := atomic.LoadInt32(&reader.calls); got != 0 {
+		t.Fatalf("the refusal read the reservation %d times, want none", got)
+	}
+}
+
 // S10: an expired hold is answered honestly with what it is, not a 500 and not a silent
 // success — and the state the cancel established wins over the stored one the read still
 // carries until the expiry sweep rewrites it.
