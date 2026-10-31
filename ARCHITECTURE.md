@@ -237,6 +237,7 @@ Everything else in these tables is planned. M3 adds the payment and ticket route
 | `GET` | `/tickets/{ticketId}/pdf` | Download the stored ticket PDF through a short-lived pre-signed link. |
 | `GET` | `/tickets/{ticketId}/qr.svg` | Render the ticket's signed QR code as an image for the page and the printout. |
 | `POST` | `/tickets/verify` | Verify a presented ticket code against the stored ticket. |
+| `POST` | `/tickets/redeem` | Admit a presented ticket code exactly once: verify it first, then mark the ticket it names redeemed, answering the ticket, its seat, its screening and the instant it was admitted. A code that does not verify is refused exactly as `/tickets/verify` refuses it; a ticket already admitted answers `200` with the first instant and `alreadyRedeemed: true`; a void ticket and a cancelled screening are `409 voided` and `409 event_cancelled`. |
 
 The web app serves the ticket's QR image and PDF at its **own** origin (`/api/tickets/{id}/qr.svg`, `/api/tickets/{id}/pdf`) and forwards to the two routes above from the server. An absolute API address only means something on the machine running the API; linked directly, a page opened from another device asked that device for the ticket and got a blank image and a page-not-found download, both without an error anyone would notice.
 

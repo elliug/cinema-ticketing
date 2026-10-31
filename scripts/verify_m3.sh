@@ -269,12 +269,20 @@ for _ in $(seq 1 160); do
 done
 [ -n "$ready" ] || { cat "$api_log" >&2; fail "the API did not become ready on $base within 40s"; }
 
+code_routes=("/api/v1/tickets/{ticketId}/qr.svg" "/api/v1/tickets/verify" "/api/v1/tickets/redeem")
+
 mounted="$(grep -c 'public reservation API mounted' "$api_log" || true)"
 [ "$mounted" = "1" ] || { cat "$api_log" >&2; fail "the public reservation API was not mounted"; }
 grep -q '"checkout":true,"tickets":true,"ticket_pdfs":true' "$api_log" \
   || { cat "$api_log" >&2; fail "the API did not mount the checkout, ticket and PDF surfaces together"; }
-grep -q 'ticket QR codes are signed; code presentation and verification routes mounted' "$api_log" \
-  || { cat "$api_log" >&2; fail "the API did not mount the ticket code routes"; }
+# The three code routes, asserted as the paths the API logged rather than as the sentence
+# around them: the sentence is operator-facing prose and may be improved, while a route that
+# stopped being mounted is what this gate exists to catch. Admission joined the list when the
+# door learned to write the redemption.
+for code_route in "${code_routes[@]}"; do
+  grep -q "\"$code_route\"" "$api_log" \
+    || { cat "$api_log" >&2; fail "the API did not mount the ticket code route $code_route"; }
+done
 grep -q 'ticket PDFs are stored in the object bucket; download route mounted' "$api_log" \
   || { cat "$api_log" >&2; fail "the API did not mount the ticket PDF route"; }
 ok "api: ready on $base with checkout, ticket detail, QR image, verification and PDF routes mounted"

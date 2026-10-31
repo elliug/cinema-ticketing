@@ -396,6 +396,16 @@ func ticketRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// redeemRouted reports whether the door's admission route is mounted. The probe presents
+// no code at all, so a mounted route answers the malformed-body refusal without touching
+// a database; an unmounted one is refused by the ticket detail route's path instead
+// (405, method not allowed).
+func redeemRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/tickets/redeem", nil))
+	return w.Code == http.StatusBadRequest
+}
+
 // T4 (S4): the ticket detail route is part of the customer surface, so it is mounted
 // at /api/v1 next to the hold and payment routes and outside the administrative
 // guard. It is the route the confirmation page and the PDF download both address.
@@ -409,7 +419,9 @@ func TestMountReservationMountsTheTicketRoute(t *testing.T) {
 		TicketQRKey:    testTicketQRKey,
 	}
 	srv := testServer()
-	proc, err := mountReservationWithProbes(cfg, srv, discardLogger(), presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
+	var logged bytes.Buffer
+	proc, err := mountReservationWithProbes(cfg, srv, slog.New(slog.NewTextHandler(&logged, nil)),
+		presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
 	if err != nil {
 		t.Fatalf("mountReservation returned error: %v", err)
 	}
@@ -422,6 +434,14 @@ func TestMountReservationMountsTheTicketRoute(t *testing.T) {
 	}
 	if !ticketRouted(srv) {
 		t.Fatal("the ticket detail route was not mounted although its schema is present")
+	}
+	// T7 (S3): the admission route is mounted with the code it shares with the detail
+	// route, and the operator's line names it.
+	if !redeemRouted(srv) {
+		t.Fatal("the ticket admission route was not mounted although its schema is present")
+	}
+	if !strings.Contains(logged.String(), "/api/v1/tickets/redeem") {
+		t.Fatalf("log = %q, want the mounted-routes line to name the admission route", logged.String())
 	}
 	if !paymentRouted(srv) || !reservationRouted(srv) {
 		t.Fatal("mounting the ticket route dropped a route next to it")
@@ -458,7 +478,7 @@ func TestMountReservationSkipsTheTicketRouteWithoutItsSchema(t *testing.T) {
 	if proc.ticketStore != nil {
 		t.Fatal("mountReservation kept a ticket store without the ticket schema")
 	}
-	if ticketRouted(srv) || ticketQRRouted(srv) {
+	if ticketRouted(srv) || ticketQRRouted(srv) || redeemRouted(srv) {
 		t.Fatal("the ticket routes were mounted without their schema")
 	}
 	if !reservationRouted(srv) || !paymentRouted(srv) {
