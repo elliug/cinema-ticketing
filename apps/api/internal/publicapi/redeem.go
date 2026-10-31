@@ -125,6 +125,15 @@ func (h *Handler) redeemTicket(w http.ResponseWriter, r *http.Request) {
 		writeRedeemError(w, err)
 		return
 	}
+	redeemedAtLocal, localErr := detail.Event.LocalTime(redemption.RedeemedAt)
+	if localErr != nil {
+		writeRedeemError(w, localErr)
+		return
+	}
+	if err != nil {
+		writeRedeemError(w, err)
+		return
+	}
 	switch redemption.Outcome {
 	case tickets.RedemptionRefusedVoided:
 		// The ticket was withdrawn: it no longer admits anybody, so nothing was written.
@@ -173,7 +182,13 @@ func (h *Handler) redeemTicket(w http.ResponseWriter, r *http.Request) {
 		// When the door admitted the ticket, and which door it was. A used ticket answers
 		// the first instant, so "used at 20:14" survives a second presentation.
 		"redeemedAt": redemption.RedeemedAt.UTC(),
-		"redeemedBy": redemption.RedeemedBy,
+		// The same instant in the venue's own clock, beside the UTC form for exactly the
+		// reason `startsAt` and `startsAtLocal` sit together in the ticket read: the venue's
+		// hour is what a person at a door reads. Unreachable failure: the venue zone was
+		// resolved before the write, so a zone that could not render here would already have
+		// answered 503 without admitting anybody.
+		"redeemedAtLocal": redeemedAtLocal,
+		"redeemedBy":      redemption.RedeemedBy,
 		// The field a client reads instead of a status code: true means this ticket was
 		// already admitted, and `redeemedAt` is when it happened the first time.
 		"alreadyRedeemed": redemption.Outcome == tickets.RedemptionAlreadyRedeemed,
