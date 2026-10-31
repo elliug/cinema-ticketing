@@ -313,7 +313,7 @@ M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and adm
 
 | Surface | What it does |
 |---|---|
-| `/events` | the catalogue: screenings on sale, the venue's own hour, price per seat, seats available |
+| `/events` | the catalogue: screenings on sale, the venue's own hour, price per seat, seats available — one page at a time, with the cursor in the address so the next page is a link a buyer can bookmark, share and reload |
 | `/events/{id}/seats` | the seat map: the real layout, operable with the keyboard alone, states legible without colour |
 | `/reservations/{id}` | the checkout: pays with a key it keeps per reservation, and answers thirteen outcomes as thirteen states |
 | `/tickets/{id}` · `/tickets` | the ticket and the list of what this browser tab kept |

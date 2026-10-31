@@ -941,6 +941,135 @@ test("a body that is not JSON or not the expected shape is unexpected_response",
   assert.match(noExpiry.detail, /expiresAt/);
 });
 
+// M3.5 · T5b — the page the catalogue screen continues from.
+//
+// `GET /events` answers one page and says where the next one starts, in a `page` sibling
+// beside the list it already answered. Two rules decide the reads below. The list is
+// untouched: adding the sibling changed no entry, so the read that existed keeps its shape
+// and its callers keep working. And the sibling is what lets a screen offer the next page as
+// a URL — a cursor goes out exactly as a link carried it, because the catalogue is the only
+// layer that can read it.
+
+const NEXT_CURSOR = "djE6MjAyNi0wNS0wNFQyMDowMDowMFo6ZXZlbnQtbGF0ZQ";
+
+const PAGED_CATALOGUE_BODY = {
+  ...CATALOGUE_BODY,
+  page: { limit: 20, hasMore: true, nextCursor: NEXT_CURSOR },
+};
+
+test("a page read keeps every entry it already returned and reads the page beside them", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, PAGED_CATALOGUE_BODY));
+
+  const catalogue = unwrap(await makeClient(recorder).listCataloguePage());
+
+  // The entries are the ones the catalogue always answered, unchanged and in the served
+  // order: the sibling is additive, not a replacement.
+  assert.deepEqual(catalogue.events, CATALOGUE_BODY.events);
+  assert.deepEqual(catalogue.page, { hasMore: true, nextCursor: NEXT_CURSOR });
+  // The first page is asked for by naming no cursor at all.
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/events`);
+  assert.equal(headerValue(recorder.calls[0].init, "Authorization"), undefined);
+});
+
+test("a cursor travels back to the API exactly as a link carried it", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, PAGED_CATALOGUE_BODY));
+
+  await makeClient(recorder).listCataloguePage({ cursor: NEXT_CURSOR });
+
+  // Straight back out: not parsed, not re-encoded into a second cursor, not trimmed. Only
+  // the catalogue can read this value, so any edit here is an opinion it never served.
+  assert.equal(
+    recorder.calls[0].url,
+    `${BASE_URL}/api/v1/events?cursor=${encodeURIComponent(NEXT_CURSOR)}`,
+  );
+  assert.equal(recorder.calls[0].init.method, "GET");
+
+  // A bookmark can carry characters a query string must escape; the cursor itself is still
+  // the value it was when the API reads it back.
+  const odd = recordingFetch(() => jsonResponse(200, PAGED_CATALOGUE_BODY));
+  await makeClient(odd).listCataloguePage({ cursor: "a+b/c=" });
+  assert.equal(odd.calls[0].url, `${BASE_URL}/api/v1/events?cursor=a%2Bb%2Fc%3D`);
+});
+
+test("a second page keeps the entries the API served for that page", async () => {
+  const secondPage = {
+    events: [CATALOGUE_BODY.events[1]],
+    page: { limit: 20, hasMore: false, nextCursor: null },
+  };
+  const recorder = recordingFetch(() => jsonResponse(200, secondPage));
+
+  const catalogue = unwrap(await makeClient(recorder).listCataloguePage({ cursor: "carried" }));
+
+  assert.deepEqual(catalogue.events, [CATALOGUE_BODY.events[1]]);
+  assert.deepEqual(catalogue.page, { hasMore: false, nextCursor: null });
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/events?cursor=carried`);
+});
+
+test("a page that claims more without a cursor to reach it is refused", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { ...CATALOGUE_BODY, page: { limit: 20, hasMore: true, nextCursor: null } }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).listCataloguePage());
+
+  // The one thing the screen must never do is tell a buyer there is more and offer nothing.
+  assert.equal(problem.code, "unexpected_response");
+  assert.match(problem.detail, /nextCursor/);
+});
+
+test("a page without a hasMore flag is refused rather than assumed", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { ...CATALOGUE_BODY, page: { limit: 20 } }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).listCataloguePage());
+
+  assert.equal(problem.code, "unexpected_response");
+  assert.match(problem.detail, /hasMore/);
+});
+
+test("an API that serves no page sibling answers the whole catalogue", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, CATALOGUE_BODY));
+
+  const catalogue = unwrap(await makeClient(recorder).listCataloguePage());
+
+  // Before the sibling existed the list was the whole programme, so "no more" is the honest
+  // reading and the screen offers no next page instead of inventing one.
+  assert.deepEqual(catalogue.page, { hasMore: false, nextCursor: null });
+  assert.deepEqual(catalogue.events, CATALOGUE_BODY.events);
+});
+
+test("the plain list read still answers the entries alone", async () => {
+  // PRESERVE: the catalogue read that existed before paging keeps its shape — an array, not
+  // a page — so a caller that only wants the screenings reads the same thing it did.
+  const recorder = recordingFetch(() => jsonResponse(200, PAGED_CATALOGUE_BODY));
+
+  const events = unwrap(await makeClient(recorder).listEvents());
+
+  assert.equal(Array.isArray(events), true);
+  assert.deepEqual(events, CATALOGUE_BODY.events);
+});
+
+test("a cursor the catalogue refuses stays the field that was refused", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-input",
+      title: "Invalid input",
+      status: 400,
+      code: "invalid_input",
+      detail: "cursor is not a cursor this catalogue issued; read the first page again",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).listCataloguePage({ cursor: "stale" }));
+
+  // A bookmark that outlived the page it named is a 400 naming the cursor, not a page: the
+  // screen can only say "this link is no longer valid" if the refusal arrives as one.
+  assert.equal(problem.status, 400);
+  assert.equal(problem.code, "invalid_input");
+  assert.match(problem.detail, /cursor/);
+});
+
 // ── One screening, read by the page the buyer clicked (M3.5 · T5 · S3, S8) ────
 //
 // The catalogue names screenings; the seat page opens one. It answers with the same
