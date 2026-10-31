@@ -19,7 +19,7 @@ make migrate
 make check
 ```
 
-Expected result: Go tests and vet pass, and the web tests, lint, typecheck and build pass. The four milestones also have their own end-to-end gates — `make verify-m1`, `make verify-m2`, `make verify-m3` and `make verify-m35` — which start their own stack and prove the behaviour rather than the compilation.
+Expected result: Go tests and vet pass, and the web tests, lint, typecheck and build pass. The milestones also have their own end-to-end gates — `make verify-m1`, `make verify-m2`, `make verify-m3`, `make verify-m35` and `make verify-m41` — which start their own stack and prove the behaviour rather than the compilation.
 
 ## Run locally
 
@@ -142,6 +142,7 @@ make ensure-bucket      # create the configured ticket bucket when it is missing
 make bootstrap          # migrate-all, then seed-dev, then ensure-bucket
 make verify-m3          # M3 gate end to end: hold, pay, ticket, code, PDF from the bucket
 make verify-m35         # M3.5 gate in a real browser: administration, purchase, tickets
+make verify-m41         # M4.1 gate over HTTP: the door, its second presentation, a forgery, the race
 make migrate-down       # explicitly roll back the development schema
 make deps-down          # stop local containers without deleting volumes
 ```
