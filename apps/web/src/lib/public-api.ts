@@ -313,6 +313,8 @@ export interface PublicRedemption {
    * instant it is rather than deriving an hour from its own clock.
    */
   redeemedAt: string;
+  /** The same instant in the venue's own clock (RFC 3339 with its offset). */
+  redeemedAtLocal: string;
   /** The opaque label the door gave itself when it admitted the ticket, or empty. */
   redeemedBy: string;
   /** True when this ticket had already been admitted, before this call asked. */
@@ -1246,6 +1248,19 @@ function parseRedemption(value: unknown): PublicResult<PublicRedemption> {
       ),
     };
   }
+  // The venue's own hour is served beside the instant, and the door prints that one: the
+  // browser's zone is not the venue's, and deriving an hour here would print a time the venue
+  // never wrote down. Missing it is a refusal for the same reason a missing instant is.
+  const redeemedAtLocal = servedString(value.redeemedAtLocal);
+  if (redeemedAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the admission of ${value.ticketId} carries no redeemedAtLocal, so the hour the venue wrote down cannot be shown`,
+      ),
+    };
+  }
   // The flag is the whole difference between the two admissions, so it is served or the
   // answer is refused: defaulting it either way would admit a used ticket or refuse a fresh
   // one, and neither is the server's verdict.
@@ -1281,6 +1296,7 @@ function parseRedemption(value: unknown): PublicResult<PublicRedemption> {
       startsAt: stringOr(value.startsAt, ""),
       startsAtLocal,
       redeemedAt,
+      redeemedAtLocal,
       redeemedBy: stringOr(value.redeemedBy, ""),
       alreadyRedeemed: value.alreadyRedeemed,
     },

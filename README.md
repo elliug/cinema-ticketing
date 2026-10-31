@@ -318,6 +318,7 @@ M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and adm
 | `/reservations/{id}` | the checkout: pays with a key it keeps per reservation, and answers thirteen outcomes as thirteen states |
 | `/tickets/{id}` · `/tickets` | the ticket and the list of what this browser tab kept |
 | `/admin/venues` · `/admin/layouts` · `/admin/schedule` | cinemas, layouts and screenings — including the price and the status that put a screening on sale, which travel with the scheduling form so one submit schedules a screening the catalogue already sells |
+| `/admin/door` | the door: one field and one action for the code a buyer shows, and one answer a cashier cannot misread — admitted with its seat and screening, already used with the hour it was first used, not a ticket of ours in the API's own words, or not admissible because the ticket was voided or its screening was cancelled. The code is posted, answered and forgotten: nothing is kept in the browser |
 
 Two things this build is honest about:
 
@@ -338,7 +339,7 @@ Four milestones are delivered, and what they leave out is part of the delivery. 
 |---|---|
 | **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
 | **Single-use redemption** | A ticket is issued and its code can be verified server-side, but nothing marks it as used. The same QR can be presented at a door indefinitely. This is the largest gap: the ticket is worth one admission and currently proves an infinite number. |
-| **Cashier, reporting and audit** | No door screen, no takings, no record of who changed what. The administrative surface is local-only and unauthenticated beyond a shared token. |
+| **Cashier, reporting and audit** | No takings and no record of who changed what: the door screen admits a ticket once, but nothing counts the evening's takings or says who held the till. The administrative surface is local-only and unauthenticated beyond a shared token. |
 | **Catalogue filters beyond time** | `GET /events` pages with a keyset cursor and bounds each page with `from`/`to`, and nothing else: there is no film or cinema filter until a deployment has more than one cinema. |
 | **Email** | The PDF is downloaded from the web. Nothing is mailed. |
 | **PDFs that follow a void** | The PDF is rendered when the payment is captured and stored immutably: cancelling a screening or voiding a ticket does not change a PDF already issued. It is a record of the sale and never proof of validity — validity is `POST /tickets/verify`. |
