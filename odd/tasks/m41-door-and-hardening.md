@@ -267,3 +267,10 @@ closely is a change whose defects are found by gates or by users, in that order.
 Concretely for what remains: T5b is the catalogue screen only. T6 is one migration. T7 is the
 redeem schema **or** the endpoint, not both. T8 is one screen. The remaining work is small enough
 to be sliced small; the only thing standing in the way was this document not saying so until now.
+
+### L11 — T5a merged; the screen now shows less than the API serves
+
+#65 merged (`7e0e629`). The catalogue API pages with a keyset cursor and refuses what it cannot
+mean; the screen ignores the `page` sibling until T5b, so it renders at most 20 screenings with no
+way to ask for more. That gap is the slice, and it is one screen wide: T5b is not allowed to
+re-open the API.
