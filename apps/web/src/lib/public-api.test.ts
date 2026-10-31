@@ -1392,3 +1392,122 @@ test("an unknown order is a 404 and an unreachable read is retryable", async () 
   assert.equal(temporary.code, "service_unavailable");
   assert.notEqual(temporary.code, notFound.code, "404 is not 503");
 });
+
+// M4.1 · T8 — the door's admission route (S1, S3, S4), used exactly as the API serves it.
+//
+// The door presents the code a buyer shows, so this client adds one call and no second
+// endpoint: `POST /tickets/redeem` is public, carries the code in its body, and answers one
+// verdict. Two rules are pinned here — no administrative token travels with it, and
+// "already used" is read from `alreadyRedeemed` rather than from the HTTP status, because
+// that answer is a 200 with the *first* admission's hour in it.
+
+const REDEMPTION_BODY = {
+  ticketId: "ticket-1",
+  ticketStatus: "issued",
+  seats: [{ eventSeatId: 11, rowLabel: "A", seatNumber: "1" }],
+  eventId: "event-a",
+  eventStatus: "on_sale",
+  filmTitle: "The Long Take",
+  roomName: "Room 1",
+  cinemaName: "Cinema Centro",
+  startsAt: "2026-05-04T18:30:00Z",
+  startsAtLocal: "2026-05-04T20:30:00+02:00",
+  redeemedAt: "2026-05-04T20:14:00Z",
+  redeemedBy: "till-1",
+  alreadyRedeemed: false,
+};
+
+test("redeemTicket posts the code to the public route and reads what it admitted", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, REDEMPTION_BODY));
+
+  const redemption = unwrap(
+    await makeClient(recorder).redeemTicket({ token: "  cGF5bG9hZA.c2ln  ", label: "till-1" }),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/tickets/redeem`);
+  assert.equal(call.init.method, "POST");
+  assert.equal(headerValue(call.init, "Content-Type"), "application/json");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+  assert.deepEqual(JSON.parse(call.init.body as string), {
+    token: "cGF5bG9hZA.c2ln",
+    label: "till-1",
+  });
+
+  assert.equal(redemption.ticketId, "ticket-1");
+  assert.equal(redemption.alreadyRedeemed, false);
+  assert.equal(redemption.redeemedAt, "2026-05-04T20:14:00Z");
+  assert.equal(redemption.startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.deepEqual(redemption.seats, [
+    { eventSeatId: 11, rowLabel: "A", seatNumber: "1" },
+  ]);
+});
+
+test("a second presentation is an answer with the first hour, not an error", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, { ...REDEMPTION_BODY, alreadyRedeemed: true }),
+  );
+
+  const redemption = unwrap(await makeClient(recorder).redeemTicket({ token: "code" }));
+
+  assert.equal(redemption.alreadyRedeemed, true);
+  assert.equal(redemption.redeemedAt, "2026-05-04T20:14:00Z");
+  // The label is optional: a door that names nothing sends nothing.
+  assert.deepEqual(JSON.parse(recorder.calls[0].init.body as string), { token: "code" });
+});
+
+test("a withdrawn ticket and a cancelled screening stay two different refusals", async () => {
+  const voided = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/voided",
+      title: "Conflict",
+      status: 409,
+      code: "voided",
+      detail: "the ticket was voided, so it does not admit its holder",
+    }),
+  );
+  const voidProblem = unwrapError(await makeClient(voided).redeemTicket({ token: "code" }));
+  assert.equal(voidProblem.status, 409);
+  assert.equal(voidProblem.code, "voided");
+  assert.equal(voidProblem.detail, "the ticket was voided, so it does not admit its holder");
+
+  const cancelled = recordingFetch(() =>
+    jsonResponse(409, {
+      type: "https://cinema.local/problems/event-cancelled",
+      title: "Conflict",
+      status: 409,
+      code: "event_cancelled",
+      detail: "the screening was cancelled, so the ticket does not admit its holder",
+    }),
+  );
+  const cancelledProblem = unwrapError(
+    await makeClient(cancelled).redeemTicket({ token: "code" }),
+  );
+  assert.equal(cancelledProblem.code, "event_cancelled");
+  assert.notEqual(cancelledProblem.detail, voidProblem.detail);
+});
+
+test("a code that is not a ticket of ours is refused in the API's own words", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-token",
+      title: "Invalid token",
+      status: 400,
+      code: "invalid_token",
+      detail: "the presented code is not a valid ticket",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).redeemTicket({ token: "forged" }));
+  assert.equal(problem.code, "invalid_token");
+  assert.equal(problem.detail, "the presented code is not a valid ticket");
+});
+
+test("redeemTicket refuses a blank code before any request", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, REDEMPTION_BODY));
+  const problem = unwrapError(await makeClient(recorder).redeemTicket({ token: "   " }));
+
+  assert.equal(recorder.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+});

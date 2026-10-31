@@ -19,8 +19,9 @@
 // one screening (so the seat page keeps the film, the venue, the hour and the price
 // the buyer clicked on), the M3.5 read of one order (so a reloaded confirmation keeps
 // its screening, its seats, its deadline and its tickets without asking the payment
-// route again), and the M3 ticket verification a page uses to say plainly whether a
-// ticket admits its holder. The two ticket *downloads* are not reads this
+// route again), the M3 ticket verification a page uses to say plainly whether a
+// ticket admits its holder, and the M4.1 admission the door performs with the same code.
+// The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
 // the API from the server, so the browser fetches the bytes and the page never
@@ -60,6 +61,8 @@ export type PublicErrorCode =
   | "provider_reference_taken"
   | "coordination_unavailable"
   | "service_unavailable"
+  | "voided"
+  | "event_cancelled"
   | "network_error"
   | "unexpected_response";
 
@@ -282,6 +285,47 @@ export interface PublicVerification {
   reason?: string;
 }
 
+/**
+ * POST /tickets/redeem — the door's one answer about one presented code.
+ *
+ * It is the verification above plus the act: the API verifies the code, admits the ticket it
+ * names exactly once, and answers with what the door has to say. `alreadyRedeemed` is the
+ * field that separates the two admissions, because both are `200`: the second presentation is
+ * not an error, it is a ticket that was used at the *first* instant.
+ */
+export interface PublicRedemption {
+  ticketId: string;
+  /** Stored ticket status: `issued` or `void`. */
+  ticketStatus: string;
+  eventId: string;
+  seats: PublicTicketSeat[];
+  filmTitle: string;
+  cinemaName: string;
+  roomName: string;
+  /** The instant the screening starts, in UTC, for a `<time>` element. */
+  startsAt: string;
+  /** The screening time in the venue's own zone, rendered by the API. */
+  startsAtLocal: string;
+  /**
+   * When this ticket was admitted: the first admission's instant, on both answers.
+   *
+   * The API serves it in UTC and serves no venue-local form of it, so a surface prints the
+   * instant it is rather than deriving an hour from its own clock.
+   */
+  redeemedAt: string;
+  /** The opaque label the door gave itself when it admitted the ticket, or empty. */
+  redeemedBy: string;
+  /** True when this ticket had already been admitted, before this call asked. */
+  alreadyRedeemed: boolean;
+}
+
+export interface RedeemTicketInput {
+  /** The signed code the holder shows; whitespace is trimmed before it is sent. */
+  token: string;
+  /** The door's own label (a till, a gate, a shift), or absent when it names none. */
+  label?: string;
+}
+
 /** One screening of the public catalogue, as `GET /events` answers it. */
 export interface PublicScreening {
   /** Event id; the seat page is reached at `/events/{id}/seats`. */
@@ -411,6 +455,14 @@ export interface PublicClient {
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
   getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
   verifyTicket(token: string): Promise<PublicResult<PublicVerification>>;
+  /**
+   * Presents a code at the door: the server verifies it and admits the ticket it names once.
+   *
+   * There is no second endpoint and no second opinion: this is the same public route a
+   * scanner would POST to, it carries no administrative credential, and the answer — admitted,
+   * already admitted, refused, or unreadable — is the only verdict a screen may render.
+   */
+  redeemTicket(input: RedeemTicketInput): Promise<PublicResult<PublicRedemption>>;
 }
 
 /**
@@ -454,6 +506,11 @@ export type VerificationResponse =
   | { ok: true; verification: PublicVerification }
   | { ok: false; problem: PublicProblem };
 
+/** The serializable answer of an admission at the door. */
+export type RedemptionResponse =
+  | { ok: true; redemption: PublicRedemption }
+  | { ok: false; problem: PublicProblem };
+
 export const DEFAULT_PUBLIC_BASE_URL = "http://127.0.0.1:8080";
 
 /** Server-side environment variable holding the API base URL. */
@@ -495,6 +552,10 @@ const PROBLEM_CODES: readonly PublicErrorCode[] = [
   "provider_reference_taken",
   "coordination_unavailable",
   "service_unavailable",
+  // The two refusals an admission can earn. They are problem codes, not reasons: a void
+  // ticket and a cancelled screening are the API's own words for why nobody walks in.
+  "voided",
+  "event_cancelled",
   "unexpected_response",
 ];
 
@@ -763,6 +824,34 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseVerification(result.value);
+    },
+
+    async redeemTicket(input) {
+      const presented = input.token.trim();
+      if (presented === "") {
+        // A blank code is not a code: the API would answer it with the refusal it gives a
+        // forged one, and asking would tell the door nothing it does not already know.
+        return { ok: false, error: invalidInput("a code is needed to admit a ticket") };
+      }
+
+      // The label is the door's own name for itself and is omitted when the door names
+      // nothing, so an admission never records a name nobody gave it.
+      const label = (input.label ?? "").trim();
+      const result = await send<unknown>("/tickets/redeem", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify(
+          label === "" ? { token: presented } : { token: presented, label },
+        ),
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseRedemption(result.value);
     },
   };
 }
@@ -1126,6 +1215,76 @@ function parseVerification(value: unknown): PublicResult<PublicVerification> {
     verification.reason = reason;
   }
   return { ok: true, value: verification };
+}
+
+function parseRedemption(value: unknown): PublicResult<PublicRedemption> {
+  if (!isRecord(value) || typeof value.ticketId !== "string") {
+    return { ok: false, error: unexpectedResponse(200, "the admission names no ticket") };
+  }
+
+  // Both time forms are printed: the venue's own hour for the cashier, the instant for a
+  // `<time>` element. Neither is derived here, so a missing one refuses the answer.
+  const startsAtLocal = servedString(value.startsAtLocal);
+  if (startsAtLocal === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the admission of ${value.ticketId} carries no startsAtLocal, so its screening time cannot be shown in the venue's zone`,
+      ),
+    };
+  }
+  // Without the stored instant the door cannot say when the ticket was used, and the one
+  // thing a second presentation must never be is undated.
+  const redeemedAt = servedString(value.redeemedAt);
+  if (redeemedAt === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the admission of ${value.ticketId} carries no redeemedAt instant, so when it was used cannot be said`,
+      ),
+    };
+  }
+  // The flag is the whole difference between the two admissions, so it is served or the
+  // answer is refused: defaulting it either way would admit a used ticket or refuse a fresh
+  // one, and neither is the server's verdict.
+  if (typeof value.alreadyRedeemed !== "boolean") {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the admission of ${value.ticketId} carries no alreadyRedeemed flag, so whether this ticket was used cannot be said`,
+      ),
+    };
+  }
+  if (!Array.isArray(value.seats)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the admission of ${value.ticketId} carries no seat list, so where to go cannot be shown`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ticketId: value.ticketId,
+      ticketStatus: stringOr(value.ticketStatus, "unknown"),
+      eventId: stringOr(value.eventId, ""),
+      seats: parseTicketSeats(value.seats),
+      filmTitle: stringOr(value.filmTitle, ""),
+      cinemaName: stringOr(value.cinemaName, ""),
+      roomName: stringOr(value.roomName, ""),
+      startsAt: stringOr(value.startsAt, ""),
+      startsAtLocal,
+      redeemedAt,
+      redeemedBy: stringOr(value.redeemedBy, ""),
+      alreadyRedeemed: value.alreadyRedeemed,
+    },
+  };
 }
 
 function parseTicketSeats(items: unknown[]): PublicTicketSeat[] {
