@@ -70,7 +70,7 @@ export default function TicketsPage() {
       <PageHeader
         eyebrow="Tickets · M3.5"
         title="My tickets"
-        description="The ticket ids this browser tab kept from the purchases it made in it — not an account, and not a list the box office keeps. Each one is read from the box office when this screen loads, and a ticket is opened by its own link."
+        description="The ticket ids this browser tab kept from the purchases it made in it — not an account, and not a list the box office keeps. Each one is read from the box office when this screen loads, and a ticket is opened by its own link. The PDF is what you get and nothing is mailed."
       />
       <KeptTicketList readTicket={readTicketAction} />
     </main>
