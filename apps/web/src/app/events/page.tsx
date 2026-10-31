@@ -26,6 +26,18 @@
 // streams: the page header arrives, and the list's own region says it is loading
 // while the read is in flight.
 //
+// The catalogue pages, so this screen reads one page of it and says so (M3.5 · T5b):
+//
+//   - the cursor lives in the URL, and the next page is offered as a link at the address
+//     that reaches it. A page a buyer can bookmark, share and reload is a page whose
+//     address says where it is, which an appended list can never be;
+//   - the last page says nothing about a next page. No disabled control, and no "page 1
+//     of N": the API says whether more exists, never how much, and a count would be an
+//     invented number;
+//   - a cursor the API refuses (400, field `cursor`) is answered with a sentence and the
+//     beginning of the catalogue. A stale bookmark is not a dead end, and it is not
+//     quietly rendered as page one either, which would look like the page it asked for.
+//
 // The route is server-rendered per request: availability is live and must never be
 // prerendered or cached.
 import Link from "next/link";
@@ -45,51 +57,87 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PublicProblem, PublicScreening } from "@/lib/public-api";
 import { createPublicClient, resolvePublicConfig } from "@/lib/public-api";
+import {
+  CATALOGUE_PATH,
+  cursorFromParams,
+  isRefusedCursor,
+  nextPageHref,
+} from "./catalogue-paging";
 
 export const dynamic = "force-dynamic";
 
-export default function EventsPage() {
+interface EventsPageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default function EventsPage({ searchParams }: EventsPageProps) {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
         eyebrow="Catalogue · M3.5"
         title="Now showing"
-        description="Every screening on sale right now, in screening order. Times are the venue's own clock, prices are per seat, and the seats available are the number the API counted when this page was loaded."
+        description="Screenings on sale from now on, in screening order, one page at a time: when there are more, the address of the next page is offered below the list. Times are the venue's own clock, prices are per seat, and the seats available are the number the API counted when this page was loaded."
       />
 
+      {/* The URL is read inside the boundary, so the header still arrives while the page
+          itself is being read and a slow catalogue streams instead of blanking the screen. */}
       <Suspense fallback={<CatalogueLoading />}>
-        <Catalogue />
+        <Catalogue searchParams={searchParams} />
       </Suspense>
     </main>
   );
 }
 
-/** Reads the catalogue and decides which of its four honest states to render. */
-async function Catalogue() {
+/** Reads one page of the catalogue and decides which of its honest states to render. */
+async function Catalogue({ searchParams }: EventsPageProps) {
+  // The address decides which page this is, so a reload, a bookmark and a shared link all
+  // land on the same screenings instead of on the first page again.
+  const cursor = cursorFromParams(await searchParams);
+
   const config = resolvePublicConfig(process.env);
   if (!config.ok) {
     return <CatalogueProblem problem={config.error} />;
   }
 
-  const result = await createPublicClient(config.value).listEvents();
+  const result = await createPublicClient(config.value).listCataloguePage({
+    cursor: cursor ?? undefined,
+  });
   if (!result.ok) {
-    return <CatalogueProblem problem={result.error} />;
+    return isRefusedCursor(result.error, cursor) ? (
+      <CatalogueStaleLink problem={result.error} />
+    ) : (
+      <CatalogueProblem problem={result.error} />
+    );
   }
-  if (result.value.length === 0) {
+  if (result.value.events.length === 0) {
     return <CatalogueEmpty />;
   }
 
-  return <CatalogueList screenings={result.value} />;
+  return (
+    <CatalogueList
+      screenings={result.value.events}
+      nextHref={nextPageHref(result.value.page)}
+    />
+  );
 }
 
-function CatalogueList({ screenings }: { screenings: PublicScreening[] }) {
+function CatalogueList({
+  screenings,
+  nextHref,
+}: {
+  screenings: PublicScreening[];
+  nextHref: string | null;
+}) {
   return (
     <section aria-labelledby="screenings-title" className="flex flex-col gap-3">
       <h2 id="screenings-title">Screenings on sale</h2>
       <p className="m-0 max-w-prose">
+        {/* The count is a page count, not a programme count: with more pages behind
+            this one, "12 screenings are on sale" would be a number the screen cannot
+            know. `hasMore` is the only thing this page may say about the rest. */}
         {screenings.length === 1
-          ? "1 screening is on sale."
-          : `${screenings.length} screenings are on sale.`}{" "}
+          ? "1 screening on this page."
+          : `${screenings.length} screenings on this page.`}{" "}
         <span className="text-muted-foreground">
           Each entry opens that screening&apos;s seat map, where the seats are
           chosen and held.
@@ -103,6 +151,21 @@ function CatalogueList({ screenings }: { screenings: PublicScreening[] }) {
           <ScreeningEntry key={screening.id} screening={screening} />
         ))}
       </ul>
+
+      {/* Nothing at all on the last page, rather than a control that cannot be used: the
+          API said this is the end, and it never says how far the end is, so there is no
+          "page 1 of N" to print either. The link is an address, so the page it reaches can
+          be bookmarked, shared and reloaded like any other. */}
+      {nextHref === null ? null : (
+        <p className="m-0 max-w-prose">
+          More screenings are on sale than fit on this page.{" "}
+          <Link href={nextHref}>Show the next screenings</Link>{" "}
+          <span className="text-muted-foreground">
+            — the address carries where this page ended, so the next page can be followed,
+            bookmarked and reloaded.
+          </span>
+        </p>
+      )}
     </section>
   );
 }
@@ -243,6 +306,39 @@ function CatalogueEmpty() {
           <span className="text-muted-foreground">
             , which is available in this development environment only.
           </span>
+        </p>
+      </Card>
+    </section>
+  );
+}
+
+/**
+ * The catalogue link outlived the page it named.
+ *
+ * A cursor is where one page ended, so it is only as durable as the screenings it counted:
+ * a shared or bookmarked link can name a screening that has since started, and the API
+ * refuses that cursor (400, naming the field) instead of answering a page it cannot mean.
+ *
+ * The sentence carries the state — nothing here is said by colour, so greyscale and a screen
+ * reader hear the same thing — and the way out is the catalogue's own address, the first
+ * page, which is the one that names no cursor. It is not rendered as page one silently:
+ * that would look like the page the link asked for.
+ */
+function CatalogueStaleLink({ problem }: { problem: PublicProblem }) {
+  return (
+    <section aria-labelledby="catalogue-stale-link" className="flex flex-col gap-3">
+      <Card className="flex flex-col gap-2 p-5">
+        <h2 id="catalogue-stale-link">This catalogue link is no longer valid</h2>
+        <p className="m-0 max-w-prose">
+          The cursor in this address names a page the catalogue cannot show any more, because
+          the screenings it counted have moved on. Nothing is wrong with the catalogue itself.
+        </p>
+        <p className="m-0 max-w-prose">
+          <code>{problem.code}</code> · HTTP {problem.status}
+        </p>
+        <p className="m-0">{problem.detail}</p>
+        <p className="m-0 max-w-prose">
+          <Link href={CATALOGUE_PATH}>See the catalogue from the beginning</Link>
         </p>
       </Card>
     </section>
