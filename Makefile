@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-e2e
+.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-e2e
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -100,6 +100,17 @@ verify-m3:
 # chromium`), all checked with a named refusal rather than a stack trace.
 verify-m35:
 	./scripts/verify_m35.sh
+
+# The M4.1 exit evidence: the door, over HTTP and never through a screen. One fresh stack
+# at the door's own migration: the whole fixture created through the administrative API
+# (a screening on sale at a price in one request), a real sale, the first admission, the
+# second presentation answering the first instant instead of an error, a forged code
+# refused exactly as verification refuses it and writing no row, the sale and its PDF
+# unchanged, and two doors racing one ticket with exactly one winner. It creates and
+# removes its own database, Redis index (11 by default), API port and bucket, and it
+# needs Docker Compose, Go, jq, openssl and curl, each with a named refusal.
+verify-m41:
+	./scripts/verify_m41.sh
 
 # The Playwright suite alone, against a web server and an API that are already running
 # (`API_BASE_URL` defaults to http://127.0.0.1:8080). Useful while iterating on a scenario.

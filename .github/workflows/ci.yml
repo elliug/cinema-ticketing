@@ -90,6 +90,45 @@ jobs:
       - name: Verify M3 checkout, tickets and PDF delivery
         run: make verify-m3
 
+  # The M4.1 gate is its own job for the same reason the two above are: it starts the three
+  # compose services, bootstraps the stack, and then proves the door — a redemption over
+  # HTTP only, the second presentation, a forged code and two doors racing one ticket.
+  # `make verify-m41` creates and removes its own database, Redis logical database (11, so it
+  # never shares an index with the other gates), API port and bucket. It needs jq, openssl
+  # and curl, all of which the runner image carries; they are checked here so a missing tool
+  # is a clear failure rather than a confusing one later.
+  m41-door:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check the tools the gate needs
+        run: |
+          docker compose version
+          docker-compose version 2>/dev/null || true
+          jq --version
+          openssl version
+          curl --version | head -n 1
+
+      # The project's own bootstrap: compose services, every migration, the development
+      # seed and the ticket bucket. The gate below creates and removes its own on top.
+      - name: Bootstrap the stack
+        env:
+          API_ENV: development
+        run: make bootstrap
+
+      # Quoted because the step name carries a colon: an unquoted `: ` inside a plain scalar
+      # makes the whole workflow file unparseable, and GitHub then reports a run with zero
+      # jobs instead of an invalid-file error where a reader would look for it.
+      - name: "Verify M4.1 door: admission, second presentation, forgery and the race"
+        run: make verify-m41
+
   # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
   # compose services, bootstraps the stack, and then adds a real browser. It installs two
   # engines — Chromium and Firefox, with the system libraries they need — because a single
