@@ -440,6 +440,13 @@ type ReconcileResult struct {
 	Unresolved int
 }
 
+// minReconcileAge is the smallest age bound the durable query can express. The store
+// sends the bound as whole microseconds (`time.Duration.Microseconds` truncates), so a
+// smaller value would arrive as zero and mean "now" — turning a live provider call into
+// an abandoned one, which is the failure this worker exists to avoid. The bound is
+// refused instead of silently rounded away.
+const minReconcileAge = time.Microsecond
+
 // ReconcileStaleAttempts settles the attempts a dead process left pending: for each
 // one it asks the provider **again** with the attempt's own amount and its
 // deterministic reference, and records the answer the provider gives (issue #87).
@@ -454,8 +461,9 @@ type ReconcileResult struct {
 // held: an unanswered call is not a verdict, and silent release is the one outcome this
 // design refuses.
 func (s *Service) ReconcileStaleAttempts(ctx context.Context, olderThan time.Duration, batch int) (ReconcileResult, error) {
-	if olderThan <= 0 {
-		return ReconcileResult{}, fmt.Errorf("%w: reconciliation needs a positive age bound, got %s", ErrInvalidInput, olderThan)
+	if olderThan < minReconcileAge {
+		return ReconcileResult{}, fmt.Errorf("%w: reconciliation age bound must be at least one microsecond (%s), got %s",
+			ErrInvalidInput, minReconcileAge, olderThan)
 	}
 	if batch <= 0 {
 		return ReconcileResult{}, fmt.Errorf("%w: reconciliation batch must be positive, got %d", ErrInvalidInput, batch)

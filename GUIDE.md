@@ -56,6 +56,10 @@ and a database that stops short of it will fail to admit anyone.
    provider again with the same reference, so the charge becomes either a ticket or a released
    hold — never money taken without a ticket. While a payment is in flight its hold is never
    released, which is why a seat can look stuck for the length of one hold window.
+   The worker charges **what the attempt stored**, never today's price: a screening that changed
+   price after an attempt was opened is settled at the amount that attempt was created with,
+   and the buyer's own retry of that order is refused as a mismatch instead of being charged a
+   second amount.
 6. **Get the tickets.** One ticket per seat. `GET /tickets/{ticketId}` is the presentation data,
    `/qr.svg` is the signed code as an image, and `/pdf` answers `302` to a short-lived pre-signed
    link rather than the document itself.
@@ -128,6 +132,7 @@ anywhere; the administrative surface is local-only and bears a single shared tok
 | Email | the PDF is downloaded from the web; nothing is mailed |
 | Refunds | a paid order cannot be cancelled; a cancel of a paid one is refused `409 already_paid` |
 | Real payments and storage | the provider is simulated and storage is Floci |
+| A charge that cannot happen twice | the simulated provider deduplicates by reference **inside its own process**; a deployment's protection against double charging is its real provider's contract, not a guarantee of this build |
 | Catalogue filters beyond time | no film or cinema filter, until a deployment has more than one |
 | PDFs that follow a void | the PDF is a record of the sale, never proof of validity — validity is `POST /tickets/verify` |
 | Browser coverage beyond Chromium and Firefox | no WebKit, and one origin family: a private LAN address on plain HTTP |

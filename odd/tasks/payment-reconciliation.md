@@ -42,6 +42,10 @@ Issue: [#87](https://github.com/elliug/cinema-ticketing/issues/87). Branch: `fea
 - **T4 — S5** — record the behaviour where a reader looks for it (`GUIDE.md` honest limits and
   `ARCHITECTURE.md` if the surface changed). — commit: pending
 
+- **T5 — S3,S6** — the independent verifier's probes adopted as durable evidence, and its two
+  advisories closed: the sub-microsecond age bound refused, and the two honest limits written
+  in `GUIDE.md`. — **in progress** on `test/reconciler-probes`
+
 ## Slices
 
 Two work-unit commits, because each has to be reviewable and independently green:
@@ -56,6 +60,13 @@ Two work-unit commits, because each has to be reviewable and independently green
    the gated test, the `verify_m3.sh` step that runs the gated suite and refuses a skip, and
    this document. Kept apart on purpose: this is the slice where a reviewer checks that the
    evidence actually runs, which is exactly what was broken before it.
+3. **The verifier's evidence, adopted** — `test(checkout): adopt the independent probes as
+   durable evidence`: the two probe files, 844 lines. Above the ~400-line target and
+   deliberately so: it is one artefact (a suite of probes that compile together and share one
+   setup helper), and splitting it would produce commits that neither compile nor run alone.
+   It is reviewable as one thing — only tests, no production code.
+4. **The guard and the limits** — `fix(checkout): refuse a reconciliation age the query cannot
+   express`: `minReconcileAge`, its test case, and the two honest limits in `GUIDE.md`.
 
 ## Log
 
@@ -83,3 +94,17 @@ Two work-unit commits, because each has to be reviewable and independently green
   database the whole package passes (21 tests, 0 skips), so `verify_m3.sh` now runs it with
   `-p 1`, asserts my reconciliation test passed by name, and **fails if any gated test
   skipped** — because a skip is not a pass and it is how this suite stayed dead.
+- **L6** — the independent verifier (Task Size item 4 escalated) returned **8/8 PASS, nothing
+  merge-blocking**, having probed on real PostgreSQL rather than reading: no release with an
+  unanswered call, one sale under `Charge` racing three reconciliations, zero deadlocks in a
+  three-second contention, the gate fail-closed by negative simulation, and 48 → 60 tests with
+  every baseline test still passing. Its nine probes are adopted here as permanent evidence in
+  `reconcile_probes_test.go` and `reconcile_limits_test.go`, with the two exploratory `t.Logf`
+  advisories turned into assertions.
+- **L7** — two advisories closed as code, one as documentation. **Code**: `Duration.Microseconds`
+  truncates, so a bound below one microsecond reached the query as zero and meant `now()` — the
+  probe showed it returning **two candidates**, one of them a live attempt. `minReconcileAge`
+  now refuses it in both the service and the store. **Documentation**: `GUIDE.md` says the worker
+  charges the attempt's stored amount rather than today's price, and that "a charge cannot happen
+  twice" is the simulated provider's in-process ledger — a deployment's protection is its real
+  provider's contract, not a guarantee of this build.
