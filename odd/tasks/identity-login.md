@@ -211,9 +211,28 @@ verificada.
 | T7 | Web: `/tickets` con sesión lee del servidor; sin sesión dice la verdad | S5 |
 | T8 | Web: retirar la sesión de demostración y su etiqueta | S7 |
 | T9 | Gates: `verify-identity` (enlace caducado, enlace reusado, límite, revocación, reclamo) | S1–S6 |
+| T1b | Gates: ciclos 0009 y 0010 en `verify_migrations.sh`, que se había quedado en 0008 | S8 |
 
 Esfuerzo estimado: dos o tres días, con T1–T5 como primer corte (por API, con `curl`) y T6–T9 como
 segundo.
+
+## Slices
+
+- **Slice 1 — el esquema y el enlace firmado**: tres commits, 1.612 líneas.
+  - `feat(db): a table for the account, one for the session, one for the link` (194 líneas):
+    migración 0010 en ambos sentidos — `guest_customers`, `sessions` (hash, nunca el token),
+    `access_links` (nonce de un solo uso) y `reservations.customer_id` nullable con `set null`.
+  - `feat(identity): sign a link that proves an address, in minutes` (1.142 líneas, casi todo
+    tests): el tercer firmante, `API_IDENTITY_LINK_KEY` y `API_IDENTITY_LINK_TTL` (15m),
+    `NormalizeEmail` dentro del firmante y diez comportamientos probados a reloj fijo. Va por
+    encima del objetivo de ~400 líneas y es deliberado: un firmante sin sus bordes probados es
+    un firmante que no se sabe si firma lo que dice.
+  - `test(migrations): make the gate cover 0009 and 0010 instead of stopping at 0008` (276
+    líneas): el gate se había quedado en 0008 y su verde describía una base de datos dos
+    migraciones por detrás. Las aserciones nuevas se probaron contra copias mutadas de las
+    migraciones —un CHECK debilitado, una clave compuesta reducida a una columna, un rollback que
+    borra la cola, y las dos acciones de borrado intercambiadas— y cada mutación fue cazada por un
+    fallo con nombre.
 
 ## Log
 

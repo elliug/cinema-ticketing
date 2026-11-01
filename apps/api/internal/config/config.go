@@ -81,6 +81,17 @@ type Config struct {
 	// tickets. It defaults to the documented seven day demo window and must be
 	// positive: a non-positive lifetime would mint links that are already closed.
 	TicketLinkTTL time.Duration
+	// IdentityLinkKey is the HMAC key the signed access links a login email carries
+	// are signed with. It is a secret and must never be logged, echoed in an error or
+	// committed, and it is deliberately neither of the other two keys: a mailbox proves
+	// control of an address and a ticket link proves a purchase, so the two lifetimes
+	// and the two leaks are unrelated.
+	IdentityLinkKey string
+	// IdentityLinkTTL is how long a signed access link keeps a login open. It defaults
+	// to fifteen minutes rather than days because an access link is a step of a login
+	// and not a key somebody keeps, and it must be positive: a non-positive lifetime
+	// would mint links that are already closed.
+	IdentityLinkTTL time.Duration
 	// SMTPAddr is the host:port of the SMTP server the ticket email is delivered
 	// through: Mailpit on mailpit:1025 / 127.0.0.1:1025 locally, a real provider
 	// elsewhere. It is set together with EmailFrom or not at all.
@@ -174,6 +185,27 @@ const (
 	defaultTicketLinkTTL = 7 * 24 * time.Hour
 )
 
+// The signed access link rules. The login email carries a signed link to one address
+// (D1, S2), so that link needs a key and a lifetime of its own: a ticket link proves a
+// purchase and survives a week in a mailbox, an access link proves a mailbox and is spent
+// by one login, and neither may be able to invalidate the other.
+const (
+	// developmentIdentityLinkKey is the well-known development access link key, accepted
+	// only when API_ENV is development. It is deliberately a third value, different from
+	// developmentTicketQRKey and developmentTicketLinkKey, so pasting one default into
+	// another variable fails instead of silently signing two different links with one key.
+	developmentIdentityLinkKey = "cinema-identity-development-access-link-key"
+	// identityLinkKeyMinLength is the shortest access link key accepted, in bytes, for the
+	// reason ticketQRKeyMinLength states: an HMAC-SHA256 key is only as strong as its
+	// entropy.
+	identityLinkKeyMinLength = 32
+	// defaultIdentityLinkTTL is the fifteen minute window a login email's link lives. It is
+	// minutes and not days on purpose: the link is one step of a login, the person who
+	// asked for it is sitting in front of the mailbox, and a stolen copy of a step is worth
+	// less than a stolen copy of a key.
+	defaultIdentityLinkTTL = 15 * time.Minute
+)
+
 // The ticket email rules. The consumer is optional by design (S5): a sale never
 // depends on the mail, so an unconfigured provider is a normal state and not an
 // error. What *is* an error is half a provider, because neither half can do anything
@@ -220,6 +252,13 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	                          when API_ENV=development)
 //	API_TICKET_LINK_TTL       lifetime of a signed ticket link as a duration (default
 //	                          "168h", the documented seven day demo window; positive)
+//	API_IDENTITY_LINK_KEY     HMAC key the signed access links in login emails are signed
+//	                          with: at least 32 bytes, a secret, never echoed, and never
+//	                          the QR key or the ticket link key (default: the development
+//	                          key, and only when API_ENV=development)
+//	API_IDENTITY_LINK_TTL     lifetime of a signed access link as a duration (default
+//	                          "15m", because an access link is a step and not a key;
+//	                          positive)
 //	API_SMTP_ADDR             host:port of the SMTP server the ticket email is
 //	                          delivered through (default: none, which disables the
 //	                          ticket email consumer; set together with API_EMAIL_FROM)
@@ -329,6 +368,10 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	}
 
 	if err := cfg.loadTicketLink(getenv); err != nil {
+		return Config{}, err
+	}
+
+	if err := cfg.loadIdentityLink(getenv); err != nil {
 		return Config{}, err
 	}
 
@@ -486,6 +529,59 @@ func (c *Config) loadTicketLink(getenv func(string) string) error {
 		c.TicketLinkTTL = ttl
 	}
 	return nil
+}
+
+// loadIdentityLink reads and validates API_IDENTITY_LINK_KEY and API_IDENTITY_LINK_TTL,
+// the key and lifetime of the signed link a login email carries.
+//
+// The key rules are the other two keys', applied to a third key: blank and too short are
+// refused at startup, the well-known development default is refused outside development,
+// and an absent key is left to the process that serves the links, for the reason
+// [Config.loadTicketQR] states — this configuration is shared by commands that never sign
+// anything, and the API process is where a missing key becomes a refusal. The lifetime has
+// a documented default of fifteen minutes and refuses a value that would mint links which
+// are already closed: an access link is a step of a login, so its window is minutes.
+func (c *Config) loadIdentityLink(getenv func(string) string) error {
+	key := getenv("API_IDENTITY_LINK_KEY")
+	switch {
+	case key == "":
+		if c.Environment == "development" {
+			c.IdentityLinkKey = developmentIdentityLinkKey
+		}
+	case strings.TrimSpace(key) == "":
+		return fmt.Errorf("API_IDENTITY_LINK_KEY must not be blank: a blank key signs nothing")
+	case len(key) < identityLinkKeyMinLength:
+		return fmt.Errorf("API_IDENTITY_LINK_KEY must be at least %d bytes of entropy-bearing text, got %d",
+			identityLinkKeyMinLength, len(key))
+	case key == developmentIdentityLinkKey && c.Environment != "development":
+		return fmt.Errorf("API_IDENTITY_LINK_KEY still holds the development default, which only API_ENV=development accepts: a key that ships in a repository signs nothing")
+	default:
+		c.IdentityLinkKey = key
+	}
+
+	c.IdentityLinkTTL = defaultIdentityLinkTTL
+	if v := strings.TrimSpace(getenv("API_IDENTITY_LINK_TTL")); v != "" {
+		ttl, err := parseIdentityLinkTTL(v)
+		if err != nil {
+			return err
+		}
+		c.IdentityLinkTTL = ttl
+	}
+	return nil
+}
+
+// parseIdentityLinkTTL accepts a Go duration such as "15m" or, for tests, "90s". The
+// lifetime has no other bound: how long a login step stays useful is a product decision,
+// and the one rule the signer cannot work without is that some window exists at all.
+func parseIdentityLinkTTL(v string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("API_IDENTITY_LINK_TTL must be a duration such as 15m or 90s: %w", err)
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("API_IDENTITY_LINK_TTL must be positive, got %q", v)
+	}
+	return ttl, nil
 }
 
 // loadObjectStorage reads and validates the API_S3_* settings. The defaults point

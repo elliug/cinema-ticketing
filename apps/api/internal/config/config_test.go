@@ -1118,3 +1118,201 @@ func TestEmailConfiguration(t *testing.T) {
 		})
 	}
 }
+
+// identityLinkKeyMinLength mirrors the documented minimum length of the signed access link
+// key, so the test states the number a deployment has to satisfy.
+const identityLinkKeyMinLength = 32
+
+// TestIdentityLinkConfiguration pins the signed access link rules (T2, S2): a development
+// default that works with no variables in development, an explicit key of at least 32 bytes
+// anywhere, the documented fifteen minute lifetime by default — an access link is a step,
+// not a key, so it lives in minutes and not in days — an explicit lifetime honoured, and a
+// refusal for every key and every lifetime that cannot work. No case may be satisfied by
+// echoing the key.
+func TestIdentityLinkConfiguration(t *testing.T) {
+	const (
+		explicitKey = "m1-configured-identity-link-key-0123456789"
+		shortKey    = "too-short-for-an-access-link"
+		// The documented development default, spelled out so this test fails if somebody
+		// changes it without thinking about the environments.
+		developmentDefault = "cinema-identity-development-access-link-key"
+	)
+
+	cases := []struct {
+		name     string
+		env      map[string]string
+		wantKey  string
+		wantTTL  time.Duration
+		wantErr  string
+		wantWord string
+	}{
+		{
+			name:    "development falls back to the documented default",
+			env:     map[string]string{"API_ENV": "development"},
+			wantKey: developmentDefault,
+			// Fifteen minutes: an access link is one step of a login, not a key somebody
+			// keeps, so a longer window would be a longer-lived way into an account.
+			wantTTL: 15 * time.Minute,
+		},
+		{
+			name:    "production accepts an explicit key and leaves the default lifetime",
+			env:     map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_KEY": explicitKey},
+			wantKey: explicitKey,
+			wantTTL: 15 * time.Minute,
+		},
+		{
+			name:    "development accepts an explicit key",
+			env:     map[string]string{"API_ENV": "development", "API_IDENTITY_LINK_KEY": explicitKey},
+			wantKey: explicitKey,
+			wantTTL: 15 * time.Minute,
+		},
+		{
+			name:    "a key of exactly the documented minimum is accepted",
+			env:     map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_KEY": strings.Repeat("k", identityLinkKeyMinLength)},
+			wantKey: strings.Repeat("k", identityLinkKeyMinLength),
+			wantTTL: 15 * time.Minute,
+		},
+		{
+			name:    "an explicit lifetime is honoured",
+			env:     map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": "30m"},
+			wantTTL: 30 * time.Minute,
+		},
+		{
+			name:    "an explicit lifetime in seconds is honoured",
+			env:     map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": " 90s "},
+			wantTTL: 90 * time.Second,
+		},
+		{
+			name:     "a key below the documented minimum is refused",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_KEY": shortKey},
+			wantErr:  "API_IDENTITY_LINK_KEY",
+			wantWord: "32 bytes",
+		},
+		{
+			name:     "a blank key is refused even in development",
+			env:      map[string]string{"API_ENV": "development", "API_IDENTITY_LINK_KEY": strings.Repeat(" ", 40)},
+			wantErr:  "API_IDENTITY_LINK_KEY",
+			wantWord: "blank",
+		},
+		{
+			name:     "the development default is refused outside development",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_KEY": developmentDefault},
+			wantErr:  "API_IDENTITY_LINK_KEY",
+			wantWord: "development",
+		},
+		{
+			name:     "the development default is refused in an unstated environment",
+			env:      map[string]string{"API_IDENTITY_LINK_KEY": developmentDefault},
+			wantErr:  "API_IDENTITY_LINK_KEY",
+			wantWord: "development",
+		},
+		{
+			name:     "a zero lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": "0s"},
+			wantErr:  "API_IDENTITY_LINK_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "a negative lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": "-1m"},
+			wantErr:  "API_IDENTITY_LINK_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "an unparsable lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": "fifteen minutes"},
+			wantErr:  "API_IDENTITY_LINK_TTL",
+			wantWord: "duration",
+		},
+		{
+			name:     "a lifetime without a unit is refused",
+			env:      map[string]string{"API_ENV": "production", "API_IDENTITY_LINK_TTL": "15"},
+			wantErr:  "API_IDENTITY_LINK_TTL",
+			wantWord: "duration",
+		},
+		{
+			// A missing key is left empty here, for the reason the other two keys are: this
+			// configuration is shared by commands that never sign a link, and the API
+			// process refuses to mount the identity surface without a usable key.
+			name:    "a missing key is left to the process that serves the links",
+			env:     map[string]string{"API_ENV": "production"},
+			wantKey: "",
+			wantTTL: 15 * time.Minute,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return testCase.env[key] })
+			if testCase.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", testCase.wantErr)
+				}
+				if !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("error = %q, want it to name %s", err, testCase.wantErr)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), testCase.wantWord) {
+					t.Fatalf("error = %q, want it to mention %q", err, testCase.wantWord)
+				}
+				// A wrong key is a secret too, and a lifetime is not worth echoing either.
+				for _, secret := range []string{shortKey, developmentDefault, strings.Repeat(" ", 40)} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("error message leaked the key: %v", err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.IdentityLinkKey != testCase.wantKey {
+				t.Fatalf("IdentityLinkKey = %q, want %q", cfg.IdentityLinkKey, testCase.wantKey)
+			}
+			if cfg.IdentityLinkKey != "" && len(cfg.IdentityLinkKey) < identityLinkKeyMinLength {
+				t.Fatalf("an accepted key is shorter than the documented minimum: %d bytes", len(cfg.IdentityLinkKey))
+			}
+			if cfg.IdentityLinkTTL != testCase.wantTTL {
+				t.Fatalf("IdentityLinkTTL = %v, want %v", cfg.IdentityLinkTTL, testCase.wantTTL)
+			}
+		})
+	}
+}
+
+// TestTheThreeDevelopmentLinkKeysAreDistinct pins the separation the first two keys already
+// had, extended to the access link: a QR code is printed on paper, a ticket link lives in a
+// mailbox and an access link proves a mailbox, so rotating or leaking one must never touch
+// the others. The three development defaults must therefore be three values, and sharing one
+// by accident has to fail here rather than in a deployment.
+func TestTheThreeDevelopmentLinkKeysAreDistinct(t *testing.T) {
+	cfg, err := config.LoadFrom(func(key string) string {
+		if key == "API_ENV" {
+			return "development"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("LoadFrom returned error: %v", err)
+	}
+
+	keys := []struct {
+		name  string
+		value string
+	}{
+		{"API_TICKET_QR_KEY", cfg.TicketQRKey},
+		{"API_TICKET_LINK_KEY", cfg.TicketLinkKey},
+		{"API_IDENTITY_LINK_KEY", cfg.IdentityLinkKey},
+	}
+	for _, key := range keys {
+		if key.value == "" {
+			t.Fatalf("%s = empty in development, want the documented default", key.name)
+		}
+	}
+	for i := range keys {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i].value == keys[j].value {
+				t.Fatalf("%s and %s hold the same development key %q, want three distinct values",
+					keys[i].name, keys[j].name, keys[i].value)
+			}
+		}
+	}
+}
