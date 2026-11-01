@@ -181,3 +181,26 @@ jobs:
 
       - name: Verify M3.5 purchase and administration in a browser
         run: make verify-m35
+
+      # A failing browser gate is only diagnosable from what the browser wrote, and until
+      # this step existed those files never left the runner: `gh api .../artifacts` reported
+      # `total_count: 0` for every failure, which is why the trace, the screenshot and
+      # error-context.md of #78, #84 and #80 were lost with the run. The gate already keeps
+      # them outside the repository, in `${TMPDIR:-/tmp}/cinema-m35-verify-<n>-artifacts`, and
+      # prints the directory it used on stderr, so this uploads what it left behind.
+      #
+      # Both candidate roots are listed because the gate resolves `${TMPDIR:-/tmp}` and a
+      # runner is not guaranteed to point TMPDIR at RUNNER_TEMP; naming only one would make
+      # the upload depend on that guess. `if-no-files-found: warn` keeps a missing path from
+      # replacing the real failure with an upload error, and `if: failure()` keeps a green
+      # run from paying for an archive nobody reads.
+      - name: Keep the browser gate's artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m35-playwright-artefacts
+          path: |
+            ${{ runner.temp }}/cinema-m35-verify-*-artifacts
+            /tmp/cinema-m35-verify-*-artifacts
+          if-no-files-found: warn
+          retention-days: 7
