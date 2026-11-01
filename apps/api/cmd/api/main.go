@@ -598,6 +598,11 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	// tick is noise, and one line at startup says exactly what is missing.
 	var emailStore *email.PostgresStore
 	var emailWorker *email.Worker
+	// ticketEmails is the resend action behind POST /tickets/{ticketId}/email. It is nil
+	// unless the deployment can actually send, because a deployment with no mail provider
+	// must not advertise a way to send mail (S5): the route is mounted from this value, so an
+	// empty one advertises nothing.
+	var ticketEmails publicapi.TicketEmailService
 	switch {
 	case !cfg.EmailEnabled:
 		logger.Info("ticket email disabled: no mail provider is configured", "required", missingEmailSetting(cfg))
@@ -608,7 +613,22 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	case !checkoutPresent:
 		logger.Info("checkout outbox not present; ticket email worker disabled", "required", "0005_checkout")
 	default:
-		emailStore, emailWorker, err = newTicketEmailWorker(cfg, ticketLinks, logger)
+		// One SMTP adapter and one link builder serve both halves of the ticket email: the
+		// consumer that mails every sale as it is recorded, and the resend a buyer asks for
+		// from the ticket page. A second adapter would be a second pool and a second sender to
+		// keep in step, and a second builder would be a second spelling of the link.
+		sender, senderErr := email.NewSMTP(cfg.SMTPAddr, cfg.EmailFrom)
+		if senderErr != nil {
+			ticketStore.Close()
+			if checkoutStore != nil {
+				checkoutStore.Close()
+			}
+			_ = client.Close()
+			store.Close()
+			return nil, fmt.Errorf("configure the ticket email provider: %w", senderErr)
+		}
+		link := ticketLinkBuilder(cfg.PublicWebURL, ticketLinks)
+		emailStore, emailWorker, err = newTicketEmailWorker(cfg, sender, link, logger)
 		if err != nil {
 			ticketStore.Close()
 			if checkoutStore != nil {
@@ -618,6 +638,21 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			store.Close()
 			return nil, fmt.Errorf("configure the ticket email worker: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
 		}
+		// The anti-relay counter counts in the Redis client the process already opened (the
+		// one the seat holds and the checkout's release use), so a resend route costs three
+		// increments an hour and no second connection pool.
+		resender, resendErr := email.NewResender(sender, link, email.NewRedisResendLimiter(client))
+		if resendErr != nil {
+			emailStore.Close()
+			ticketStore.Close()
+			if checkoutStore != nil {
+				checkoutStore.Close()
+			}
+			_ = client.Close()
+			store.Close()
+			return nil, fmt.Errorf("configure the ticket email resend: %w", resendErr)
+		}
+		ticketEmails = resender
 	}
 
 	// The catalogue, the seat page's read of one screening and the confirmation's read are
@@ -676,6 +711,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 
 	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
 		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).WithTicketLinks(ticketLinks).
+		WithTicketEmail(ticketEmails).
 		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
@@ -708,6 +744,13 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		// email carries is, and it is never logged.
 		logger.Info("ticket emails are delivered from the checkout outbox; worker started",
 			"smtp", cfg.SMTPAddr, "from", cfg.EmailFrom, "public_web_url", cfg.PublicWebURL)
+	}
+	if ticketEmails != nil {
+		// The bound is worth a line: it is the limit that keeps the resend from being a relay,
+		// and an operator who sees it is the one who will notice if it ever moves.
+		logger.Info("ticket email resend route mounted",
+			"route", "/api/v1/tickets/{ticketId}/email",
+			"limit", fmt.Sprintf("%d per %s per reservation", email.ResendLimit, email.ResendWindow))
 	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
 		catalogStore: catalogStore, outboxStore: outboxStore, emailStore: emailStore, redis: client,
@@ -761,9 +804,13 @@ func newTicketPDFWorker(cfg config.Config, archive *pdf.Archive, logger *slog.Lo
 // It mirrors the PDF worker: its own startup budget, a store that answers before the API
 // starts listening, and a worker the process starts beside the others and stops with them.
 //
+// The provider adapter and the link builder arrive already built, because the resend route
+// beside it sends the same message with the same two pieces: constructing either a second
+// time would be a second sender to keep in step and a second link to keep correct.
+//
 // It is only called when a provider is configured (S5), so a deployment with no mail server
 // never reaches the store's ping and never has a startup it could fail.
-func newTicketEmailWorker(cfg config.Config, signer *tickets.LinkSigner, logger *slog.Logger) (*email.PostgresStore, *email.Worker, error) {
+func newTicketEmailWorker(cfg config.Config, sender email.Sender, link email.LinkBuilder, logger *slog.Logger) (*email.PostgresStore, *email.Worker, error) {
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 
@@ -771,12 +818,7 @@ func newTicketEmailWorker(cfg config.Config, signer *tickets.LinkSigner, logger 
 	if err != nil {
 		return nil, nil, err
 	}
-	sender, err := email.NewSMTP(cfg.SMTPAddr, cfg.EmailFrom)
-	if err != nil {
-		store.Close()
-		return nil, nil, err
-	}
-	worker, err := email.NewWorker(store, sender, ticketLinkBuilder(cfg.PublicWebURL, signer), email.WorkerConfig{
+	worker, err := email.NewWorker(store, sender, link, email.WorkerConfig{
 		Interval: emailWorkerInterval,
 		Batch:    emailWorkerBatch,
 		Timeout:  emailWorkerTimeout,

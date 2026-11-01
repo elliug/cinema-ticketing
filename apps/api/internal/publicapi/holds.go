@@ -11,8 +11,10 @@
 // (GET /reservations/{reservationId}), the cancel route that ends a hold now instead
 // of waiting out its window (POST /reservations/{reservationId}/cancel), and the door's
 // admission route, which verifies a presented code and admits the ticket it names exactly
-// once (POST /tickets/redeem), and the read behind the signed link a purchase email carries
-// (GET /ticket-links/{token}), which verifies the token and answers the paid order's tickets.
+// once (POST /tickets/redeem), the read behind the signed link a purchase email carries
+// (GET /ticket-links/{token}), which verifies the token and answers the paid order's tickets,
+// and the resend route that mails that same ticket email to an address typed on a ticket page
+// (POST /tickets/{ticketId}/email), which stores nothing it is given.
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -56,13 +58,17 @@ type Handler struct {
 	// signer rather than a service: the token is checked here, and the order it names is
 	// read through the reservation read the confirmation already uses.
 	ticketLinks *tickets.LinkSigner
+	// ticketEmails is the resend action: the order's ticket email, to an address typed on a
+	// ticket page, stored nowhere. It is a service because the counter, the provider and the
+	// link signing behind it are the wiring's business, not this package's.
+	ticketEmails TicketEmailService
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
-// PDF, ticket admission, ticket link, catalogue and reservation read routes are attached
-// separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption, WithTicketLinks,
-// WithCatalog, WithReservations and WithCancellation, so a deployment without the checkout
-// schema or without object storage mounts none of them.
+// PDF, ticket admission, ticket link, ticket email, catalogue and reservation read routes are
+// attached separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption,
+// WithTicketLinks, WithTicketEmail, WithCatalog, WithReservations and WithCancellation, so a
+// deployment without the checkout schema or without object storage mounts none of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -129,6 +135,14 @@ func (h *Handler) Mux() *http.ServeMux {
 	// mailbox, and no session comes with it.
 	if h.ticketLinks != nil && h.reservations != nil {
 		mux.HandleFunc(ticketLinkRoute, h.openTicketLink)
+	}
+	// The resend route is the other half of the same email: it mails that message to an
+	// address typed now, so it needs the action, the ticket that names the order and the read
+	// that confirms the order was paid. A deployment missing any of the three advertises
+	// nothing rather than a route that could only answer 503 — in particular, one with no mail
+	// provider never advertises a way to send mail.
+	if h.ticketEmails != nil && h.tickets != nil && h.reservations != nil {
+		mux.HandleFunc(ticketEmailRoute, h.resendTicketEmail)
 	}
 	return mux
 }
