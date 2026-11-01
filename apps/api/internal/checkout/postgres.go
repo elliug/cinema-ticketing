@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,18 @@ FROM cinema.reservations r
 JOIN cinema.events e ON e.id = r.event_id
 WHERE r.id = $1
 FOR UPDATE OF r`
+
+	// recordContactEmailQuery fills the address the buyer asked the tickets to be mailed to.
+	//
+	// It only fills a NULL, and that is the guard rather than an optimisation: the first
+	// address a reservation carries is the one the buyer gave, and a later call must not be
+	// able to redirect a ticket that has already been sold into somebody else's inbox. The
+	// empty string is excluded by the caller, so "no address" is never written as "".
+	recordContactEmailQuery = `
+UPDATE cinema.reservations
+SET contact_email = $2
+WHERE id = $1
+  AND contact_email IS NULL`
 
 	// heldSeatsQuery reads the seats the reservation still holds, which is the seat
 	// set both the amount and the tickets are derived from.
@@ -244,6 +257,12 @@ func (s *PostgresStore) prepareAttempt(ctx context.Context, request AttemptReque
 
 	reservation, live, err := lockReservation(ctx, tx, request.ReservationID)
 	if err != nil {
+		return PreparedAttempt{}, err
+	}
+	// The address is recorded here, inside the phase 1 transaction and before the provider
+	// is called, so a crash during the charge cannot leave a sale the email worker cannot
+	// deliver. It never overwrites: see recordContactEmailQuery.
+	if err := recordContactEmail(ctx, tx, reservation.ID, request.ContactEmail); err != nil {
 		return PreparedAttempt{}, err
 	}
 
@@ -471,6 +490,19 @@ func (s *PostgresStore) capture(ctx context.Context, tx pgx.Tx, outcome AttemptO
 
 	stored.TicketIDs = ticketIDs
 	return stored, nil
+}
+
+// recordContactEmail stores the address the buyer gave, if any, and never replaces one the
+// reservation already carries. An empty address is a no-op rather than a write of "", so
+// "nobody gave one" and "somebody gave an empty one" cannot both be stored.
+func recordContactEmail(ctx context.Context, tx pgx.Tx, reservationID, email string) error {
+	if strings.TrimSpace(email) == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, recordContactEmailQuery, reservationID, email); err != nil {
+		return classifyCheckoutError(err)
+	}
+	return nil
 }
 
 // lockReservation reads the order a checkout pays, locking its row so the status

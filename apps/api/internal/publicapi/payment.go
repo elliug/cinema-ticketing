@@ -2,15 +2,25 @@
 // this file. It is public, like the hold routes next to it: the buyer paying for
 // the seats they just held has no administrative token, so it is mounted outside
 // the administrative guard (see httpserver.Server.WithPublic). It is idempotent by
-// the Idempotency-Key header and carries no body: the amount is computed server
-// side from the event price and the seats the reservation holds, so there is
-// nothing for a client to send — and nothing to trust if it did.
+// the Idempotency-Key header.
+//
+// The route accepts exactly one optional field, and it is not money: the address the
+// buyer asked the tickets to be mailed to. The amount is still computed server side from
+// the event price and the seats the reservation holds, so the client cannot state a price
+// — the promise the previous version of this comment made was about *money*, and it still
+// holds. The address is different in kind: it cannot change what is charged, only where a
+// copy of the ticket goes, and it is stored in the same transaction as the attempt so a
+// crash during the provider call cannot leave a sale with nowhere to send it.
 
 package publicapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 
 	"cinema.local/ticketing/apps/api/internal/checkout"
@@ -18,9 +28,10 @@ import (
 
 // PaymentService is the checkout application service contract.
 type PaymentService interface {
-	// Charge pays one held reservation. A decline is a successful answer with
-	// PaymentStatus declined, not an error.
-	Charge(ctx context.Context, reservationID, idempotencyKey string) (checkout.Result, error)
+	// ChargeWithContact pays one held reservation, carrying the address the buyer asked
+	// the tickets to be mailed to. A decline is a successful answer with PaymentStatus
+	// declined, not an error.
+	ChargeWithContact(ctx context.Context, request checkout.ChargeRequest) (checkout.Result, error)
 }
 
 // WithPayments attaches the checkout service and returns the same handler, so the
@@ -42,7 +53,16 @@ func (h *Handler) WithPayments(svc PaymentService) *Handler {
 // An approved and a declined payment are both 200: the request succeeded, and the
 // body says what the provider decided.
 func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
-	result, err := h.payments.Charge(r.Context(), r.PathValue("reservationID"), r.Header.Get("Idempotency-Key"))
+	email, err := paymentContactEmail(r)
+	if err != nil {
+		writePaymentError(w, err)
+		return
+	}
+	result, err := h.payments.ChargeWithContact(r.Context(), checkout.ChargeRequest{
+		ReservationID:  r.PathValue("reservationID"),
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		ContactEmail:   email,
+	})
 	if err != nil {
 		writePaymentError(w, err)
 		return
@@ -61,6 +81,42 @@ func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
 		"amountCents":   result.AmountCents,
 		"ticketIds":     ticketIDs,
 	})
+}
+
+// maxPaymentBodyBytes bounds the one optional field this route reads, so a client cannot
+// make the server buffer a body it has no use for.
+const maxPaymentBodyBytes = 1 << 10
+
+// paymentContactEmail reads the address the tickets are to be mailed to from an optional
+// body. An absent body, an empty body and `{}` all mean "no address", which is the
+// ordinary case: the field is optional and most callers — the gates, the tests, the
+// simulated flows — pay without one.
+//
+// Unknown fields are refused instead of ignored, and that is not strictness for its own
+// sake: a misspelt key (`emial`) would silently drop the address, and the buyer would
+// discover it only when no ticket ever arrived. Failing loudly at the edge is cheaper than
+// that silence.
+func paymentContactEmail(r *http.Request) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxPaymentBodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("%w: the payment body could not be read", checkout.ErrInvalidInput)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", nil
+	}
+
+	var body struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		return "", fmt.Errorf("%w: the payment body must be {\"email\": \"…\"} and nothing else", checkout.ErrInvalidInput)
+	}
+	return body.Email, nil
 }
 
 // writePaymentError maps each checkout outcome to its own status and problem code.
