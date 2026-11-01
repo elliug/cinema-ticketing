@@ -1512,3 +1512,98 @@ test("redeemTicket refuses a blank code before any request", async () => {
   assert.equal(recorder.calls.length, 0);
   assert.equal(problem.code, "invalid_input");
 });
+
+// ── The signed link a purchase email carries (T4 · S3) ──────────────────────
+//
+// The web route behind `/t/<token>` asks the API exactly one question and renders the
+// answer. Three things are pinned here: the token travels in the path under the public
+// prefix and nowhere else, a `200` is read as the three fields the route serves, and the
+// route's single opaque refusal arrives as this client's own `not_found` — the same
+// problem `getTicket` already answers for an unknown ticket, so the page keeps one
+// convention for "there is nothing here" instead of inventing a second.
+
+const TICKET_LINK_BODY = {
+  reservationId: "reservation-a",
+  expiresAt: "2026-05-11T18:30:00Z",
+  ticketIds: ["ticket-1", "ticket-2"],
+};
+
+test("redeemTicketLink reads GET /ticket-links/{token} and keeps the served expiry", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, TICKET_LINK_BODY));
+
+  const link = unwrap(await makeClient(recorder).redeemTicketLink("cGF5bG9hZA.c2ln"));
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/ticket-links/cGF5bG9hZA.c2ln`);
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(call.init.body, undefined);
+  // A link from a mailbox is a credential on its own: no session, no key, no token header.
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+
+  assert.equal(link.reservationId, "reservation-a");
+  // The instant the signature spelled, verbatim: the page prints when the email stops
+  // opening, and that is not this client's clock to compute.
+  assert.equal(link.expiresAt, "2026-05-11T18:30:00Z");
+  // The served order, untouched: re-sorting here would be a second opinion about a
+  // sequence the API already decided.
+  assert.deepEqual(link.ticketIds, ["ticket-1", "ticket-2"]);
+});
+
+test("a link token is escaped into the path, and a blank one is never sent", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, TICKET_LINK_BODY));
+  await makeClient(recorder).redeemTicketLink("  a/b c  ");
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/ticket-links/a%2Fb%20c`);
+
+  const blank = recordingFetch(() => jsonResponse(200, TICKET_LINK_BODY));
+  const problem = unwrapError(await makeClient(blank).redeemTicketLink("   "));
+
+  assert.equal(blank.calls.length, 0);
+  assert.equal(problem.code, "invalid_input");
+});
+
+test("every refusal of a link is the client's own not_found, as an unknown ticket reads", async () => {
+  // The API answers a forged, tampered, expired and unknown link with one body, and it is
+  // the ticket route's unknown-ticket body: this client must not translate it into a
+  // vocabulary of its own.
+  const refusal = {
+    type: "https://cinema.local/problems/not-found",
+    title: "Not found",
+    status: 404,
+    code: "not_found",
+    detail: "the requested ticket does not exist",
+  };
+  const recorder = recordingFetch(() => jsonResponse(404, refusal));
+
+  const problem = unwrapError(await makeClient(recorder).redeemTicketLink("forged.token"));
+
+  assert.equal(problem.status, 404);
+  assert.equal(problem.code, "not_found");
+  assert.equal(problem.detail, refusal.detail);
+  // The token is a credential in a URL: nothing the client hands back repeats it, because
+  // a problem ends up in page text and in logs.
+  assert.equal(JSON.stringify(problem).includes("forged.token"), false);
+});
+
+test("a link answer that names nothing to open is refused, not read as zero tickets", async () => {
+  // A paid order always carries tickets, so a `200` with none is a broken answer rather
+  // than an order that sold nothing: rendering it would claim the link opens nothing.
+  const noTickets = recordingFetch(() =>
+    jsonResponse(200, { ...TICKET_LINK_BODY, ticketIds: [] }),
+  );
+  const noTicketsProblem = unwrapError(
+    await makeClient(noTickets).redeemTicketLink("token"),
+  );
+  assert.equal(noTicketsProblem.code, "unexpected_response");
+  assert.match(noTicketsProblem.detail, /ticket/i);
+
+  // Without the expiry the page cannot say when the email stops opening, and a guess
+  // would give a date to something the signature did not spell.
+  const noExpiry = recordingFetch(() =>
+    jsonResponse(200, { ...TICKET_LINK_BODY, expiresAt: "" }),
+  );
+  const noExpiryProblem = unwrapError(await makeClient(noExpiry).redeemTicketLink("token"));
+  assert.equal(noExpiryProblem.code, "unexpected_response");
+  assert.match(noExpiryProblem.detail, /expiresAt/);
+});
