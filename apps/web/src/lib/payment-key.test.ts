@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PaymentKeyStorage } from "./payment-key.ts";
 import {
+  describeContactEmail,
   discardPaymentKey,
   ensurePaymentKey,
   paymentKeyDisposition,
@@ -580,4 +581,64 @@ test("a declined answer is not money taken", () => {
 
   assert.equal(amount.source, "none");
   assert.equal(amount.amountLabel, null);
+});
+
+// ── The address the tickets are mailed to ───────────────────────────────────
+//
+// The field is optional and the API is the authority on what an address is, so these
+// cases only pin the two things this module owes: it accepts what the API accepts, and it
+// stops the obvious mistake before a payment attempt is spent on it. It is not a second
+// opinion about validity, and no case here says an address was verified — nothing does.
+
+test("an ordinary address is the one the request will carry, trimmed", () => {
+  const ordinary = describeContactEmail("  Compras@Example.COM  ");
+
+  assert.equal(ordinary.kind, "address");
+  // Trimmed, and otherwise left exactly as it was typed: the API normalises the same way
+  // and the local part of an address is case sensitive, so nothing here lowercases it.
+  assert.equal(ordinary.kind === "address" ? ordinary.email : null, "Compras@Example.COM");
+
+  for (const address of ["a@b.c", "buyer.two+matinee@example.co.uk", "a@sub.example.com"]) {
+    const view = describeContactEmail(address);
+    assert.equal(view.kind, "address", address);
+  }
+});
+
+test("an empty field is not an address, and it is not a mistake either", () => {
+  for (const value of ["", "   ", "\t\n "]) {
+    const view = describeContactEmail(value);
+    assert.equal(view.kind, "empty", JSON.stringify(value));
+    assert.equal("problem" in view, false, "an optional field left empty has nothing to explain");
+  }
+});
+
+test("what cannot be an address at all is refused before it is sent", () => {
+  const refused = [
+    "nope", // no @ at all
+    "@example.com", // nothing before the @
+    "buyer@", // nothing after the @
+    "buyer@example", // a domain with no dot cannot be a mailbox
+    "buy er@example.com", // whitespace inside an address is never part of one
+    "buyer@exa mple.com",
+    `${"a".repeat(320)}@example.com`, // past the RFC ceiling the API also enforces
+  ];
+
+  for (const value of refused) {
+    const view = describeContactEmail(value);
+    assert.equal(view.kind, "refused", value);
+    assert.match(
+      view.kind === "refused" ? view.problem : "",
+      /not an address/i,
+      value,
+    );
+  }
+});
+
+test("the helper is never stricter than the API", () => {
+  // These look odd to a person and the API still accepts them (its own comment says Go is
+  // not an email validator either). A helper with a prettier idea of an address would
+  // refuse an address the box office would have mailed, so they pass here too.
+  for (const value of ["a@b@example.com", "quoted\"local\"@example.com", "a@example.c"]) {
+    assert.equal(describeContactEmail(value).kind, "address", value);
+  }
 });

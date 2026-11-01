@@ -40,6 +40,12 @@
 //   - `describeOrderAmount` decides which number the page may print, and has no price
 //     and no seat count among its inputs, so `price × seats` is not a state it can
 //     reach (S8).
+//
+// The checkout's other rule lives here too, at the bottom: `describeContactEmail` is what
+// the optional address field is worth before it is sent, so a value that cannot be an
+// address at all is refused before a payment attempt is spent on it. It restates the API's
+// own rule and is never stricter than it — the API stays the authority on what an address
+// is, and nothing here claims one was verified.
 import { formatCents, remainingMilliseconds } from "./seat-selection.ts";
 import type { PublicPayment, PublicProblem } from "./public-api.ts";
 
@@ -633,4 +639,76 @@ export function describeOrderAmount(
     known: false,
     note: "No amount has been taken for this order yet. The box office computes the charge when it is paid and its answer reports what it took; nothing here multiplies a price by a seat count.",
   };
+}
+
+// ── The address the tickets are mailed to (T5 · S1, S2, D1) ─────────────────
+//
+// The payment route accepts one optional field besides the key, and it is not money: the
+// address the buyer asked the tickets to be mailed to (see
+// apps/api/internal/publicapi/payment.go). It cannot change what is charged — the amount
+// stays the box office's — only where a copy of the ticket goes, which is exactly why it is
+// asked for *before* paying (D1): a buyer whose tab closes right after the charge has still
+// left an address behind, so the sale the email worker reads is never one with nowhere to
+// send it.
+//
+// The rule below is the API's own, restated so the field can stop an obvious mistake before
+// it spends a payment attempt on it. It must never become stricter than the API: an address
+// refused here is one the API would have refused too, and everything the API accepts gets
+// through. The API's comment says why that matters — Go is not an email validator either, a
+// strict pattern rejects valid addresses (quoted local parts, internationalised domains) and
+// still accepts nonsense — so both sides refuse only what cannot be an address at all.
+//
+// Two things this module cannot say, and the panel's copy therefore does not claim: the
+// address is stored **unverified** (S2), and the link it is mailed opens the tickets for
+// whoever holds it.
+
+/** The RFC's ceiling for one address, mirrored from the API's own limit. */
+export const MAX_CONTACT_EMAIL_LENGTH = 320;
+
+/**
+ * What the field says when it holds something the API would refuse.
+ *
+ * One sentence for every refusal, deliberately: the API's own detail names the precise rule
+ * once it refuses, and the field only owes a person the reason Pay did nothing.
+ */
+const CONTACT_EMAIL_PROBLEM =
+  "That is not an address the tickets could be mailed to. An address needs a name, an @, and a domain with a dot in it, and it cannot contain spaces.";
+
+/** What the optional address field currently holds. */
+export type ContactEmailView =
+  /** Left empty. The field is optional, so this is not a mistake and needs no sentence. */
+  | { kind: "empty" }
+  /** An address the API would accept, trimmed as the payment request will carry it. */
+  | { kind: "address"; email: string }
+  /** Something that cannot be an address at all: paying would be refused for it. */
+  | { kind: "refused"; problem: string };
+
+/**
+ * What one value of the address field is worth.
+ *
+ * `empty` and `refused` are different answers, and that difference is the whole reason this
+ * returns a value instead of a boolean: leaving the field empty is a choice the buyer is
+ * allowed to make — the PDF still downloads from the page — while a value that cannot be an
+ * address would be refused by the API only after the attempt had been spent.
+ */
+export function describeContactEmail(value: string): ContactEmailView {
+  const email = value.trim();
+  if (email === "") {
+    return { kind: "empty" };
+  }
+
+  // The API's checks in the API's order. The whitespace test names the same four bytes Go's
+  // `ContainsAny` names: a wider pattern would refuse a value the API stores, which is the
+  // one direction that must not happen.
+  const at = email.lastIndexOf("@");
+  const addressable =
+    email.length <= MAX_CONTACT_EMAIL_LENGTH &&
+    !/[ \t\r\n]/.test(email) &&
+    at > 0 &&
+    at < email.length - 1 &&
+    email.slice(at + 1).includes(".");
+
+  return addressable
+    ? { kind: "address", email }
+    : { kind: "refused", problem: CONTACT_EMAIL_PROBLEM };
 }

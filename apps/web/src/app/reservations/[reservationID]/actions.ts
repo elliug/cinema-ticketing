@@ -17,6 +17,10 @@
 // lib/payment-key.ts): an action that invented a key would turn a retry into a second
 // attempt, which the schema refuses with `409 payment_in_flight` and only the original
 // key can settle.
+//
+// The address the tickets are mailed to is a parameter too, and it is passed through
+// untouched: the rule that reads it is the panel's (lib/payment-key.ts), the authority on
+// it is the API's, and nothing in this process logs it or decides it is valid.
 import type { PaymentResponse, ReservationResponse } from "@/lib/public-api";
 import { createPublicClient, resolvePublicConfig } from "@/lib/public-api";
 
@@ -58,15 +62,23 @@ export async function loadReservation(
 }
 
 /**
- * Pays one held reservation: `POST /api/v1/reservations/{id}/payment` with the
- * caller's key and no body, because the amount is computed server side.
+ * Pays one held reservation: `POST /api/v1/reservations/{id}/payment` with the caller's key
+ * and, when the buyer gave one, the address the tickets are to be mailed to.
+ *
+ * The amount is still computed server side and is never sent. The address is the only field
+ * this request can carry and it cannot change the charge, only where a copy of the ticket
+ * goes; an empty one is passed as it is, and the client then sends no body at all.
  *
  * An approved and a declined charge are both successes here; `paymentStatus` in
- * the returned value says which.
+ * the returned value says which. A refused address is not a special case: the API answers it
+ * with the `400 invalid_input` this route already answers for bad input, and it reaches the
+ * panel through the same problem type every other refusal does.
  */
 export async function payReservationAction(input: {
   reservationId: string;
   idempotencyKey: string;
+  /** The address the tickets are to be mailed to, when the buyer gave one. */
+  email?: string;
 }): Promise<PaymentResponse> {
   const config = resolvePublicConfig(process.env);
   if (!config.ok) {
@@ -77,6 +89,7 @@ export async function payReservationAction(input: {
   const result = await client.payReservation({
     reservationId: input.reservationId,
     idempotencyKey: input.idempotencyKey,
+    email: input.email,
   });
   if (!result.ok) {
     return { ok: false, problem: result.error };

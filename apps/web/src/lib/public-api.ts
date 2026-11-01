@@ -133,6 +133,23 @@ export interface PayReservationInput {
    * only a declined attempt discards it and mints a new one.
    */
   idempotencyKey: string;
+  /**
+   * The address the tickets are to be mailed to, when the buyer gave one.
+   *
+   * It is the only field this request can carry, and it is not money: the amount stays the
+   * box office's number, so the address cannot change what is charged, only where a copy of
+   * the ticket goes. The API stores it in the same transaction that captures the payment,
+   * which is why the checkout asks for it **before** paying (D1): a tab closed right after
+   * the charge has still left an address behind.
+   *
+   * Absent and blank mean the same thing, and it is not `{"email": ""}`: the request then
+   * carries no body at all, exactly as it did before this field existed. The gates pay
+   * without an address, and a body they never asked for would be a change to them.
+   *
+   * The value goes out unverified and is not logged here: nothing in this process knows
+   * whether the address belongs to whoever typed it, and nothing claims it does.
+   */
+  email?: string;
 }
 
 /**
@@ -799,18 +816,33 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return { ok: false, error: invalid };
       }
 
-      // No body, by design: the amount is `events.price_cents × seats held`,
-      // computed server side, so there is nothing for a client to send and
+      // The one field this request may carry is the address the tickets are mailed to. It is
+      // trimmed here because the API trims it anyway, so what leaves is exactly what was
+      // accepted. Money stays absent by design: the amount is `events.price_cents × seats
+      // held`, computed server side, so there is nothing for a client to send about it and
       // nothing for the API to trust if it did.
+      const email = (input.email ?? "").trim();
+      // A blank address is absent, not empty: the request then keeps the bodiless shape
+      // every caller had before this field existed, the gates included.
+      const address = email === "" ? undefined : email;
+
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        "Idempotency-Key": input.idempotencyKey,
+      };
+      if (address !== undefined) {
+        // A JSON content type is declared only when there is JSON to declare, so a request
+        // without an address is the request the API already answers today.
+        headers["Content-Type"] = "application/json";
+      }
+
       const result = await send<unknown>(
         `/reservations/${encodeURIComponent(input.reservationId)}/payment`,
         {
           method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Idempotency-Key": input.idempotencyKey,
-          },
+          headers,
           cache: "no-store",
+          body: address === undefined ? undefined : JSON.stringify({ email: address }),
         },
       );
       if (!result.ok) {

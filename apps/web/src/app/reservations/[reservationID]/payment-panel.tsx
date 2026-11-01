@@ -37,6 +37,16 @@
 // the shell's visible `:focus-visible` outline, and the surface has exactly **one** polite
 // live region, which announces the result once. The clock is deliberately outside it: a
 // region that announced every second would make the page unusable.
+//
+// The one field this panel owns is the address the tickets are to be mailed to (T5 · S1,
+// S2, D1). It is asked for **before** the charge, because the API stores it in the same
+// transaction that captures the payment: a buyer who closes the tab right after paying still
+// has a copy of the tickets on its way. It is optional — forcing it would store an address
+// for every abandoned order — and it is unverified, so the copy beside it says what the
+// system actually does and nothing more. The rule that reads it lives in
+// lib/payment-key.ts (`describeContactEmail`), so the field stops a value that cannot be an
+// address at all before a payment attempt is spent on it, and the API stays the authority
+// for everything that gets through.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -45,6 +55,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type {
   PaymentResponse,
   PublicPayment,
@@ -57,6 +69,7 @@ import { ticketPDFUrl } from "@/lib/ticket-media";
 import { TICKET_PDF_LINK_LABEL } from "@/lib/issued-tickets";
 import type { PaymentKeyStorage, PaymentOutcomeView } from "@/lib/payment-key";
 import {
+  describeContactEmail,
   describeHoldWindow,
   describeOrderAmount,
   describePaymentFailure,
@@ -77,10 +90,13 @@ export interface PaymentPanelProps {
    * keeps the countdown honest without a hydration mismatch.
    */
   renderedAt: number;
-  /** Server action: POST /reservations/{id}/payment with this attempt's key. */
+  /** Server action: POST /reservations/{id}/payment with this attempt's key and, when the
+   * buyer gave one, the address the tickets are to be mailed to. Nothing about the address
+   * is decided here: it travels to the action and the API decides what to store. */
   payReservation: (input: {
     reservationId: string;
     idempotencyKey: string;
+    email?: string;
   }) => Promise<PaymentResponse>;
   /** Server action: read the order again, so `already_paid` can show its tickets. */
   loadReservation: (reservationId: string) => Promise<ReservationResponse>;
@@ -90,6 +106,10 @@ export interface PaymentPanelProps {
 type PaymentView =
   | { kind: "idle" }
   | { kind: "pending" }
+  // Nothing was sent: the address field holds a value that cannot be an address, so the
+  // payment was not attempted at all. It is its own state rather than a refusal from the
+  // API, because no attempt was spent and nothing was decided by the box office.
+  | { kind: "address_problem"; problem: string }
   | { kind: "answer"; payment: PublicPayment; outcome: PaymentOutcomeView }
   | { kind: "problem"; problem: PublicProblem; outcome: PaymentOutcomeView }
   | {
@@ -121,6 +141,9 @@ export function PaymentPanel({
 }: PaymentPanelProps) {
   const router = useRouter();
   const [view, setView] = useState<PaymentView>({ kind: "idle" });
+  // The address the buyer typed, kept as typed: it is trimmed when it is read and when it
+  // is sent, never while a person is still typing in it.
+  const [contactEmail, setContactEmail] = useState("");
   // Seeded with the server's instant, then advanced by the effect below: the first
   // render is the HTML that was streamed, and every later one uses the browser's clock.
   const [nowMs, setNowMs] = useState(() => renderedAt);
@@ -151,6 +174,16 @@ export function PaymentPanel({
   }, [window.kind]);
 
   const handlePay = useCallback(async () => {
+    // The address is read before anything is spent on it: a value that cannot be an address
+    // would only earn a 400 once the attempt had been opened, and a payment attempt is not
+    // something to spend on a typo. Everything this rule lets through goes to the API, which
+    // stays the authority on what an address is.
+    const contact = describeContactEmail(contactEmail);
+    if (contact.kind === "refused") {
+      setView({ kind: "address_problem", problem: contact.problem });
+      return;
+    }
+
     setView({ kind: "pending" });
 
     const storage = keyStorage();
@@ -164,6 +197,9 @@ export function PaymentPanel({
     const response = await payReservation({
       reservationId: order.reservationId,
       idempotencyKey,
+      // The address travels only when the buyer gave one: an empty field is the documented
+      // way to say "mail nothing", and the request then carries no body at all.
+      ...(contact.kind === "address" ? { email: contact.email } : {}),
     });
 
     // One rule decides what the key does next, and it is the M3 one: a settled attempt
@@ -199,7 +235,7 @@ export function PaymentPanel({
       }
     }
     setView({ kind: "problem", problem: response.problem, outcome });
-  }, [loadReservation, order.reservationId, payReservation, router]);
+  }, [contactEmail, loadReservation, order.reservationId, payReservation, router]);
 
   const windowNotice = window.notice;
   // The one announcement of this surface: what just happened, or what the window just
@@ -207,13 +243,15 @@ export function PaymentPanel({
   const announcement =
     view.kind === "pending"
       ? "Contacting the payment provider…"
-      : view.kind === "settled"
-        ? `${view.outcome.headline}. The order carries the tickets below.`
-        : view.kind === "answer" || view.kind === "problem"
-          ? `${view.outcome.headline}. ${view.outcome.message}`
-          : windowNotice !== null
-            ? windowNotice
-            : "Nothing has been charged for this order yet.";
+      : view.kind === "address_problem"
+        ? `Nothing has been charged. ${view.problem}`
+        : view.kind === "settled"
+          ? `${view.outcome.headline}. The order carries the tickets below.`
+          : view.kind === "answer" || view.kind === "problem"
+            ? `${view.outcome.headline}. ${view.outcome.message}`
+            : windowNotice !== null
+              ? windowNotice
+              : "Nothing has been charged for this order yet.";
 
   const seatsHref =
     order.eventId === ""
@@ -222,10 +260,17 @@ export function PaymentPanel({
 
   // A payment is offered while the window allows one and the order holds a seat: an
   // order with nothing to charge would be refused (`not_sellable`), and a button that
-  // can only fail is not an action. After an outcome, its own action is the one shown.
+  // can only fail is not an action. After an outcome, its own action is the one shown — and
+  // a refused address keeps the Pay control in place, because fixing the field is how the
+  // buyer pays and a control that vanished would leave nothing to press.
   const payable = window.payable && order.seats.length > 0;
-  const showPay = payable && (view.kind === "idle" || view.kind === "pending");
+  const showPay =
+    payable &&
+    (view.kind === "idle" ||
+      view.kind === "pending" ||
+      view.kind === "address_problem");
   const pending = view.kind === "pending";
+  const addressProblem = view.kind === "address_problem" ? view.problem : null;
 
   return (
     <Card aria-labelledby="pay-order">
@@ -300,6 +345,66 @@ export function PaymentPanel({
             </AlertDescription>
           </Alert>
         )}
+
+        {/* The field belongs to the order, not to one attempt: it is shown for as long as a
+            payment can still be made, so an address a buyer wants to correct after a decline
+            is corrected here rather than being resent out of reach. */}
+        {payable ? (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="payment-contact-email">
+              Email for your tickets <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="payment-contact-email"
+              type="email"
+              autoComplete="email"
+              value={contactEmail}
+              onChange={(event) => setContactEmail(event.target.value)}
+              aria-invalid={addressProblem === null ? undefined : true}
+              aria-describedby={
+                addressProblem === null
+                  ? "payment-contact-email-help"
+                  : "payment-contact-email-help payment-contact-email-problem"
+              }
+              className="max-w-md"
+            />
+            {/* The conditions, in the order they matter: where the link goes, that it
+                expires, that it is not tied to the buyer, that the field is optional, and
+                that nothing checked the address. Every sentence is something the API and
+                the email worker actually do — none of them promises a message already sent,
+                because nothing here has been sent: the worker mails after the sale. */}
+            <ul
+              id="payment-contact-email-help"
+              className="m-0 flex max-w-prose list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground"
+            >
+              <li>
+                After the payment is approved, the box office mails a link to this address
+                that opens your tickets.
+              </li>
+              <li>The link expires, so open it while you still have the email.</li>
+              <li>
+                Anyone with that link can open the tickets: it is not tied to you, to this
+                browser or to this page.
+              </li>
+              <li>
+                Leave the field empty and nothing is mailed. The PDF still downloads from
+                this page, exactly as it does today.
+              </li>
+              <li>
+                The address is not verified: nothing here checks that it belongs to whoever
+                typed it.
+              </li>
+            </ul>
+            {addressProblem === null ? null : (
+              <p
+                id="payment-contact-email-problem"
+                className="m-0 max-w-prose text-sm font-medium text-destructive"
+              >
+                {addressProblem}
+              </p>
+            )}
+          </div>
+        ) : null}
 
         {showPay ? (
           <div className="flex flex-wrap gap-2">
