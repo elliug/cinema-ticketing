@@ -157,7 +157,14 @@ T4–T7 como segundo.
   cuerpo opcional de la ruta de pago y 6 tests. Queda por encima del objetivo de ~400 líneas y
   es deliberado: la migración, la escritura en la transacción y los tests que prueban el orden
   son **un solo comportamiento**; separarlos daría un commit que compila pero no prueba nada.
-- **Slice 3 — el consumidor**, **slice 4 — el enlace firmado y la UI**. Pendientes.
+- **Slice 3 — el consumidor** (`feat(email): a ticket email consumer with its own delivery
+  record`): 713 líneas. El paquete `email` completo (worker, store, adaptador SMTP) y 7
+  comportamientos probados. Por encima del objetivo y por la misma razón que el slice 2: el
+  worker, su consulta y sus bordes (sin dirección, envío fallido, fila ilegible) son **un**
+  comportamiento; trocearlo daría commits que compilan y no prueban nada. **Todavía no envía
+  nada**: sin config ni cableado en `cmd/api`, sin Mailpit en compose y sin test gated contra
+  PostgreSQL.
+- **Slice 4 — el cableado y el enlace firmado**, **slice 5 — la UI y los textos**. Pendientes.
 
 ## Log
 
