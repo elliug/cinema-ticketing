@@ -256,6 +256,14 @@ segundo.
   justamente porque tiene que estar dentro. Las cinco pruebas gated contra PostgreSQL real cubren el
   doble canje (segundo intento: `ErrLinkSpent` y nada escrito), la reclamación selectiva y que un
   segundo enlace no mueve `verified_at`.
+- **Slice 4 — las rutas y el cableado**: `POST /api/v1/identity/links` y `POST /api/v1/identity/sessions`
+  más el contador en Redis y el montaje en `cmd/api`. El `202` es **el mismo byte a byte** para
+  «enviado», «tope agotado» y «contador ilegible»: es lo que hace que la ruta no sirva de oráculo, y
+  hay un test que lo compara con `bytes.Equal`. Los tres modos de fallo de un enlace (gastado,
+  caducado, falsificado) comparten un `401` con cuerpo fijo. El `201` es el **único** momento en que
+  el token de sesión aparece en una respuesta; el API no pone cookies, las pone Next. Límite de 3 por
+  dirección y 15 minutos, con `EXPIRE` solo en el primer incremento y Redis caído = error, nunca
+  permiso.
 
 ## Log
 

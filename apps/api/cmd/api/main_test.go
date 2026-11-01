@@ -16,8 +16,10 @@ import (
 	"cinema.local/ticketing/apps/api/internal/catalog"
 	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
+	"cinema.local/ticketing/apps/api/internal/email"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
+	"cinema.local/ticketing/apps/api/internal/identity"
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/reservation"
 	"cinema.local/ticketing/apps/api/internal/tickets"
@@ -29,6 +31,10 @@ const adminTestURL = "postgres://cinema:s3cr3t-pw@127.0.0.1:5432/cinema?sslmode=
 // testTicketQRKey is the throwaway signing key the mount tests configure: long
 // enough for the documented minimum, and never the development default.
 const testTicketQRKey = "mount-test-ticket-qr-key-0123456789abcdef"
+
+// testIdentityLinkKey is the throwaway access link key these mount tests configure: long
+// enough for the documented minimum, and never one of the other two keys.
+const testIdentityLinkKey = "mount-test-identity-link-key-0123456789abcdef"
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(discard{}, nil)) }
 
@@ -1215,5 +1221,186 @@ func TestTicketLinkBuilderSignsTheReservation(t *testing.T) {
 	}
 	if claims.ReservationID != reservationID {
 		t.Fatalf("link names reservation %q, want %q", claims.ReservationID, reservationID)
+	}
+}
+
+// identityLinkRouted reports whether the login link route is mounted, i.e. whether a POST on
+// it reaches the handler instead of a 404. An empty body is rejected by the transport before
+// any I/O, so this probe needs no database and no mail server.
+func identityLinkRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/identity/links", strings.NewReader("")))
+	return w.Code != http.StatusNotFound
+}
+
+// identitySessionRouted reports whether the redeem route is mounted, the same way.
+func identitySessionRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/identity/sessions", strings.NewReader("")))
+	return w.Code != http.StatusNotFound
+}
+
+// T2 (S6): without its signing key the login surface is not built at all. It answers one
+// line naming the setting that is missing and keeps serving: this is the state every gate
+// runs in, and it must be the state every deployment that predates identity keeps.
+func TestMountReservationLeavesTheIdentityLoginOffWithoutItsKey(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema,
+		ticketPresentSchema, cataloguePresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+
+	if proc.identityStore != nil {
+		t.Fatal("a deployment with no identity link key opened the identity store")
+	}
+	if identityLinkRouted(srv) || identitySessionRouted(srv) {
+		t.Fatal("a deployment with no identity link key advertised the login routes")
+	}
+	if !strings.Contains(logged.String(), "identity login disabled") {
+		t.Fatalf("log = %q, want the one line saying the identity login is disabled", logged.String())
+	}
+	if !strings.Contains(logged.String(), "API_IDENTITY_LINK_KEY") {
+		t.Fatalf("log = %q, want it to name the setting that switches the login on", logged.String())
+	}
+	// Nothing else was dropped: a deployment without identity behaves exactly as it did
+	// before it existed.
+	if !ticketRouted(srv) || !paymentRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("a deployment without identity lost a route it does not need identity for")
+	}
+}
+
+// T2 (D1, S6): identity logs in by mail, so a deployment with no provider has no login
+// either. The key is configured and the surface is still not built, because an issuer with
+// nowhere to send could only refuse every request it accepted.
+func TestMountReservationLeavesTheIdentityLoginOffWithoutAMailProvider(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:     adminTestURL,
+		RedisURL:        "redis://127.0.0.1:6379/0",
+		HoldTTL:         30 * time.Second,
+		ExpiryInterval:  5 * time.Second,
+		ExpiryBatch:     25,
+		TicketQRKey:     testTicketQRKey,
+		IdentityLinkKey: testIdentityLinkKey,
+		IdentityLinkTTL: 15 * time.Minute,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema,
+		ticketPresentSchema, cataloguePresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring kept")
+	}
+	defer proc.Close()
+
+	if proc.identityStore != nil {
+		t.Fatal("a deployment with no mail provider opened the identity store")
+	}
+	if identityLinkRouted(srv) || identitySessionRouted(srv) {
+		t.Fatal("a deployment with no mail provider advertised the login routes")
+	}
+	if !strings.Contains(logged.String(), "identity login disabled") {
+		t.Fatalf("log = %q, want the one line saying the identity login is disabled", logged.String())
+	}
+	if !strings.Contains(logged.String(), "API_SMTP_ADDR") || !strings.Contains(logged.String(), "API_EMAIL_FROM") {
+		t.Fatalf("log = %q, want it to name the mail settings the login depends on", logged.String())
+	}
+}
+
+// T2 (S2): a key this deployment cannot sign with builds no surface either, and the refusal
+// names the setting and never the key: a key is a secret even when it is wrong.
+func TestIdentitySurfaceRefusesAnUnusableKey(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+	sender, err := email.NewSMTP("127.0.0.1:1025", "tickets@cinema.test")
+	if err != nil {
+		t.Fatalf("NewSMTP() = unexpected error %v", err)
+	}
+
+	surface, err := newIdentitySurface(config.Config{
+		DatabaseURL:     adminTestURL,
+		IdentityLinkKey: "too-short",
+		IdentityLinkTTL: 15 * time.Minute,
+		PublicWebURL:    "https://cinema.test",
+		EmailEnabled:    true,
+	}, sender, nil, logger)
+	if err != nil {
+		t.Fatalf("newIdentitySurface returned error: %v", err)
+	}
+	if surface != nil {
+		surface.store.Close()
+		t.Fatal("newIdentitySurface built a surface from a key it cannot sign with")
+	}
+	if !strings.Contains(logged.String(), "API_IDENTITY_LINK_KEY") {
+		t.Fatalf("log = %q, want it to name the setting that is unusable", logged.String())
+	}
+	if strings.Contains(logged.String(), "too-short") {
+		t.Fatalf("log = %q, want it to never echo the key", logged.String())
+	}
+}
+
+// T2 (S2): the login mail's adapter is the ticket mail's sender, so one provider serves both
+// messages and a second adapter never has to be kept in step.
+func TestIdentityMailerSendsThroughTheTicketSender(t *testing.T) {
+	sender := &recordingSender{}
+	mailer := identityMailer{sender: sender}
+
+	err := mailer.Send(context.Background(), identity.Mail{
+		To:      "ana@example.test",
+		Subject: "Your CinemaTicketing sign-in link",
+		Body:    "https://cinema.test/in/token",
+	})
+	if err != nil {
+		t.Fatalf("Send() = unexpected error %v", err)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("the sender was handed %d message(s), want exactly one", len(sender.messages))
+	}
+	got := sender.messages[0]
+	if got.To != "ana@example.test" || got.Subject != "Your CinemaTicketing sign-in link" ||
+		got.Body != "https://cinema.test/in/token" {
+		t.Fatalf("message = %+v, want the login mail's fields unchanged", got)
+	}
+}
+
+// recordingSender records what an adapter asked a provider to send.
+type recordingSender struct{ messages []email.Message }
+
+func (s *recordingSender) Send(_ context.Context, message email.Message) error {
+	s.messages = append(s.messages, message)
+	return nil
+}
+
+// T2 (S2): the link prefix is the public web's, with one slash between the origin and the
+// route the web serves, whatever the configured origin ends with.
+func TestIdentityLinkBaseIsThePublicWebOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://cinema.test":  "https://cinema.test/in/",
+		"https://cinema.test/": "https://cinema.test/in/",
+	}
+	for origin, want := range cases {
+		if got := identityLinkBase(origin); got != want {
+			t.Fatalf("identityLinkBase(%q) = %q, want %q", origin, got, want)
+		}
 	}
 }
