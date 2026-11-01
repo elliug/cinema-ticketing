@@ -52,6 +52,10 @@ and a database that stops short of it will fail to admit anyone.
    provider, also idempotently. It always approves in this build; a decline needs
    `NewSimulatedWithDeclineRule`, which the wired simulator does not use. Both `approved` and
    `declined` are answered `200` — the payment status is in the body, not in the HTTP code.
+   The body may carry one optional field, `{"email": "…"}`, the address the tickets are to be
+   mailed to. It is asked for here, before the charge, so a buyer who closes the tab still gets
+   their tickets; it is optional, because forcing it stores an address for every abandoned
+   purchase; and it is never verified, so anyone can type anybody's address.
    A payment whose request dies mid-call is **settled later, not lost**: a worker asks the
    provider again with the same reference, so the charge becomes either a ticket or a released
    hold — never money taken without a ticket. While a payment is in flight its hold is never
@@ -129,7 +133,7 @@ anywhere; the administrative surface is local-only and bears a single shared tok
 |---|---|
 | Identity and accounts | a ticket and a reservation are opened by their link alone |
 | Cashier, reporting, audit | nobody counts the evening's takings, and no record says who did what |
-| Email | the PDF is downloaded from the web; nothing is mailed |
+| Email | a purchase can carry one address, asked for at the checkout and **never verified**; when the deployment configures a provider, a worker mails a **signed link that expires** (7 days by default), and with no provider configured nothing is mailed at all |
 | Refunds | a paid order cannot be cancelled; a cancel of a paid one is refused `409 already_paid` |
 | Real payments and storage | the provider is simulated and storage is Floci |
 | A charge that cannot happen twice | the simulated provider deduplicates by reference **inside its own process**; a deployment's protection against double charging is its real provider's contract, not a guarantee of this build |
