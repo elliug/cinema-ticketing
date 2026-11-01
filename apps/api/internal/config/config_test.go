@@ -982,3 +982,139 @@ func TestS3ConfigurationNeverEchoesTheSecret(t *testing.T) {
 		t.Fatalf("error message leaked the secret: %v", err)
 	}
 }
+
+// TestEmailConfiguration pins the boundary S5 draws for the ticket email: no provider is
+// the normal state, in which the consumer is not built and the gates stay green; half a
+// provider is refused at startup and the refusal names the missing key, because a
+// half-configured provider would fail every pass identically; and the public origin the
+// link is built from is validated so a link can never be minted that opens nothing.
+func TestEmailConfiguration(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         map[string]string
+		wantEnabled bool
+		wantAddr    string
+		wantFrom    string
+		wantWeb     string
+		wantErr     string
+		wantWord    string
+	}{
+		{
+			name:    "no provider is the normal state and leaves the ticket email disabled",
+			env:     map[string]string{},
+			wantWeb: "http://localhost:3000",
+		},
+		{
+			name:        "both settings enable it and keep their values",
+			env:         map[string]string{"API_SMTP_ADDR": "mailpit:1025", "API_EMAIL_FROM": "tickets@cinema.test"},
+			wantEnabled: true,
+			wantAddr:    "mailpit:1025",
+			wantFrom:    "tickets@cinema.test",
+			wantWeb:     "http://localhost:3000",
+		},
+		{
+			name:        "the settings are trimmed like the rest of the configuration",
+			env:         map[string]string{"API_SMTP_ADDR": " 127.0.0.1:1025 ", "API_EMAIL_FROM": " tickets@cinema.test "},
+			wantEnabled: true,
+			wantAddr:    "127.0.0.1:1025",
+			wantFrom:    "tickets@cinema.test",
+			wantWeb:     "http://localhost:3000",
+		},
+		{
+			name:     "an address without a sender is refused by the name of the missing key",
+			env:      map[string]string{"API_SMTP_ADDR": "mailpit:1025"},
+			wantErr:  "API_EMAIL_FROM",
+			wantWord: "together",
+		},
+		{
+			name:     "a sender without an address is refused by the name of the missing key",
+			env:      map[string]string{"API_EMAIL_FROM": "tickets@cinema.test"},
+			wantErr:  "API_SMTP_ADDR",
+			wantWord: "together",
+		},
+		{
+			name:    "a supplied public origin is kept",
+			env:     map[string]string{"API_PUBLIC_WEB_URL": "https://cinema.test"},
+			wantWeb: "https://cinema.test",
+		},
+		{
+			name:    "the trailing slash of a supplied origin is trimmed",
+			env:     map[string]string{"API_PUBLIC_WEB_URL": "https://cinema.test/"},
+			wantWeb: "https://cinema.test",
+		},
+		{
+			// A deployment served under a path prefix keeps it: the link route is appended
+			// to whatever origin the web is served from, so refusing a path here would
+			// refuse an origin that works.
+			name:    "an origin served under a path keeps it and loses its trailing slash",
+			env:     map[string]string{"API_PUBLIC_WEB_URL": "https://cinema.test/ticketing/"},
+			wantWeb: "https://cinema.test/ticketing",
+		},
+		{
+			name:     "a relative origin is refused",
+			env:      map[string]string{"API_PUBLIC_WEB_URL": "/tickets"},
+			wantErr:  "API_PUBLIC_WEB_URL",
+			wantWord: "absolute",
+		},
+		{
+			name:     "an origin without a scheme is refused",
+			env:      map[string]string{"API_PUBLIC_WEB_URL": "cinema.test"},
+			wantErr:  "API_PUBLIC_WEB_URL",
+			wantWord: "absolute",
+		},
+		{
+			name:     "a scheme that a browser cannot open is refused",
+			env:      map[string]string{"API_PUBLIC_WEB_URL": "ftp://cinema.test"},
+			wantErr:  "API_PUBLIC_WEB_URL",
+			wantWord: "http",
+		},
+		{
+			name:     "an origin without a host is refused",
+			env:      map[string]string{"API_PUBLIC_WEB_URL": "http:///tickets"},
+			wantErr:  "API_PUBLIC_WEB_URL",
+			wantWord: "host",
+		},
+		{
+			name:     "an origin carrying a query is refused",
+			env:      map[string]string{"API_PUBLIC_WEB_URL": "https://cinema.test/?campaign=mail"},
+			wantErr:  "API_PUBLIC_WEB_URL",
+			wantWord: "query",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return testCase.env[key] })
+			if testCase.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", testCase.wantErr)
+				}
+				if !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("error = %q, want it to name %s", err, testCase.wantErr)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), testCase.wantWord) {
+					t.Fatalf("error = %q, want it to mention %q", err, testCase.wantWord)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.EmailEnabled != testCase.wantEnabled {
+				t.Fatalf("EmailEnabled = %t, want %t", cfg.EmailEnabled, testCase.wantEnabled)
+			}
+			if cfg.SMTPAddr != testCase.wantAddr {
+				t.Fatalf("SMTPAddr = %q, want %q", cfg.SMTPAddr, testCase.wantAddr)
+			}
+			if cfg.EmailFrom != testCase.wantFrom {
+				t.Fatalf("EmailFrom = %q, want %q", cfg.EmailFrom, testCase.wantFrom)
+			}
+			if cfg.PublicWebURL != testCase.wantWeb {
+				t.Fatalf("PublicWebURL = %q, want %q", cfg.PublicWebURL, testCase.wantWeb)
+			}
+			if strings.HasSuffix(cfg.PublicWebURL, "/") {
+				t.Fatalf("PublicWebURL = %q, want no trailing slash: the link route appends its own", cfg.PublicWebURL)
+			}
+		})
+	}
+}

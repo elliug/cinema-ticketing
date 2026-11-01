@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-e2e
+.PHONY: install check api-test web-check deps-up deps-down mail-up up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-e2e
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -27,6 +27,14 @@ deps-up:
 deps-down:
 	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
 	$(COMPOSE) down
+
+# The local mail server the ticket email is delivered to (Mailpit: SMTP on 1025, inbox on
+# http://127.0.0.1:8025). It is opt-in and deliberately absent from deps-up: the ticket
+# email never blocks a sale (S5), so no verification target may require a mail server.
+# Point the API at it with API_SMTP_ADDR=127.0.0.1:1025 and API_EMAIL_FROM=<any mailbox>.
+mail-up:
+	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
+	$(COMPOSE) --profile mail up -d --wait --wait-timeout 90 mailpit
 
 # deps-up waits for the container healthchecks; this waits for the services
 # themselves and names the one that is not ready, so a slow dependency cannot

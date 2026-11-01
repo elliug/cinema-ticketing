@@ -106,13 +106,19 @@ func (s *PostgresStore) Pending(ctx context.Context, consumer string, limit int)
 
 // Recipient answers the address stored for a reservation, or "" when there is none.
 //
-// A reservation that no longer exists (a database repaired by hand, say) is reported as no
-// address rather than as a failure: there is nothing to send and nothing to retry.
+// A reservation that does not exist is reported as a failure, not as no address, and the
+// difference is the whole point: the two cases are the same only on the surface. A sale
+// whose buyer declined has an empty address and no later pass can invent one, so the
+// worker records it and stops. A sale whose reservation cannot be read is a broken
+// invariant (an identifier that cannot even be parsed, or a row some repair removed) —
+// recording it would drop an email that may well have a buyer behind it, so the row stays
+// pending and the next pass says so again. That is noisy on purpose: the only way to reach
+// it is a database somebody edited by hand.
 func (s *PostgresStore) Recipient(ctx context.Context, reservationID string) (string, error) {
 	var email string
 	err := s.pool.QueryRow(ctx, recipientQuery, reservationID).Scan(&email)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return "", fmt.Errorf("%w: reservation %q does not exist, so its address is unknown", ErrUnavailable, reservationID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%w: read the recipient: %v", ErrUnavailable, err)

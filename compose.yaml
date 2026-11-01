@@ -60,6 +60,28 @@ services:
       - floci-data:/app/data
     restart: unless-stopped
 
+  # Mailpit is the local mail server the ticket email is delivered to: an SMTP server on
+  # 1025 and a web inbox on 8025, so a developer reads the message the API sent without a
+  # real mailbox. It carries a compose profile on purpose and is **not** part of
+  # `make deps-up`: the ticket email is a consumer that never blocks a sale (S5), so no
+  # gate may depend on a mail server being up, pullable or healthy. `make mail-up` starts
+  # it when it is wanted, and `docker compose --profile mail up -d mailpit` does the same.
+  #
+  # The healthcheck is the image's own `readyz` subcommand rather than a curl probe: the
+  # container has wget but not curl, and readiness is the thing `--wait` must agree with.
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    profiles: ["mail"]
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   migrate:
     image: postgres:17.6-alpine
     profiles: ["tools"]
