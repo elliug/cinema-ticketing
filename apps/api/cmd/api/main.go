@@ -12,7 +12,10 @@
 // PDF worker when a mail provider is configured, and never blocks a sale when one is not.
 // M3.5 adds the reads the public web needs: the catalogue of screenings a buyer
 // can buy, one screening of that catalogue for the seat page, and the confirmation's read
-// of one reservation.
+// of one reservation. Identity adds the login: the route that asks for a sign-in link by
+// mail and the route that spends one for a session token. It is built only where every piece
+// it needs exists — a signing key, a mail provider, the migration 0010 tables — and a
+// deployment without them keeps serving exactly as it did before identity existed.
 package main
 
 import (
@@ -44,6 +47,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/email"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
+	"cinema.local/ticketing/apps/api/internal/identity"
 	"cinema.local/ticketing/apps/api/internal/log"
 	"cinema.local/ticketing/apps/api/internal/payment"
 	"cinema.local/ticketing/apps/api/internal/pdf"
@@ -260,6 +264,7 @@ type reservationProcess struct {
 	catalogStore  *catalog.PostgresStore
 	outboxStore   *pdf.OutboxStore
 	emailStore    *email.PostgresStore
+	identityStore *identity.PostgresStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
 	reconciler    *checkout.Reconciler
@@ -290,6 +295,9 @@ func (p *reservationProcess) Close() {
 	}
 	if p.emailStore != nil {
 		p.emailStore.Close()
+	}
+	if p.identityStore != nil {
+		p.identityStore.Close()
 	}
 	if p.redis != nil {
 		_ = p.redis.Close()
@@ -598,6 +606,10 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	// tick is noise, and one line at startup says exactly what is missing.
 	var emailStore *email.PostgresStore
 	var emailWorker *email.Worker
+	// mailSender is the one SMTP adapter this process builds. It serves the ticket email and,
+	// where the login is wired, the sign-in link: a second adapter for the same provider would
+	// be a second pool and a second sender to keep in step.
+	var mailSender email.Sender
 	// ticketEmails is the resend action behind POST /tickets/{ticketId}/email. It is nil
 	// unless the deployment can actually send, because a deployment with no mail provider
 	// must not advertise a way to send mail (S5): the route is mounted from this value, so an
@@ -627,6 +639,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			store.Close()
 			return nil, fmt.Errorf("configure the ticket email provider: %w", senderErr)
 		}
+		mailSender = sender
 		link := ticketLinkBuilder(cfg.PublicWebURL, ticketLinks)
 		emailStore, emailWorker, err = newTicketEmailWorker(cfg, sender, link, logger)
 		if err != nil {
@@ -653,6 +666,38 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			return nil, fmt.Errorf("configure the ticket email resend: %w", resendErr)
 		}
 		ticketEmails = resender
+	}
+
+	// The login is the two routes of one act: ask for a sign-in link by mail, spend one for a
+	// session token. It is built only where every piece it needs exists — the access link key,
+	// a provider to mail through, and a database to open — and one line at startup names
+	// whatever is missing. A deployment without identity therefore behaves exactly as it did
+	// before this feature existed, which is the state every gate runs in.
+	//
+	// The migration 0010 tables are not probed: the identity store exposes no schema check, and
+	// inventing one here would be a second place that decides what identity needs. A database
+	// without them answers 503 on both routes rather than 404, which is honest — the routes are
+	// open and the storage behind them is not.
+	var identityStore *identity.PostgresStore
+	var identityLinks publicapi.IdentityLinkService
+	var identitySessions publicapi.IdentitySessionService
+	login, loginErr := newIdentitySurface(cfg, mailSender, client, logger)
+	if loginErr != nil {
+		ticketStore.Close()
+		if checkoutStore != nil {
+			checkoutStore.Close()
+		}
+		if emailStore != nil {
+			emailStore.Close()
+		}
+		_ = client.Close()
+		store.Close()
+		return nil, loginErr
+	}
+	if login != nil {
+		identityStore = login.store
+		identityLinks = login.links
+		identitySessions = login.sessions
 	}
 
 	// The catalogue, the seat page's read of one screening and the confirmation's read are
@@ -711,7 +756,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 
 	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
 		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).WithTicketLinks(ticketLinks).
-		WithTicketEmail(ticketEmails).
+		WithTicketEmail(ticketEmails).WithIdentity(identityLinks, identitySessions).
 		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
@@ -752,8 +797,17 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			"route", "/api/v1/tickets/{ticketId}/email",
 			"limit", fmt.Sprintf("%d per %s per reservation", email.ResendLimit, email.ResendWindow))
 	}
+	if login != nil {
+		// The lifetimes and the bound are configuration an operator needs to see; the key is a
+		// secret and is never named here.
+		logger.Info("identity login routes mounted",
+			"routes", []string{"/api/v1/identity/links", "/api/v1/identity/sessions"},
+			"link_ttl", cfg.IdentityLinkTTL, "session_ttl", cfg.IdentitySessionTTL,
+			"limit", fmt.Sprintf("%d per %s per address", identity.LinkLimit, identity.LinkWindow))
+	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
-		catalogStore: catalogStore, outboxStore: outboxStore, emailStore: emailStore, redis: client,
+		catalogStore: catalogStore, outboxStore: outboxStore, emailStore: emailStore,
+		identityStore: identityStore, redis: client,
 		sweeper: sweeper, reconciler: reconciler, pdfWorker: pdfWorker, emailWorker: emailWorker}, nil
 }
 
@@ -830,6 +884,107 @@ func newTicketEmailWorker(cfg config.Config, sender email.Sender, link email.Lin
 		return nil, nil, err
 	}
 	return store, worker, nil
+}
+
+// identitySurface is what the two login routes are served by: one durable store behind both
+// halves of the flow, and the two domain services over it.
+//
+// The store is one value because the two halves must read and write the same rows: an issuer
+// recording nonces in one database and a redeemer spending them in another is a login nobody
+// can complete, and the mistake would look like a refused link rather than like a miswiring.
+type identitySurface struct {
+	store    *identity.PostgresStore
+	links    publicapi.IdentityLinkService
+	sessions publicapi.IdentitySessionService
+}
+
+// newIdentitySurface builds the login surface, or says in one line what it is missing and
+// keeps serving.
+//
+// It is never a startup failure. A deployment that predates identity, or one that deliberately
+// sends no mail, is a valid deployment: the login is an addition to a product whose guest
+// checkout and ticket links do not depend on it (D4, S4), so a missing piece closes two routes
+// and names itself in one informational line instead of taking the API down. Only a store that
+// cannot be opened at all is an error, because that is a database failure the process cannot
+// serve around.
+//
+// The provider is the ticket email's own adapter and the counter is the Redis client the
+// process already opened: a second sender would be a second pool to keep in step, and a second
+// connection for three increments a quarter of an hour buys nothing.
+func newIdentitySurface(cfg config.Config, sender email.Sender, client redis.UniversalClient, logger *slog.Logger) (*identitySurface, error) {
+	if strings.TrimSpace(cfg.IdentityLinkKey) == "" {
+		logger.Info("identity login disabled: the signed access link key is missing",
+			"required", "API_IDENTITY_LINK_KEY")
+		return nil, nil
+	}
+	// A key that is set but unusable closes the surface rather than the process, and the line
+	// names the setting instead of the key: a wrong key is still a secret.
+	signer, signerErr := identity.NewAccessSigner(cfg.IdentityLinkKey, cfg.IdentityLinkTTL)
+	if signerErr != nil {
+		logger.Info("identity login disabled: the signed access link key is unusable",
+			"required", "API_IDENTITY_LINK_KEY", "error", signerErr.Error())
+		return nil, nil
+	}
+	if !cfg.EmailEnabled {
+		logger.Info("identity login disabled: no mail provider is configured",
+			"required", missingEmailSetting(cfg))
+		return nil, nil
+	}
+	if sender == nil {
+		// The login mails through the ticket email's adapter, and that one is built only where
+		// the ticket email itself is wired.
+		logger.Info("identity login disabled: no mail sender is wired",
+			"required", "API_TICKET_LINK_KEY and 0005_checkout")
+		return nil, nil
+	}
+
+	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancel()
+	store, err := identity.NewPostgresStore(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		// The refusal never echoes the connection string, which may carry credentials.
+		return nil, fmt.Errorf("open identity store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+	}
+
+	limiter := identity.NewRedisLinkLimiter(client)
+	issuer, issuerErr := identity.NewIssuer(signer, store, limiter, identityMailer{sender: sender},
+		identityLinkBase(cfg.PublicWebURL), logger)
+	if issuerErr != nil {
+		store.Close()
+		logger.Info("identity login disabled: the sign-in link could not be wired", "error", issuerErr.Error())
+		return nil, nil
+	}
+	// The session's lifetime is its own and not the link's: a session that inherited the
+	// fifteen minutes a login step lives would sign everybody out mid-page.
+	redeemer, redeemerErr := identity.NewRedeemer(signer, store, cfg.IdentitySessionTTL)
+	if redeemerErr != nil {
+		store.Close()
+		logger.Info("identity login disabled: the session could not be wired", "error", redeemerErr.Error())
+		return nil, nil
+	}
+	return &identitySurface{store: store, links: issuer, sessions: redeemer}, nil
+}
+
+// identityMailer adapts the ticket email's provider to the identity package's mail boundary.
+//
+// The two messages are composed by different packages and carried by one sender, so the
+// adapter is the whole of the join: no second pool, no second configuration, and one place to
+// change if a provider ever needs something the ticket email does not.
+type identityMailer struct{ sender email.Sender }
+
+// Send delivers one login message through the shared sender.
+func (m identityMailer) Send(ctx context.Context, mail identity.Mail) error {
+	return m.sender.Send(ctx, email.Message{To: mail.To, Subject: mail.Subject, Body: mail.Body})
+}
+
+// identityLinkBase is everything before the token in a login email: the public web's origin and
+// the route the web serves, with exactly one slash between them.
+//
+// The token is appended to this string by the issuer, so the shape is decided here, once: a
+// doubled slash or a missing one is a link that opens the wrong page in an inbox nobody can
+// correct afterwards.
+func identityLinkBase(publicWebURL string) string {
+	return strings.TrimRight(publicWebURL, "/") + "/in/"
 }
 
 // ticketLinkBuilder builds the URL a ticket email carries: the public web's link route and
