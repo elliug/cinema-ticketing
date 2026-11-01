@@ -129,6 +129,47 @@ jobs:
       - name: "Verify M4.1 door: admission, second presentation, forgery and the race"
         run: make verify-m41
 
+  # The ticket email gate is its own job for the same reason the three above are: it starts
+  # the three compose services, bootstraps the stack, and then proves the mail path end to
+  # end — a sale paid with an address is mailed exactly one message carrying a signed
+  # /t/<token> link, that token opens the order's own tickets, the outbox row is already
+  # published while the mailbox still holds one message, and the resend route is bounded.
+  # `make verify-email` starts Mailpit itself (`docker compose --profile mail up -d --wait
+  # mailpit`) because a mail server is the environment the claim is made in, and it stops it
+  # again only when this job is what started it. It creates and removes its own database,
+  # Redis logical database (12, so it never shares an index with the other gates), API port
+  # and bucket. It needs Docker Compose, Go, jq and curl, all of which the runner image
+  # carries; they are checked here so a missing tool is a clear failure rather than a
+  # confusing one later. Nothing in the existing gates is changed by this job: they keep
+  # running with no mail provider at all, which is the direction S5 promises.
+  email-delivery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check the tools the gate needs
+        run: |
+          docker compose version
+          docker-compose version 2>/dev/null || true
+          jq --version
+          curl --version | head -n 1
+
+      # The project's own bootstrap: compose services, every migration, the development
+      # seed and the ticket bucket. The gate below creates and removes its own on top.
+      - name: Bootstrap the stack
+        env:
+          API_ENV: development
+        run: make bootstrap
+
+      - name: Verify ticket email delivery through Mailpit
+        run: make verify-email
+
   # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
   # compose services, bootstraps the stack, and then adds a real browser. It installs two
   # engines — Chromium and Firefox, with the system libraries they need — because a single

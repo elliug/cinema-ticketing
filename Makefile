@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down mail-up up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-e2e
+.PHONY: install check api-test web-check deps-up deps-down mail-up up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-email verify-e2e
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -119,6 +119,21 @@ verify-m35:
 # needs Docker Compose, Go, jq, openssl and curl, each with a named refusal.
 verify-m41:
 	./scripts/verify_m41.sh
+
+# The ticket email exit evidence: the other half of what the gates above can prove. They all
+# run with **no mail provider**, which shows only that a sale does not need one (S5); this one
+# starts Mailpit and shows the direction nobody had proven — a sale paid with an address is
+# mailed exactly one message carrying a signed /t/<token> link, that token opens the order's
+# own tickets, two ticks later the mailbox still holds one message while the `ticket.issued`
+# outbox row is already published by the PDF worker (the failure S4's own delivery record
+# prevents), and the resend route mails a second address without storing it until the fourth
+# send inside the hour is refused. It creates and removes its own database, Redis index (12 by
+# default), API port and bucket; it starts Mailpit on purpose and stops it again only when
+# this run is what started it, so a Mailpit already running is left alone. It needs Docker
+# Compose, Go, jq and curl, each checked with a named refusal, and it needs no mail provider
+# to be configured for any other target.
+verify-email:
+	./scripts/verify_email.sh
 
 # The Playwright suite alone, against a web server and an API that are already running
 # (`API_BASE_URL` defaults to http://127.0.0.1:8080). Useful while iterating on a scenario.
