@@ -424,10 +424,16 @@ test("an unreachable API becomes a typed network failure", async () => {
 
 // M3 · T7 — the checkout and ticket reads the confirmation and ticket pages use.
 //
-// The checkout route takes no body at all (the amount is computed server side)
-// and is idempotent by header, so what matters here is the URL, the key, and that
-// a refusal keeps the code the API used: `payment_in_flight`, `hold_expired` and
-// `payment_unavailable` each tell the buyer to do something different.
+// The checkout route carries no money (the amount is computed server side) and is
+// idempotent by header, so what matters here is the URL, the key, and that a refusal keeps
+// the code the API used: `payment_in_flight`, `hold_expired` and `payment_unavailable` each
+// tell the buyer to do something different.
+//
+// Its one optional field is the address the tickets are to be mailed to (T5 · S1, D1), and
+// it is not money: it cannot change the charge, only where a copy of the ticket goes. The
+// two request shapes are the point of the cases below — an address produces exactly
+// `{"email": "…"}` with a JSON content type, and no address produces **no body at all**,
+// which is the shape every caller had before the field existed, the gates included.
 
 const TICKET_BODY = {
   ticketId: "ticket-1",
@@ -475,6 +481,9 @@ test("payReservation posts with the Idempotency-Key and no body", async () => {
   assert.equal(headerValue(call.init, "Idempotency-Key"), "key-1");
   assert.equal(headerValue(call.init, "Authorization"), undefined);
   assert.equal(call.init.body, undefined, "the amount is computed server side");
+  // No address means no body, so there is nothing to declare a content type for. The
+  // gates and the existing callers keep sending exactly this request.
+  assert.equal(headerValue(call.init, "Content-Type"), undefined);
 
   assert.deepEqual(payment, {
     reservationId: "reservation-a",
@@ -505,6 +514,117 @@ test("payReservation escapes the reservation id in its path", async () => {
     recorder.calls[0].url,
     `${BASE_URL}/api/v1/reservations/reservation%20a%2Fb/payment`,
   );
+});
+
+test("an address is the whole body of the payment request, and nothing else is sent", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation-a",
+      attemptId: "attempt-1",
+      paymentStatus: "approved",
+      amountCents: 1998,
+      ticketIds: ["ticket-1"],
+    }),
+  );
+
+  unwrap(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+      email: "a@b.c",
+    }),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.init.body, '{"email":"a@b.c"}');
+  assert.equal(headerValue(call.init, "Content-Type"), "application/json");
+  assert.equal(headerValue(call.init, "Idempotency-Key"), "key-1");
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  // One field and only one: the amount stays the box office's number, so an address can
+  // never be a second opinion about money.
+  assert.deepEqual(Object.keys(JSON.parse(String(call.init.body))), ["email"]);
+});
+
+test("the address is trimmed on its way out and otherwise left alone", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation-a",
+      attemptId: "attempt-1",
+      paymentStatus: "approved",
+      amountCents: 1998,
+      ticketIds: ["ticket-1"],
+    }),
+  );
+
+  unwrap(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+      email: "  Compras@Example.COM  ",
+    }),
+  );
+
+  // Trimmed, and not lowercased: the API normalises the same way, and the local part of an
+  // address is its own business.
+  assert.equal(recorder.calls[0].init.body, '{"email":"Compras@Example.COM"}');
+});
+
+test("a blank address is absent, so the request keeps its bodiless shape", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      reservationId: "reservation-a",
+      attemptId: "attempt-1",
+      paymentStatus: "approved",
+      amountCents: 1998,
+      ticketIds: ["ticket-1"],
+    }),
+  );
+  const client = makeClient(recorder);
+
+  for (const email of ["", "   ", "\t\n "]) {
+    unwrap(
+      await client.payReservation({
+        reservationId: "reservation-a",
+        idempotencyKey: "key-1",
+        email,
+      }),
+    );
+  }
+
+  assert.equal(recorder.calls.length, 3);
+  for (const call of recorder.calls) {
+    assert.equal(call.init.body, undefined, "a blank address is no address");
+    assert.equal(headerValue(call.init, "Content-Type"), undefined);
+  }
+});
+
+test("a refused address is the payment route's own 400, not a second error path", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-input",
+      title: "Invalid input",
+      status: 400,
+      code: "invalid_input",
+      detail: "invalid input: email must be a single address of the form name@domain",
+    }),
+  );
+
+  const problem = unwrapError(
+    await makeClient(recorder).payReservation({
+      reservationId: "reservation-a",
+      idempotencyKey: "key-1",
+      // A value this client does not screen: the pure rule in lib/payment-key.ts stops the
+      // obvious mistake earlier, and the API stays the authority for everything else.
+      email: "buyer@example",
+    }),
+  );
+
+  // The code and the detail are the checkout's own, unchanged, so the panel's existing
+  // payment error handling renders it like any other refusal.
+  assert.equal(problem.status, 400);
+  assert.equal(problem.code, "invalid_input");
+  assert.match(problem.detail, /name@domain/);
+  assert.equal(recorder.calls.length, 1);
 });
 
 test("a declined payment is a success whose body says so, with no tickets", async () => {
