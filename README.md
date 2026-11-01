@@ -149,6 +149,29 @@ make deps-down          # stop local containers without deleting volumes
 
 `Makefile` automatically uses either `docker compose` or `docker-compose`.
 
+### Mail locally (optional)
+
+The ticket email is the one part of the stack that is **not** started by `make up`. Mailpit, the local mail server the message is delivered to, lives behind its own compose profile for a reason: a mail server must never become a prerequisite of a gate, because the sale never depends on the mail.
+
+```sh
+make mail-up
+```
+
+That starts `axllent/mailpit` (pinned tag) with SMTP on `127.0.0.1:1025` and a web inbox on `http://127.0.0.1:8025`; the target waits for the container's own healthcheck, and `make deps-down` stops it with the rest.
+
+The API starts its email consumer only when both of these are set, so running it without them is normal and mails nothing:
+
+```sh
+API_SMTP_ADDR=127.0.0.1:1025 \
+API_EMAIL_FROM=tickets@cinema.local \
+API_PUBLIC_WEB_URL=http://localhost:3000 \
+   go run ./apps/api/cmd/api
+```
+
+`API_PUBLIC_WEB_URL` is the origin the mailed link points at (`<origin>/t/<token>`), and it must be an absolute `http`/`https` origin. `API_TICKET_LINK_KEY` signs that link with a key of its own, so rotating it cannot invalidate a printed QR code; in development an unset key falls back to a documented value, and outside development a real key of at least 32 bytes is required. The link expires seven days after it is minted, which `API_TICKET_LINK_TTL` changes.
+
+What arrives in the inbox is one message per paid order that carried an address, sent by a worker that reads the outbox on its own cadence, retries on the next pass when the provider is down, and records its own delivery so a second tick cannot mail twice. Order does not matter: starting Mailpit after the API only means the first passes log a failure until it answers.
+
 ## Bootstrap
 
 The whole local environment is two commands, and both are re-runnable:
@@ -341,7 +364,7 @@ The milestones delivered so far, and what they leave out, are part of the delive
 | **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
 | **Cashier, reporting and audit** | No takings and no record of who changed what: the door screen admits a ticket once, but nothing counts the evening's takings or says who held the till. The administrative surface is local-only and unauthenticated beyond a shared token. |
 | **Catalogue filters beyond time** | `GET /events` pages with a keyset cursor and bounds each page with `from`/`to`, and nothing else: there is no film or cinema filter until a deployment has more than one cinema. |
-| **Email** | The PDF is downloaded from the web. Nothing is mailed. |
+| **Email** | A purchase may carry one address, asked for at the checkout and never verified. Where the deployment configures a mail provider, a worker mails a signed link that expires; with no provider configured nothing is mailed at all. |
 | **PDFs that follow a void** | The PDF is rendered when the payment is captured and stored immutably: cancelling a screening or voiding a ticket does not change a PDF already issued. It is a record of the sale and never proof of validity — validity is `POST /tickets/verify`. |
 | **Real payment and storage** | The provider is simulated and storage is Floci. A real decline needs `NewSimulatedWithDeclineRule`; the wired simulator always approves. |
 | **Accessibility beyond the keyboard path** | The seat map is operable without a mouse, with a visible focus ring, one `h1` per screen and `aria-current` on the navigation. That is not an accessibility audit. |
