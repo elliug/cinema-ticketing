@@ -4,8 +4,9 @@ Estudio previo a la implementación. Tres decisiones ya tomadas por el responsab
 un conjunto de restricciones que el código existente impone y que no son negociables sin
 reescribir contratos documentados.
 
-Estado: **implementación**. Slices 1–4 entregados en `feat/email-delivery`; queda el slice 5 (la
-UI del checkout y los textos).
+Estado: **entregado y en `main`** como seis PRs encadenadas. Queda una sola cosa sin cerrar, y está
+escrita abajo: el lente de resiliencia de la revisión nativa de la PR del gate nunca emitió un
+resultado admisible, y el responsable del producto decidió fusionar documentándolo.
 
 ## Decisiones tomadas
 
@@ -148,6 +149,11 @@ canónico y `base64url`.
 Esfuerzo estimado: dos a tres días, con T1–T3 como primer corte (el correo ya sale por Mailpit) y
 T4–T7 como segundo.
 
+**Estado: T1–T7 entregados.** T5 se partió en sus dos mitades reales (campo del checkout y acción de
+reenvío) porque la segunda abre una ruta pública que envía correo a una dirección arbitraria y
+necesita la limitación anti-relé probada por separado. T7 se entregó como gate propio
+(`verify-email`), no tocando `verify-m3`.
+
 ## Slices
 
 - **Slice 1 — este documento** (`docs(odd): study email delivery`): 162 líneas. Las decisiones y
@@ -186,14 +192,64 @@ T4–T7 como segundo.
 
   El cableado llevó `API_SMTP_ADDR` en lugar del `API_SMTP_URL` que se propuso aquí: el adaptador
   ya existente pide `host:port`, y un «URL» que no acepta esquema sería un nombre que miente.
-- **Slice 5 — la UI y los textos**. Pendiente.
+- **Slice 5 — la UI y los textos**: cometidos en cinco unidades, 1.610 líneas.
+  - `feat(web): ask for the address that the tickets are mailed to, before paying`: el campo
+    opcional del checkout y el cuerpo `{"email": …}` (sin cuerpo cuando no se escribe nada),
+    con las cinco frases que dicen las condiciones en vez de vender la función.
+  - `docs: say what is mailed now, instead of saying nothing is`: los cuatro textos y la fila
+    de `GUIDE.md`, más el paso del pago y el párrafo de `ARCHITECTURE.md`.
+  - `feat(email): mail the link to an address typed on the ticket page`: `POST
+    /api/v1/tickets/{id}/email`, reutilizando el asunto y el cuerpo del worker y la misma
+    validación de dirección del checkout; 3 envíos por reserva y hora en Redis, contados antes
+    del envío y **fallando cerrado**; 429 con `Retry-After`; 503 cuando no hay proveedor.
+  - `feat(web): a ticket page action that mails the link to another address`: el formulario que
+    usa esa ruta y dice en palabras cada respuesta, incluido el 404 opaco.
+  - `test(gate): prove the ticket email end to end through Mailpit`: `make verify-email` y su
+    trabajo de CI, con Mailpit arrancado a propósito.
+
+  **T7 se entregó en la forma correcta, no en la prevista**: `verify-m3` no se tocó (sigue
+  corriendo sin proveedor, que es la mitad «sin» de S5) y la mitad «con proveedor» es un gate
+  propio, `verify-email`, con su base de datos, índice de Redis, puerto y bucket, que exige
+  **exactamente un** mensaje, saca el token del cuerpo, lo canjea por las entradas de la orden y
+  comprueba dos ticks después que sigue habiendo uno — con `published_at` ya puesto por el worker
+  de PDF y una fila de `outbox_deliveries` para `email`. Esa combinación es exactamente el fallo
+  que el registro de entrega existe para evitar, así que el gate lo fija en vez de confiar en el
+  comentario. Añadir Mailpit a `verify-m3` habría convertido un servidor de correo en requisito
+  de todos los gates.
 
 ## Entrega
 
-El trabajo va en PRs encadenados, uno por grupo de slices, porque el conjunto pasa de 4.700 líneas
-revisadas y una sola PR de ese tamaño no se revisa: `feat/email-delivery` se parte al abrirlas (PR 1:
-slices 1–3; PR 2: slice 4; PR 3: slice 5). Abrir las PRs y mergear es decisión del responsable del
-producto, no del agente.
+El trabajo fue en PRs encadenadas, una por grupo de comportamiento, porque el conjunto pasaba de
+8.500 líneas y una sola PR de ese tamaño no se revisa. Terminó en seis, y no por gusto: el
+proveedor de revisión diffea cada PR contra `main`, así que un candidato encadenado se revisa
+**sumado a sus padres** hasta que éstos entran, y por encima de unas 2.600 líneas ni siquiera
+arranca (`lens_context_budget_exceeded`). El corte real fue: #97 (slices 1–3, el consumidor),
+#100 (el firmante y su ruta), #101 (la página y el cableado), #102 (el campo del checkout y los
+textos), #103 (el reenvío y su límite) y #104 (el gate y este documento).
+
+### Revisión nativa
+
+| PR | Lentes | Resultado |
+|---|---|---|
+| #97 | risk, resilience | aprobada, autoridad quemada |
+| #100 | risk, resilience | aprobada, autoridad quemada |
+| #101 | risk, resilience | aprobada, autoridad quemada |
+| #102 | risk, resilience | aprobada, autoridad quemada (un lente hubo de repetirse) |
+| #103 | risk, resilience | aprobada, autoridad quemada |
+| #104 | risk, resilience | **risk admitido; resilience nunca admitido** |
+
+En #104 el modelo del lente de resiliencia emite como localización de un hallazgo
+`scripts/verify_email.sh:cleanup` — una función, no una línea — y el admittedor la rechaza con
+`line_suffix_not_integer` **dos veces**, sin consumir el slot. No es un veredicto sobre el código ni
+un fallo que se pueda reparar desde aquí: es el modelo del proveedor produciendo un payload que su
+propio contrato rechaza. La autoridad de esa revisión quedó **sin quemar**, y el payload rechazado
+conservado por el proveedor en `.git/gentle-ai/rejected-results/`.
+
+Todos los hallazgos admitidos fueron **informativos**, ninguno abrió corrección: el más útil es que
+`Recipient` de una reserva inexistente reintenta en cada tick en vez de darse por entregada (es
+intencionado: una venta ilegible no se marca como enviada), y que la ruta de reenvío no filtra
+caracteres de control en el destinatario — el adaptador SMTP ya los rechaza, de modo que es defensa
+en profundidad y no un agujero.
 
 ## Log
 
@@ -207,3 +263,6 @@ producto, no del agente.
   algo que el sistema no garantiza. Se promociona cuando llegue el login.
 - **L4** — El orden respecto al login queda resuelto: esto **es** el camino de invitado que la
   arquitectura describe, no un desvío. El login se apoyará encima sin rehacerlo.
+- **L5** — Decisión del usuario sobre la PR del gate, literal: «2». Elige fusionarla **sin** el
+  segundo lente, dejando escrito que el gate se validó ejecutándose (verde tres veces, con su job
+  de CI) y no por una vista externa completa.
