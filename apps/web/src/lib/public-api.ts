@@ -20,9 +20,11 @@
 // the buyer clicked on), the M3.5 read of one order (so a reloaded confirmation keeps
 // its screening, its seats, its deadline and its tickets without asking the payment
 // route again), the M3 ticket verification a page uses to say plainly whether a
-// ticket admits its holder, the M4.1 admission the door performs with the same code, and
-// the signed link a purchase email carries (so the web route behind it redeems the tokens
-// in this process and the browser never learns the API's address).
+// ticket admits its holder, the M4.1 admission the door performs with the same code, the
+// signed link a purchase email carries (so the web route behind it redeems the tokens
+// in this process and the browser never learns the API's address), and the resend action a
+// ticket page offers (so mailing that link to an address typed there is also a call this
+// process makes, with the address stored nowhere and the hourly bound read from the API).
 // The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
@@ -63,6 +65,9 @@ export type PublicErrorCode =
   | "provider_reference_taken"
   | "coordination_unavailable"
   | "service_unavailable"
+  // The bound on mailing one order: the API answers a refused send with `429` and the wait
+  // it has left, so a page can say when to try again instead of guessing.
+  | "rate_limited"
   | "voided"
   | "event_cancelled"
   | "network_error"
@@ -75,6 +80,15 @@ export interface PublicProblem {
   status: number;
   code: PublicErrorCode;
   detail: string;
+  /**
+   * How long the API asked the caller to wait, in whole seconds, when it said so in a
+   * `Retry-After` header — the machine-readable half of a `429`.
+   *
+   * It is absent for every refusal that carried no such header, including one whose wait the
+   * body only mentions in a sentence: a page cannot parse prose for a number, and inventing
+   * one would print a time the server never asked for.
+   */
+  retryAfterSeconds?: number;
 }
 
 /** Every client call returns a typed result and never throws. */
@@ -308,6 +322,23 @@ export interface PublicTicketLink {
   ticketIds: string[];
 }
 
+/**
+ * POST /tickets/{ticketId}/email — the ticket page's "send the link to another address".
+ *
+ * The answer of a send is one field, and it is the API's own word: `sent: true` is written
+ * only after the provider took the message, which is why the status alone does not have to
+ * be interpreted by a caller. Nothing here names the message, the link or the address — the
+ * address is stored nowhere (S2), and the link is a credential.
+ */
+export interface PublicTicketEmailSent {
+  /**
+   * Always `true`: a `202` whose body says anything else is refused by this client instead
+   * of being read as a send, because "a message was mailed" is the one claim this feature
+   * must never make on its own.
+   */
+  sent: true;
+}
+
 /** POST /tickets/verify — what a presented code is, checked server side. */
 export interface PublicVerification {
   ticketId: string;
@@ -507,6 +538,22 @@ export interface PublicClient {
    * ticket already reads as; a `503` is our failure and says nothing about the link.
    */
   redeemTicketLink(token: string): Promise<PublicResult<PublicTicketLink>>;
+  /**
+   * Mails this ticket's order to an address typed at that moment: the same message, the same
+   * subject and the same signed, expiring link a purchase email carries, and an address that
+   * is stored nowhere.
+   *
+   * The ticket id is the whole credential, exactly as it is for the read above (guest access
+   * has no account to prove ownership with), so this route is bounded server side: three
+   * sends per order per hour, and a `429` with `Retry-After` past that. Only a `202` whose
+   * body says `sent: true` means the message left; a `400` is the checkout's own address rule
+   * refusing the value, the opaque `404` is an unknown ticket or an unpaid order, and a `503`
+   * is a deployment that does not send mail.
+   */
+  sendTicketEmail(
+    ticketId: string,
+    email: string,
+  ): Promise<PublicResult<PublicTicketEmailSent>>;
   verifyTicket(token: string): Promise<PublicResult<PublicVerification>>;
   /**
    * Presents a code at the door: the server verifies it and admits the ticket it names once.
@@ -552,6 +599,11 @@ export type PaymentResponse =
 /** The serializable answer of a ticket read. */
 export type TicketResponse =
   | { ok: true; ticket: PublicTicket }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of a ticket-email send. */
+export type TicketEmailResponse =
+  | { ok: true; email: PublicTicketEmailSent }
   | { ok: false; problem: PublicProblem };
 
 /** The serializable answer of a ticket verification. */
@@ -605,6 +657,7 @@ const PROBLEM_CODES: readonly PublicErrorCode[] = [
   "provider_reference_taken",
   "coordination_unavailable",
   "service_unavailable",
+  "rate_limited",
   // The two refusals an admission can earn. They are problem codes, not reasons: a void
   // ticket and a cancelled screening are the API's own words for why nobody walks in.
   "voided",
@@ -684,7 +737,10 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
     const parsed = await readJson(response);
 
     if (!response.ok) {
-      return { ok: false, error: toProblem(response.status, parsed) };
+      return {
+        ok: false,
+        error: withRetryAfter(toProblem(response.status, parsed), response),
+      };
     }
     if (!parsed.ok) {
       return {
@@ -866,6 +922,38 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseTicket(result.value);
+    },
+
+    async sendTicketEmail(ticketId, email) {
+      const id = ticketId.trim();
+      if (id === "") {
+        return { ok: false, error: invalidInput("this page needs a ticket id") };
+      }
+      // The address is the entire request, so a blank one is never sent: the API answers it
+      // with the `400` it gives a value its rule refuses, and a page with an empty field has
+      // nothing to ask. Everything else goes out trimmed and otherwise untouched — the API is
+      // the authority on what an address is, and a second validator here could only refuse an
+      // address the box office would have mailed.
+      const address = email.trim();
+      if (address === "") {
+        return { ok: false, error: invalidInput("an address is needed to mail the ticket") };
+      }
+
+      // A message, not an attempt: no Idempotency-Key, because a send is not replayed and the
+      // order's allowance is counted by the API rather than by a key this browser keeps.
+      const result = await send<unknown>(`/tickets/${encodeURIComponent(id)}/email`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({ email: address }),
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseTicketEmail(result.value);
     },
 
     async redeemTicketLink(token) {
@@ -1338,6 +1426,22 @@ function parseTicketLink(value: unknown): PublicResult<PublicTicketLink> {
   return { ok: true, value: { reservationId, expiresAt, ticketIds } };
 }
 
+function parseTicketEmail(value: unknown): PublicResult<PublicTicketEmailSent> {
+  // A `202` says the request was accepted; only `{"sent": true}` says a provider took the
+  // message. An empty body or `sent: false` is therefore refused rather than read as a send,
+  // and the status alone is never enough: the page prints "sent", and nothing else here may.
+  if (!isRecord(value) || value.sent !== true) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        202,
+        "the email answer does not say the message was sent",
+      ),
+    };
+  }
+  return { ok: true, value: { sent: true } };
+}
+
 function parseVerification(value: unknown): PublicResult<PublicVerification> {
   if (!isRecord(value) || typeof value.ticketId !== "string") {
     return {
@@ -1580,6 +1684,23 @@ function toProblem(status: number, parsed: JsonRead): PublicProblem {
     status,
     "the reservation API returned an unrecognised error response",
   );
+}
+
+/**
+ * The problem, with the wait the API stated in a `Retry-After` header when it served one.
+ *
+ * The header is the machine-readable half of a `429`; the body repeats the wait inside a
+ * sentence, and a page may not parse prose for a number. Only whole seconds are read: the
+ * header also allows an HTTP date, and turning a date into a countdown here would put a second
+ * clock in a client whose rule is that the server owns the time.
+ */
+function withRetryAfter(problem: PublicProblem, response: Response): PublicProblem {
+  const raw = (response.headers.get("Retry-After") ?? "").trim();
+  if (!/^\d+$/.test(raw)) {
+    return problem;
+  }
+  const seconds = Number(raw);
+  return seconds > 0 ? { ...problem, retryAfterSeconds: seconds } : problem;
 }
 
 function unexpectedResponse(status: number, detail: string): PublicProblem {

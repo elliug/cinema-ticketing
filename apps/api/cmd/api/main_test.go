@@ -396,6 +396,16 @@ func ticketRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// ticketEmailRouted reports whether the ticket page's resend route is mounted. The probe
+// presents no body at all, so a mounted route answers its own 400 without touching a database;
+// an unmounted one is refused by the mux.
+func ticketEmailRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/api/v1/tickets/00000000-0000-0000-0000-00000000c0f1/email", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // redeemRouted reports whether the door's admission route is mounted. The probe presents
 // no code at all, so a mounted route answers the malformed-body refusal without touching
 // a database; an unmounted one is refused by the ticket detail route's path instead
@@ -1147,6 +1157,11 @@ func TestMountReservationLeavesTheTicketEmailOffWithoutAProvider(t *testing.T) {
 
 	if proc.emailWorker != nil || proc.emailStore != nil {
 		t.Fatal("a deployment with no mail provider wired the ticket email worker")
+	}
+	// And it advertises no way to send mail either: the resend route is mounted from the same
+	// decision as the consumer, because a deployment that cannot send must never answer 202.
+	if ticketEmailRouted(srv) {
+		t.Fatal("a deployment with no mail provider advertised the ticket resend route")
 	}
 	if !strings.Contains(logged.String(), "ticket email disabled") {
 		t.Fatalf("log = %q, want the one line saying the ticket email is disabled", logged.String())

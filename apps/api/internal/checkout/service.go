@@ -400,7 +400,7 @@ func (s *Service) ChargeWithContact(ctx context.Context, request ChargeRequest) 
 	if err != nil {
 		return Result{}, err
 	}
-	contact, err := validateContactEmail(request.ContactEmail)
+	contact, err := NormalizeContactEmail(request.ContactEmail)
 	if err != nil {
 		return Result{}, err
 	}
@@ -687,7 +687,7 @@ func validateIdempotencyKey(value string) (string, error) {
 // megabyte of text in a column that is meant to name a mailbox.
 const maxContactEmailLength = 320
 
-// validateContactEmail normalises the address the tickets are to be mailed to.
+// NormalizeContactEmail normalises the address the tickets are to be mailed to.
 //
 // It is deliberately permissive, and the reason is the same one the migration states: Go
 // is not an email validator either. A strict pattern rejects valid addresses (quoted local
@@ -696,7 +696,12 @@ const maxContactEmailLength = 320
 // more characters than the RFC allows. Anything it accepts is stored **unverified**: the
 // system does not know the address belongs to whoever typed it, and no code may pretend it
 // does.
-func validateContactEmail(value string) (string, error) {
+//
+// It is exported because the checkout is not the only place that reads an address any more:
+// the ticket page's resend route takes one typed at that moment, and mailing it under a
+// different rule would be two answers to "is this an address" that can only drift apart.
+// Both callers get the same normalisation and the same ErrInvalidInput.
+func NormalizeContactEmail(value string) (string, error) {
 	email := strings.TrimSpace(value)
 	if email == "" {
 		return "", nil

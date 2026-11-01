@@ -51,10 +51,14 @@ function recordingFetch(respond: (call: RecordedCall) => Response): RecordingFet
   };
 }
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -1726,4 +1730,220 @@ test("a link answer that names nothing to open is refused, not read as zero tick
   const noExpiryProblem = unwrapError(await makeClient(noExpiry).redeemTicketLink("token"));
   assert.equal(noExpiryProblem.code, "unexpected_response");
   assert.match(noExpiryProblem.detail, /expiresAt/);
+});
+
+// ── Mailing the link to an address typed on the ticket page (T5 · S2, S3) ───
+//
+// The ticket page offers one write: mail this ticket's order to an address typed there, for
+// that send only. What is pinned here is the request — one path, one body, no credential and
+// no key — and the mapping of every answer the route can give, because the page has to render
+// a different sentence for each of them:
+//
+//   - `202 {"sent": true}` — the provider took the message;
+//   - `400 invalid_input` — the checkout's own address rule refused the value;
+//   - the opaque `404` an unknown ticket shares with an unpaid order;
+//   - `429 rate_limited` with the wait in a `Retry-After` header, which is the only place
+//     that number exists: a client that dropped it would have to invent one;
+//   - `503` — this deployment does not send mail.
+//
+// Every one of them arrives as this client's typed problem, never as a thrown error, so the
+// action above can hand it to one rule and the panel can render one state.
+
+const TICKET_EMAIL_SENT = { sent: true };
+
+const TICKET_EMAIL_LIMITED = {
+  type: "https://cinema.local/problems/rate-limited",
+  title: "Too many requests",
+  status: 429,
+  code: "rate_limited",
+  detail:
+    "this reservation has been emailed the maximum of 3 times in the last 1h0m0s; wait 2520 seconds and try again",
+};
+
+test("sendTicketEmail posts the address to /tickets/{id}/email and reads the 202", async () => {
+  const recorder = recordingFetch(() => jsonResponse(202, TICKET_EMAIL_SENT));
+
+  const answer = unwrap(
+    await makeClient(recorder).sendTicketEmail("ticket-1", "  colleague@example.com  "),
+  );
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/tickets/ticket-1/email`);
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(headerValue(call.init, "Content-Type"), "application/json");
+  // The body is the address and nothing else: no order id, no ticket id, no second field.
+  // Trimmed, because the API trims it and what leaves is what the form showed.
+  assert.deepEqual(JSON.parse(String(call.init.body)), {
+    email: "colleague@example.com",
+  });
+  // A public write of a guest ticket: no credential, and no Idempotency-Key — this send is
+  // not a replayable attempt, it is a message.
+  assert.equal(headerValue(call.init, "Authorization"), undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+
+  // `sent` is the API's own word, carried through: the status alone is the client's to read,
+  // and it is read here so nothing downstream has to interpret a 202.
+  assert.equal(answer.sent, true);
+});
+
+test("a ticket id is escaped into the path, and a blank request is never sent", async () => {
+  const recorder = recordingFetch(() => jsonResponse(202, TICKET_EMAIL_SENT));
+  await makeClient(recorder).sendTicketEmail("  a/b c  ", "colleague@example.com");
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/tickets/a%2Fb%20c/email`);
+
+  // A page with no ticket id, and an empty address field: the API would refuse both, and
+  // asking would spend a round trip on a question this client already knows the answer to.
+  const noTicket = recordingFetch(() => jsonResponse(202, TICKET_EMAIL_SENT));
+  const noTicketProblem = unwrapError(
+    await makeClient(noTicket).sendTicketEmail("   ", "colleague@example.com"),
+  );
+  assert.equal(noTicket.calls.length, 0);
+  assert.equal(noTicketProblem.code, "invalid_input");
+
+  const noAddress = recordingFetch(() => jsonResponse(202, TICKET_EMAIL_SENT));
+  const noAddressProblem = unwrapError(
+    await makeClient(noAddress).sendTicketEmail("ticket-1", "   "),
+  );
+  assert.equal(noAddress.calls.length, 0);
+  assert.equal(noAddressProblem.code, "invalid_input");
+});
+
+test("each answer of the resend route keeps its own meaning", async () => {
+  // `400`: the checkout's own rule refused the address, and the API's detail names it.
+  const refused = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-input",
+      title: "Invalid input",
+      status: 400,
+      code: "invalid_input",
+      detail: "email must contain a single @",
+    }),
+  );
+  const refusedProblem = unwrapError(
+    await makeClient(refused).sendTicketEmail("ticket-1", "not-an-address"),
+  );
+  assert.equal(refusedProblem.status, 400);
+  assert.equal(refusedProblem.code, "invalid_input");
+  assert.equal(refusedProblem.detail, "email must contain a single @");
+
+  // The opaque `404`: an unknown ticket and a ticket of an unpaid order answer identically,
+  // and this client hands the refusal on untouched rather than explaining which it was.
+  const unknown = recordingFetch(() =>
+    jsonResponse(404, {
+      type: "https://cinema.local/problems/not-found",
+      title: "Not found",
+      status: 404,
+      code: "not_found",
+      detail: "the requested ticket does not exist",
+    }),
+  );
+  const unknownProblem = unwrapError(
+    await makeClient(unknown).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(unknownProblem.code, "not_found");
+  assert.equal(unknownProblem.status, 404);
+
+  // `503`: no provider on this deployment. It is a problem, never a `sent`.
+  const offline = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "this deployment does not send mail: no mail provider is configured",
+    }),
+  );
+  const offlineProblem = unwrapError(
+    await makeClient(offline).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(offlineProblem.status, 503);
+  assert.equal(offlineProblem.code, "service_unavailable");
+  assert.match(offlineProblem.detail, /does not send mail/);
+});
+
+test("the limit's wait is read from Retry-After, and never invented without one", async () => {
+  // The header is the machine-readable wait and the only place the number exists.
+  const limited = recordingFetch(() =>
+    jsonResponse(429, TICKET_EMAIL_LIMITED, { "Retry-After": "2520" }),
+  );
+  const limitedProblem = unwrapError(
+    await makeClient(limited).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(limitedProblem.status, 429);
+  assert.equal(limitedProblem.code, "rate_limited");
+  assert.equal(limitedProblem.retryAfterSeconds, 2520);
+  assert.equal(limitedProblem.detail, TICKET_EMAIL_LIMITED.detail);
+
+  // No header, no number: the problem carries nothing rather than a zero or a guess.
+  const unstated = recordingFetch(() => jsonResponse(429, TICKET_EMAIL_LIMITED));
+  const unstatedProblem = unwrapError(
+    await makeClient(unstated).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(unstatedProblem.code, "rate_limited");
+  assert.equal(unstatedProblem.retryAfterSeconds, undefined);
+
+  // A header that is not a whole number of seconds is not a wait: `Retry-After` also allows
+  // an HTTP date, which this client does not reinterpret into a countdown of its own.
+  const dated = recordingFetch(() =>
+    jsonResponse(429, TICKET_EMAIL_LIMITED, {
+      "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT",
+    }),
+  );
+  const datedProblem = unwrapError(
+    await makeClient(dated).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(datedProblem.retryAfterSeconds, undefined);
+});
+
+test("a problem from another route is unchanged: a wait exists only when the API stated one", async () => {
+  // The wait this section added is additive and comes from one header. A refusal that never
+  // carried one — the ticket read's own `503` here — has exactly the five fields every problem
+  // in this client had before the resend action existed, so nothing downstream has to handle
+  // a shape that changed under it.
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the ticket cannot be read right now; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).getTicket("ticket-1"));
+
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/tickets/ticket-1`);
+  assert.deepEqual(Object.keys(problem).sort(), [
+    "code",
+    "detail",
+    "status",
+    "title",
+    "type",
+  ]);
+});
+
+test("a 202 that does not say the message was sent is refused, never read as a send", async () => {
+  // The route writes `{"sent": true}` after the provider took the message, so anything else
+  // — including `false` — is an answer this client cannot turn into "sent".
+  const noFlag = recordingFetch(() => jsonResponse(202, {}));
+  const noFlagProblem = unwrapError(
+    await makeClient(noFlag).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(noFlagProblem.code, "unexpected_response");
+  assert.match(noFlagProblem.detail, /does not say the message was sent/);
+
+  const notSent = recordingFetch(() => jsonResponse(202, { sent: false }));
+  const notSentProblem = unwrapError(
+    await makeClient(notSent).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(notSentProblem.code, "unexpected_response");
+
+  // The address travelled in the request, and a problem travels into page text and logs: the
+  // refusal below must not repeat it.
+  const recorder = recordingFetch(() => jsonResponse(202, {}));
+  const problem = unwrapError(
+    await makeClient(recorder).sendTicketEmail("ticket-1", "colleague@example.com"),
+  );
+  assert.equal(JSON.stringify(problem).includes("colleague@example.com"), false);
 });
