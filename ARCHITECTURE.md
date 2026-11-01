@@ -95,8 +95,10 @@ User / GuestCustomer ──< Reservation
 | `reservation_seats` | Seats in a reservation | `reservation_id`, `event_seat_id`, `unit_price` |
 | `payment_attempts` | Provider operation and idempotency ledger | `id`, `reservation_id`, `provider`, `provider_reference`, `status`, `idempotency_key` |
 | `tickets` | Final right of entry, admitted exactly once by the door's one guarded `UPDATE … WHERE redeemed_at IS NULL` (`0008_ticket_redemption`) | `id`, `reservation_seat_id`, `barcode`, `issued_at`, `status`, `redeemed_at`, `redeemed_by` |
-| `users` | Registered identities | `id`, `email`, `phone`, `role`, `status` |
-| `guest_customers` | PII for guest purchase/contact | `id`, `email`, `phone`, `verified_at` |
+| `users` | Registered identities — **target state, no migration yet**: v1 has no accounts, and identity arrives as `guest_customers` first | `id`, `email`, `phone`, `role`, `status` |
+| `guest_customers` | The account: an address that was **proved** to belong to whoever asked for the link (`0010_identity`) | `id`, `email` (normalized, unique), `phone`, `verified_at`, `created_at` |
+| `sessions` | One signed-in browser tab, revocable (`0010_identity`) | `id`, `customer_id`, `token_hash` (unique — never the token), `created_at`, `last_seen_at`, `expires_at`, `revoked_at` |
+| `access_links` | The single-use nonce behind a magic link (`0010_identity`) | `nonce`, `email`, `created_at`, `expires_at`, `consumed_at` |
 | `audit_log` | Operator and security trace | actor, action, aggregate, before/after metadata, timestamp |
 
 ### Layout rules
@@ -107,6 +109,205 @@ User / GuestCustomer ──< Reservation
 - A published layout version is immutable. Editing geometry creates a new draft version.
 - An event snapshots the chosen `layout_version_id`; changing a room's active layout cannot change an already scheduled event.
 - Creating an event materializes exactly one `event_seat` per enabled layout seat within one database transaction.
+
+## Identity and login
+
+**Status**: the schema (`0010_identity`), the access-link signer and the session domain are in
+`main`; the HTTP routes, `/me/tickets`, the claim of older orders, the web and the gate are the
+remaining tasks of [`odd/tasks/identity-login.md`](odd/tasks/identity-login.md). Routes below are
+marked **planned** where they do not exist yet.
+
+What it is: an **optional** account proved by a magic link. Guest checkout keeps working exactly
+as it does today (D4), no password is ever stored (D1), and a session exists for one reason — so
+that "these are your tickets" can be answered by the server instead of by a note the browser wrote
+(D3).
+
+What it is **not**: the ticket identifier remains the capability. A link handed out before accounts
+existed opens that ticket for ever; a session protects the *list*, not the links already sold.
+
+### Components
+
+```mermaid
+flowchart LR
+  subgraph B["Browser"]
+    UI["screens"]
+  end
+  subgraph W["Next.js — apps/web"]
+    SA["server components<br/>and server actions"]
+    CK["session cookie<br/>HttpOnly · SameSite=Lax<br/>Secure outside development"]
+  end
+  subgraph A["Go API — apps/api"]
+    ID["identity<br/>AccessSigner · SessionService"]
+    PUB["publicapi<br/>identity and account routes"]
+  end
+  DB[("PostgreSQL<br/>guest_customers · access_links · sessions")]
+  MAIL["SMTP (Mailpit locally)"]
+
+  UI -- "never talks to the API" --> SA
+  SA <-. "reads and writes" .-> CK
+  SA -->|"Bearer: the session token"| PUB
+  PUB --> ID
+  ID --> DB
+  ID -->|"access link, minutes"| MAIL
+  MAIL -. "the person opens it" .-> UI
+```
+
+The two hops are not an accident: the browser holds a cookie this application issues, and the API
+authenticates the token on every server action. The API sets no cookie and knows no origin.
+
+### Asking for a link
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor P as Person
+  participant W as Next (server action)
+  participant A as API
+  participant D as PostgreSQL
+  participant M as SMTP
+
+  P->>W: "email me a link"
+  W->>A: "POST /identity/links {email}" (planned)
+  A->>A: NormalizeEmail (trim, lower-case)
+  A->>D: INSERT access_links (nonce, email, expires_at)
+  A->>M: the signed link, valid for minutes
+  A-->>W: 202 — the same answer whether or not an account exists
+  W-->>P: "if that address can receive mail, a link is on its way"
+```
+
+The email is a **new** message, not the ticket email: that one lives for days and can be
+forwarded; this one lives for minutes and opens once.
+
+### Opening it
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor P as Person
+  participant W as Next
+  participant A as API
+  participant D as PostgreSQL
+
+  P->>W: GET /entrar?token=…
+  W->>A: "POST /identity/sessions {token}" (planned)
+  A->>A: AccessSigner.Verify — HMAC over the bytes received,
+  Note over A: canonical re-encode, then expiry
+  A->>D: UPDATE access_links SET consumed_at = now()
+  Note over A,D: WHERE nonce = ? AND consumed_at IS NULL —<br/>one row means the link was spent here, zero means it was already spent
+  A->>D: upsert guest_customers (email, verified_at = now)
+  A->>D: UPDATE reservations SET customer_id = ?<br/>WHERE contact_email = ? AND customer_id IS NULL
+  A->>D: INSERT sessions (customer_id, token_hash, expires_at)
+  A-->>W: 201 { token } — the only time it is ever returned
+  W-->>P: Set-Cookie (HttpOnly) + redirect to /tickets
+```
+
+The four writes are one transaction: a link cannot be spent without the account, the claim and the
+session it produced.
+
+### Session lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> Active: Open(customer) mints a token, stores its hash
+  Active --> Active: Authenticate — last_seen_at moves, expires_at does not
+  Active --> Revoked: Close (sign out)
+  Active --> Expired: expires_at <= now
+  Revoked --> [*]
+  Expired --> [*]
+```
+
+Expired, revoked and never-existed answer the **same** error (`ErrNoSession`). A store that cannot
+answer is a different one (`ErrSessionUnavailable`), so an outage is never read as a sign-out.
+
+### Domain types
+
+```mermaid
+classDiagram
+  class AccessSigner {
+    -key []byte
+    -ttl Duration
+    +Sign(email string, nonce string, now Time) string
+    +Verify(token string, now Time) AccessClaims
+  }
+  class AccessClaims {
+    +Email string
+    +Nonce string
+    +ExpiresAt Time
+  }
+  class SessionService {
+    -store SessionStore
+    -ttl Duration
+    +Open(ctx, customerID string) (string, Session, error)
+    +Authenticate(ctx, token string) (Session, error)
+    +Close(ctx, token string) error
+  }
+  class Session {
+    +ID string
+    +CustomerID string
+    +CreatedAt Time
+    +LastSeenAt Time
+    +ExpiresAt Time
+  }
+  class SessionStore {
+    <<interface>>
+    +Create(ctx, Session, tokenHash)
+    +Find(ctx, tokenHash, now) Session
+    +Touch(ctx, tokenHash, now)
+    +Revoke(ctx, tokenHash, now)
+  }
+  class PostgresSessionStore
+
+  SessionService --> SessionStore
+  SessionStore <|.. PostgresSessionStore
+  AccessSigner ..> AccessClaims
+  SessionService ..> Session
+```
+
+### Schema
+
+```mermaid
+erDiagram
+  guest_customers ||--o{ sessions : "signs in as"
+  guest_customers ||--o{ reservations : "owns, when signed in"
+
+  guest_customers {
+    uuid id PK
+    text email UK "normalized: one account per address"
+    text phone "nullable: no flow collects it yet"
+    timestamptz verified_at "written by the link, not by the migration"
+  }
+  sessions {
+    uuid id PK
+    uuid customer_id FK "on delete cascade"
+    bytea token_hash UK "SHA-256 of the token"
+    timestamptz expires_at
+    timestamptz revoked_at "a fact, not the absence of a row"
+  }
+  access_links {
+    uuid nonce PK "inside the signature"
+    text email
+    timestamptz expires_at
+    timestamptz consumed_at "what makes one use true"
+  }
+  reservations {
+    uuid id PK
+    uuid customer_id FK "nullable, on delete set null, never backfilled"
+  }
+```
+
+### Properties this design holds
+
+- **The token is never stored.** Only its SHA-256 is; a database dump cannot be replayed as a
+  session, and no log line carries it.
+- **One opaque answer.** Expired, revoked and unknown are indistinguishable to a caller; asking
+  whether a credential existed is not a question the surface answers.
+- **Liveness is the database's decision.** `revoked_at IS NULL AND expires_at > now` is in the SQL,
+  so a service bug cannot resurrect a closed session.
+- **No silent renewal.** Authenticating moves `last_seen_at` and leaves `expires_at` alone.
+- **The claim happens once.** Verifying an address is the only moment it is true that the orders
+  mailed to it belong to the person asking (D5), so it happens there, in the same transaction.
+- **Three separate keys.** The QR code, the mailed ticket link and the access link each have their
+  own, so rotating one never invalidates another.
 
 ## State machines
 
