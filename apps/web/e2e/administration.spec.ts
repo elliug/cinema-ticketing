@@ -147,4 +147,40 @@ test.describe("administration", () => {
 
     expectNoProblems(problems);
   });
+
+  // Issue #92: two of the four screens had no way in at all, and `/admin` itself was a 404 —
+  // an operator looking for "Create a film" landed on the venue screen and concluded the
+  // feature did not exist. The section navigation exists so that never happens again, and
+  // this test walks it rather than reading it: a link that renders but lands nowhere is
+  // exactly the failure the issue describes.
+  test("every administration screen is reachable from the section's own navigation", async ({
+    page,
+  }) => {
+    const problems = collectProblems(page);
+
+    // `/admin` is a map now, not a 404. `visit` asserts the 200 and the screen's single h1.
+    await visit(page, "/admin");
+    await expectActiveNav(page, "Administration");
+
+    const sections = page.getByRole("navigation", { name: "Administration sections" });
+    for (const label of [
+      "Cinemas, rooms and layouts",
+      "Layout editor",
+      "Films and screenings",
+      "Door",
+    ]) {
+      await expect(sections.getByRole("link", { name: label })).toBeVisible();
+    }
+
+    // Walking it is the claim: the index reaches a screen, and that screen reaches another,
+    // without anyone typing an address. The URL assertions wait for the navigation the click
+    // causes, which is the discipline this gate has had to learn twice.
+    await sections.getByRole("link", { name: "Layout editor" }).click();
+    await expect(page).toHaveURL(/\/admin\/layouts$/);
+    await sections.getByRole("link", { name: "Films and screenings" }).click();
+    await expect(page).toHaveURL(/\/admin\/schedule$/);
+    await expectActiveNav(page, "Administration");
+
+    expectNoProblems(problems);
+  });
 });
