@@ -45,6 +45,7 @@ import {
 } from "@/lib/public-api";
 import type { PublicProblem } from "@/lib/public-api";
 import { TicketView } from "./ticket-view";
+import { sendTicketEmailAction } from "./actions";
 import { ticketPDFUrl, ticketQRImageUrl } from "@/lib/ticket-media";
 
 export const dynamic = "force-dynamic";
@@ -116,6 +117,7 @@ async function TicketSurface({ ticketId }: { ticketId: string }) {
         checked={checked}
         qrImageUrl={ticketQRImageUrl(ticket.ticketId)}
         pdfUrl={ticketPDFUrl(ticket.ticketId)}
+        sendTicketEmail={sendTicketEmailAction}
       />
     </>
   );

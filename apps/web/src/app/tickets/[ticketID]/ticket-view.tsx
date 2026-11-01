@@ -32,9 +32,10 @@
 // storage work needs it.
 //
 // Accessibility: one `h1` per surface (the page header's, the screening or the page's
-// own name — never a heading in here), exactly one polite live region per surface, every
-// action a focus-ringed button or link, and no state carried by colour alone: each state
-// prints its word, and its tone only reinforces it.
+// own name — never a heading in here), one polite live region per widget (the retention note
+// below, and the send panel's own, because a send is a different event), every action a
+// focus-ringed button or link, and no state carried by colour alone: each state prints its
+// word, and its tone only reinforces it.
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -58,7 +59,8 @@ import {
   rememberIssuedTicket,
   ticketSeatLabel,
 } from "@/lib/issued-tickets";
-import type { PublicTicket, TicketResponse } from "@/lib/public-api";
+import type { PublicTicket, TicketEmailResponse, TicketResponse } from "@/lib/public-api";
+import { TicketEmailPanel } from "./ticket-email-panel";
 
 export interface TicketViewProps {
   ticket: PublicTicket;
@@ -68,10 +70,23 @@ export interface TicketViewProps {
   qrImageUrl: string;
   /** `GET /api/v1/tickets/{id}/pdf` — a short-lived pre-signed redirect. */
   pdfUrl: string;
+  /**
+   * Server action: mail this ticket's order to an address typed on this page.
+   *
+   * A prop, not an import, for the reason the list's `readTicket` is one: the call happens in
+   * this application's process, so the browser never learns where the API lives.
+   */
+  sendTicketEmail: (ticketId: string, email: string) => Promise<TicketEmailResponse>;
 }
 
 /** One ticket, as the page a buyer shows at the door renders it. */
-export function TicketView({ ticket, checked, qrImageUrl, pdfUrl }: TicketViewProps) {
+export function TicketView({
+  ticket,
+  checked,
+  qrImageUrl,
+  pdfUrl,
+  sendTicketEmail,
+}: TicketViewProps) {
   const validity = describeTicketValidity(checked);
   const retention = useKeptInThisTab(ticket.ticketId);
   const seats = ticket.seats.map(ticketSeatLabel);
@@ -207,8 +222,14 @@ export function TicketView({ ticket, checked, qrImageUrl, pdfUrl }: TicketViewPr
         </CardContent>
       </Card>
 
-      {/* The one polite live region of this surface, and the only thing on it that the
-          page does not know at render time: whether this tab could keep the record. */}
+      {/* The one write of this surface: the mailed link, to an address typed here. It sits
+          after the PDF because the PDF is what a person keeps, and before the retention note
+          because that note closes the page. */}
+      <TicketEmailPanel ticketId={ticket.ticketId} sendTicketEmail={sendTicketEmail} />
+
+      {/* This surface's retention note, and its own polite live region: the send panel above
+          has one too, because a send announcement is about a different thing and saying both
+          through one region would make each of them unreadable. */}
       <p role="status" className="m-0 max-w-prose text-sm text-muted-foreground">
         {retentionNotices[retention]}
       </p>
