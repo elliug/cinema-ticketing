@@ -148,6 +148,17 @@ canónico y `base64url`.
 Esfuerzo estimado: dos a tres días, con T1–T3 como primer corte (el correo ya sale por Mailpit) y
 T4–T7 como segundo.
 
+## Slices
+
+- **Slice 1 — este documento** (`docs(odd): study email delivery`): 162 líneas. Las decisiones y
+  las restricciones que el código impone, antes de escribir código.
+- **Slice 2 — esquema y captura** (`feat(checkout): carry the address the tickets are mailed
+  to`): 480 líneas. Migración 0009 en ambos sentidos, la dirección guardada en la fase 1, el
+  cuerpo opcional de la ruta de pago y 6 tests. Queda por encima del objetivo de ~400 líneas y
+  es deliberado: la migración, la escritura en la transacción y los tests que prueban el orden
+  son **un solo comportamiento**; separarlos daría un commit que compila pero no prueba nada.
+- **Slice 3 — el consumidor**, **slice 4 — el enlace firmado y la UI**. Pendientes.
+
 ## Log
 
 - **L1** — Petición del usuario, literal: «comencemos con el mail. entiendo que además nos tocará
