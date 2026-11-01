@@ -4,8 +4,9 @@ Estudio previo a la implementación. Tres decisiones ya tomadas por el responsab
 un conjunto de restricciones que el código existente impone y que no son negociables sin
 reescribir contratos documentados.
 
-Estado: **entregado** en `feat/email-delivery` (slices 1–5); las PRs encadenadas son la decisión que
-queda abierta, y la del responsable del producto.
+Estado: **entregado y en `main`** como seis PRs encadenadas. Queda una sola cosa sin cerrar, y está
+escrita abajo: el lente de resiliencia de la revisión nativa de la PR del gate nunca emitió un
+resultado admisible, y el responsable del producto decidió fusionar documentándolo.
 
 ## Decisiones tomadas
 
@@ -218,10 +219,37 @@ necesita la limitación anti-relé probada por separado. T7 se entregó como gat
 
 ## Entrega
 
-El trabajo va en PRs encadenados, uno por grupo de slices, porque el conjunto pasa de 8.500 líneas
-revisadas y una sola PR de ese tamaño no se revisa: `feat/email-delivery` se parte al abrirlas (PR 1:
-slices 1–3; PR 2: slice 4; PR 3: slice 5). Abrir las PRs y mergear es decisión del responsable del
-producto, no del agente.
+El trabajo fue en PRs encadenadas, una por grupo de comportamiento, porque el conjunto pasaba de
+8.500 líneas y una sola PR de ese tamaño no se revisa. Terminó en seis, y no por gusto: el
+proveedor de revisión diffea cada PR contra `main`, así que un candidato encadenado se revisa
+**sumado a sus padres** hasta que éstos entran, y por encima de unas 2.600 líneas ni siquiera
+arranca (`lens_context_budget_exceeded`). El corte real fue: #97 (slices 1–3, el consumidor),
+#100 (el firmante y su ruta), #101 (la página y el cableado), #102 (el campo del checkout y los
+textos), #103 (el reenvío y su límite) y #104 (el gate y este documento).
+
+### Revisión nativa
+
+| PR | Lentes | Resultado |
+|---|---|---|
+| #97 | risk, resilience | aprobada, autoridad quemada |
+| #100 | risk, resilience | aprobada, autoridad quemada |
+| #101 | risk, resilience | aprobada, autoridad quemada |
+| #102 | risk, resilience | aprobada, autoridad quemada (un lente hubo de repetirse) |
+| #103 | risk, resilience | aprobada, autoridad quemada |
+| #104 | risk, resilience | **risk admitido; resilience nunca admitido** |
+
+En #104 el modelo del lente de resiliencia emite como localización de un hallazgo
+`scripts/verify_email.sh:cleanup` — una función, no una línea — y el admittedor la rechaza con
+`line_suffix_not_integer` **dos veces**, sin consumir el slot. No es un veredicto sobre el código ni
+un fallo que se pueda reparar desde aquí: es el modelo del proveedor produciendo un payload que su
+propio contrato rechaza. La autoridad de esa revisión quedó **sin quemar**, y el payload rechazado
+conservado por el proveedor en `.git/gentle-ai/rejected-results/`.
+
+Todos los hallazgos admitidos fueron **informativos**, ninguno abrió corrección: el más útil es que
+`Recipient` de una reserva inexistente reintenta en cada tick en vez de darse por entregada (es
+intencionado: una venta ilegible no se marca como enviada), y que la ruta de reenvío no filtra
+caracteres de control en el destinatario — el adaptador SMTP ya los rechaza, de modo que es defensa
+en profundidad y no un agujero.
 
 ## Log
 
@@ -235,3 +263,6 @@ producto, no del agente.
   algo que el sistema no garantiza. Se promociona cuando llegue el login.
 - **L4** — El orden respecto al login queda resuelto: esto **es** el camino de invitado que la
   arquitectura describe, no un desvío. El login se apoyará encima sin rehacerlo.
+- **L5** — Decisión del usuario sobre la PR del gate, literal: «2». Elige fusionarla **sin** el
+  segundo lente, dejando escrito que el gate se validó ejecutándose (verde tres veces, con su job
+  de CI) y no por una vista externa completa.
