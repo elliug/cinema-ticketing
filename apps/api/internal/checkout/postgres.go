@@ -371,8 +371,9 @@ func (s *PostgresStore) RecordOutcome(ctx context.Context, outcome AttemptOutcom
 // provider, which is I/O, and holding a row lock across that call would serialize the
 // reconciliation of unrelated payments. `RecordOutcome` takes the lock that matters.
 func (s *PostgresStore) ListStaleAttempts(ctx context.Context, olderThan time.Duration, batch int) ([]PreparedAttempt, error) {
-	if olderThan <= 0 {
-		return nil, fmt.Errorf("%w: reconciliation needs a positive age bound, got %s", ErrInvalidInput, olderThan)
+	if olderThan < minReconcileAge {
+		return nil, fmt.Errorf("%w: reconciliation age bound must be at least one microsecond (%s), got %s",
+			ErrInvalidInput, minReconcileAge, olderThan)
 	}
 	if batch <= 0 {
 		return nil, fmt.Errorf("%w: reconciliation batch must be positive, got %d", ErrInvalidInput, batch)

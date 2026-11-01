@@ -197,6 +197,9 @@ func TestReconcilerRefusesAnImpossibleBatch(t *testing.T) {
 	}{
 		{name: "zero age", olderThan: 0, batch: 10},
 		{name: "negative age", olderThan: -time.Minute, batch: 10},
+		// Duration.Microseconds() truncates, so this bound would mean "now" and expose a
+		// live call as abandoned. It is refused instead of silently rounded away.
+		{name: "sub-microsecond age", olderThan: 999 * time.Nanosecond, batch: 10},
 		{name: "zero batch", olderThan: testStaleAge, batch: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
