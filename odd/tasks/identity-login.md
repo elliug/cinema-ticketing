@@ -233,6 +233,19 @@ segundo.
     migraciones —un CHECK debilitado, una clave compuesta reducida a una columna, un rollback que
     borra la cola, y las dos acciones de borrado intercambiadas— y cada mutación fue cazada por un
     fallo con nombre.
+- **Slice 2 — la sesión** (`feat(identity): a session is a token the client holds and a hash we
+  keep`): 1.590 líneas, casi todas tests. `Open` acuña 32 bytes de `crypto/rand` y devuelve el
+  token una sola vez; la base guarda su SHA-256, así que un dump no se puede replicar como sesión.
+  Caducada, revocada e inexistente son **un solo** error —lo contrario sería un oráculo de «¿existió
+  esta credencial?»— y un fallo del almacén es otro distinto, para que una caída nunca se lea como
+  un cierre de sesión. `Close` no responde a la pregunta de si el token existía: a un cliente que
+  se le dice que su salida falló se le convence de que sigue dentro. La vigencia la decide el SQL
+  (`revoked_at IS NULL AND expires_at > now`), no el llamante. Autenticar refresca `last_seen_at` y
+  **no** extiende `expires_at`: una sesión que se renueva sola no acaba nunca. `API_SESSION_TTL`
+  son 720h por defecto.
+  13 comportamientos con un store falso y 6 contra PostgreSQL real, incluidos que la fila caducada
+  se rechaza estando presente, que la doble revocación conserva el primer instante y que borrar la
+  cuenta arrastra sus sesiones.
 
 ## Log
 

@@ -92,6 +92,13 @@ type Config struct {
 	// and not a key somebody keeps, and it must be positive: a non-positive lifetime
 	// would mint links that are already closed.
 	IdentityLinkTTL time.Duration
+	// IdentitySessionTTL is how long a session opened by a login keeps answering for its
+	// account. It defaults to thirty days: long enough that nobody signs in every day,
+	// short enough that a stolen cookie is not eternal. It is not renewed by use — a
+	// session ends on its own date (S1) — so this is the whole life of the credential,
+	// and it must be positive: a non-positive lifetime would mint sessions that are
+	// already over.
+	IdentitySessionTTL time.Duration
 	// SMTPAddr is the host:port of the SMTP server the ticket email is delivered
 	// through: Mailpit on mailpit:1025 / 127.0.0.1:1025 locally, a real provider
 	// elsewhere. It is set together with EmailFrom or not at all.
@@ -204,6 +211,12 @@ const (
 	// asked for it is sitting in front of the mailbox, and a stolen copy of a step is worth
 	// less than a stolen copy of a key.
 	defaultIdentityLinkTTL = 15 * time.Minute
+	// defaultIdentitySessionTTL is the thirty day life of a session. It is the documented
+	// demo window (S1) and it is deliberately not extended by use: a session that renewed
+	// itself would be a credential nobody ever has to replace. Thirty days is long enough
+	// that a person does not sign in constantly and short enough that a stolen cookie is
+	// not a permanent way in.
+	defaultIdentitySessionTTL = 720 * time.Hour
 )
 
 // The ticket email rules. The consumer is optional by design (S5): a sale never
@@ -258,6 +271,9 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	                          key, and only when API_ENV=development)
 //	API_IDENTITY_LINK_TTL     lifetime of a signed access link as a duration (default
 //	                          "15m", because an access link is a step and not a key;
+//	                          positive)
+//	API_SESSION_TTL           lifetime of a session opened by a login as a duration
+//	                          (default "720h", thirty days, and never extended by use;
 //	                          positive)
 //	API_SMTP_ADDR             host:port of the SMTP server the ticket email is
 //	                          delivered through (default: none, which disables the
@@ -372,6 +388,10 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	}
 
 	if err := cfg.loadIdentityLink(getenv); err != nil {
+		return Config{}, err
+	}
+
+	if err := cfg.loadIdentitySession(getenv); err != nil {
 		return Config{}, err
 	}
 
@@ -580,6 +600,38 @@ func parseIdentityLinkTTL(v string) (time.Duration, error) {
 	}
 	if ttl <= 0 {
 		return 0, fmt.Errorf("API_IDENTITY_LINK_TTL must be positive, got %q", v)
+	}
+	return ttl, nil
+}
+
+// loadIdentitySession reads and validates API_SESSION_TTL, the life of a session opened by a
+// login.
+//
+// There is no key to validate here and nothing to keep out of an error message: a lifetime is
+// not a secret. What is refused is a value that would mint sessions which are already over,
+// and a value that is not a duration at all. The lifetime has no upper bound, because how long
+// a session stays useful is a product decision; the documented thirty day default is what this
+// deployment starts from, and a deployment that wants shorter sessions sets a shorter one.
+func (c *Config) loadIdentitySession(getenv func(string) string) error {
+	c.IdentitySessionTTL = defaultIdentitySessionTTL
+	if v := strings.TrimSpace(getenv("API_SESSION_TTL")); v != "" {
+		ttl, err := parseIdentitySessionTTL(v)
+		if err != nil {
+			return err
+		}
+		c.IdentitySessionTTL = ttl
+	}
+	return nil
+}
+
+// parseIdentitySessionTTL accepts a Go duration such as "720h" or, for tests, "90s".
+func parseIdentitySessionTTL(v string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("API_SESSION_TTL must be a duration such as 720h or 24h: %w", err)
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("API_SESSION_TTL must be positive, got %q", v)
 	}
 	return ttl, nil
 }
