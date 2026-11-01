@@ -475,6 +475,10 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	// ([tickets.PostgresStore.Redeem]), and the schema probe above already requires the
 	// redemption columns, so a database that can serve a ticket can also admit it.
 	var ticketRedemptions publicapi.RedemptionService
+	// ticketLinks signs the link a purchase email carries. Its signer is built beside the QR
+	// one and never from it: the two keys have different lifetimes, and rotating the link key
+	// of an old email must not invalidate a printed code.
+	var ticketLinks *tickets.LinkSigner
 	if ticketPresent {
 		// The ticket surface signs the code the web page and the PDF both print, so it
 		// cannot be mounted without a usable key: a ticket route that could not sign
@@ -496,6 +500,20 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		// of each minting a code of their own.
 		ticketDetails = tickets.NewService(ticketStore, signer)
 		ticketRedemptions = ticketStore
+
+		// The link a purchase email carries is the ticket surface's second capability, and it
+		// is optional here for the reason object storage is: a deployment that sends no email,
+		// or was never given a link key, advertises no link route while the ticket, code and
+		// admission routes keep working. The pair is validated by config.LoadFrom for a
+		// serving process, so this only decides whether the route is mounted — and the line
+		// names the setting, never the key.
+		linkSigner, linkErr := tickets.NewLinkSigner(cfg.TicketLinkKey, cfg.TicketLinkTTL)
+		if linkErr != nil {
+			logger.Info("ticket link key not configured; signed ticket link route disabled",
+				"required", "API_TICKET_LINK_KEY", "error", linkErr.Error())
+		} else {
+			ticketLinks = linkSigner
+		}
 	} else {
 		ticketStore.Close()
 		ticketStore = nil
@@ -587,7 +605,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 
 	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
-		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).
+		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).WithTicketLinks(ticketLinks).
 		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,

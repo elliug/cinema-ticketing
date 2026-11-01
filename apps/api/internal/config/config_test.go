@@ -780,6 +780,190 @@ func TestTicketQRKeyNeverShipsTheDevelopmentDefault(t *testing.T) {
 	}
 }
 
+// ticketLinkKeyMinLength mirrors the documented minimum length of the signed ticket link
+// key, so the test states the number a deployment has to satisfy.
+const ticketLinkKeyMinLength = 32
+
+// TestTicketLinkConfiguration pins the link key and lifetime rules: a development default
+// that works with no variables in development, an explicit key of at least 32 bytes
+// anywhere, the documented seven day lifetime by default, an explicit lifetime honoured,
+// and a refusal for every key and every lifetime that cannot work. The key is never
+// echoed by a refusal.
+func TestTicketLinkConfiguration(t *testing.T) {
+	const (
+		explicitKey = "m3-configured-ticket-link-key-0123456789"
+		shortKey    = "too-short-for-a-ticket-link-key"
+		// The documented development default, spelled out so this test fails if somebody
+		// changes it without thinking about the environments.
+		developmentDefault = "cinema-m3-development-ticket-link-key"
+	)
+
+	cases := []struct {
+		name     string
+		env      map[string]string
+		wantKey  string
+		wantTTL  time.Duration
+		wantErr  string
+		wantWord string
+	}{
+		{
+			name: "development falls back to the documented default",
+			env:  map[string]string{"API_ENV": "development"},
+			// Seven days: the demo window the study documents, long enough for a booking
+			// made a week before the screening.
+			wantKey: developmentDefault,
+			wantTTL: 168 * time.Hour,
+		},
+		{
+			name: "production accepts an explicit key and leaves the default lifetime",
+			env:  map[string]string{"API_ENV": "production", "API_TICKET_LINK_KEY": explicitKey},
+
+			wantKey: explicitKey,
+			wantTTL: 168 * time.Hour,
+		},
+		{
+			name: "development accepts an explicit key",
+			env:  map[string]string{"API_ENV": "development", "API_TICKET_LINK_KEY": explicitKey},
+
+			wantKey: explicitKey,
+			wantTTL: 168 * time.Hour,
+		},
+		{
+			name: "a key of exactly the documented minimum is accepted",
+			env:  map[string]string{"API_ENV": "production", "API_TICKET_LINK_KEY": strings.Repeat("k", ticketLinkKeyMinLength)},
+
+			wantKey: strings.Repeat("k", ticketLinkKeyMinLength),
+			wantTTL: 168 * time.Hour,
+		},
+		{
+			name: "an explicit lifetime is honoured",
+			env:  map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": "24h"},
+
+			wantTTL: 24 * time.Hour,
+		},
+		{
+			name: "an explicit lifetime in minutes is honoured",
+			env:  map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": " 90m "},
+
+			wantTTL: 90 * time.Minute,
+		},
+		{
+			name:     "a key below the documented minimum is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_KEY": shortKey},
+			wantErr:  "API_TICKET_LINK_KEY",
+			wantWord: "32 bytes",
+		},
+		{
+			name:     "a blank key is refused even in development",
+			env:      map[string]string{"API_ENV": "development", "API_TICKET_LINK_KEY": strings.Repeat(" ", 40)},
+			wantErr:  "API_TICKET_LINK_KEY",
+			wantWord: "blank",
+		},
+		{
+			name:     "the development default is refused outside development",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_KEY": developmentDefault},
+			wantErr:  "API_TICKET_LINK_KEY",
+			wantWord: "development",
+		},
+		{
+			name:     "the development default is refused in an unstated environment",
+			env:      map[string]string{"API_TICKET_LINK_KEY": developmentDefault},
+			wantErr:  "API_TICKET_LINK_KEY",
+			wantWord: "development",
+		},
+		{
+			name:     "a zero lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": "0s"},
+			wantErr:  "API_TICKET_LINK_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "a negative lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": "-1h"},
+			wantErr:  "API_TICKET_LINK_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "an unparsable lifetime is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": "seven days"},
+			wantErr:  "API_TICKET_LINK_TTL",
+			wantWord: "duration",
+		},
+		{
+			name:     "a lifetime without a unit is refused",
+			env:      map[string]string{"API_ENV": "production", "API_TICKET_LINK_TTL": "168"},
+			wantErr:  "API_TICKET_LINK_TTL",
+			wantWord: "duration",
+		},
+		{
+			// A missing key is left empty here, for the reason the QR key is: commands
+			// that never sign a link share this configuration, and the API process refuses
+			// to mount the link route without a usable key.
+			name: "a missing key is left to the process that serves the links",
+			env:  map[string]string{"API_ENV": "production"},
+
+			wantTTL: 168 * time.Hour,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return testCase.env[key] })
+			if testCase.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", testCase.wantErr)
+				}
+				if !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("error = %q, want it to name %s", err, testCase.wantErr)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), testCase.wantWord) {
+					t.Fatalf("error = %q, want it to mention %q", err, testCase.wantWord)
+				}
+				// A wrong key is a secret too, and a lifetime is not worth echoing either.
+				for _, secret := range []string{shortKey, developmentDefault, strings.Repeat(" ", 40)} {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("error message leaked the key: %v", err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.TicketLinkKey != testCase.wantKey {
+				t.Fatalf("TicketLinkKey = %q, want %q", cfg.TicketLinkKey, testCase.wantKey)
+			}
+			if cfg.TicketLinkKey != "" && len(cfg.TicketLinkKey) < ticketLinkKeyMinLength {
+				t.Fatalf("an accepted key is shorter than the documented minimum: %d bytes", len(cfg.TicketLinkKey))
+			}
+			if cfg.TicketLinkTTL != testCase.wantTTL {
+				t.Fatalf("TicketLinkTTL = %v, want %v", cfg.TicketLinkTTL, testCase.wantTTL)
+			}
+		})
+	}
+}
+
+// TestTicketLinkKeyIsNotTheQRKey pins the separation the study asks for: rotating the key
+// of an old email's link must never invalidate a printed QR code, nor the other way round,
+// and the two development defaults must not be one value.
+func TestTicketLinkKeyIsNotTheQRKey(t *testing.T) {
+	cfg, err := config.LoadFrom(func(key string) string {
+		if key == "API_ENV" {
+			return "development"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("LoadFrom returned error: %v", err)
+	}
+	if cfg.TicketLinkKey == "" || cfg.TicketQRKey == "" {
+		t.Fatalf("development defaults = link %q, qr %q; want both", cfg.TicketLinkKey, cfg.TicketQRKey)
+	}
+	if cfg.TicketLinkKey == cfg.TicketQRKey {
+		t.Fatalf("the link and QR development keys are the same value: %q", cfg.TicketLinkKey)
+	}
+}
+
 // TestS3ConfigurationNeverEchoesTheSecret pins that a rejected object-storage
 // configuration names the variables only: the secret access key must never reach
 // a log or a crash report through an error message.

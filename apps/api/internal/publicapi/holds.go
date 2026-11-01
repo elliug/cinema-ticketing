@@ -11,7 +11,8 @@
 // (GET /reservations/{reservationId}), the cancel route that ends a hold now instead
 // of waiting out its window (POST /reservations/{reservationId}/cancel), and the door's
 // admission route, which verifies a presented code and admits the ticket it names exactly
-// once (POST /tickets/redeem).
+// once (POST /tickets/redeem), and the read behind the signed link a purchase email carries
+// (GET /ticket-links/{token}), which verifies the token and answers the paid order's tickets.
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -32,6 +33,7 @@ import (
 	"strings"
 
 	"cinema.local/ticketing/apps/api/internal/reservation"
+	"cinema.local/ticketing/apps/api/internal/tickets"
 )
 
 // HoldService is the reservation application service contract.
@@ -50,13 +52,17 @@ type Handler struct {
 	reservations ReservationService
 	cancels      CancellationService
 	redeems      RedemptionService
+	// ticketLinks verifies the signed link a purchase email carries. It is a concrete
+	// signer rather than a service: the token is checked here, and the order it names is
+	// read through the reservation read the confirmation already uses.
+	ticketLinks *tickets.LinkSigner
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
-// PDF, ticket admission, catalogue and reservation read routes are attached
-// separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption, WithCatalog,
-// WithReservations and WithCancellation, so a deployment without the checkout schema or
-// without object storage mounts none of them.
+// PDF, ticket admission, ticket link, catalogue and reservation read routes are attached
+// separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption, WithTicketLinks,
+// WithCatalog, WithReservations and WithCancellation, so a deployment without the checkout
+// schema or without object storage mounts none of them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -115,6 +121,14 @@ func (h *Handler) Mux() *http.ServeMux {
 	// advertises no download it could not honour.
 	if h.tickets != nil && h.ticketPDFs != nil {
 		mux.HandleFunc(ticketPDFRoute, h.downloadTicketPDF)
+	}
+	// The signed ticket link is the one URL a purchase email carries. It needs both halves it
+	// is built from — the signer that checks the token and the reservation read that resolves
+	// the order's tickets — so a deployment with only one of them advertises nothing. It is
+	// public like the ticket routes beside it for the same reason: the link arrives from a
+	// mailbox, and no session comes with it.
+	if h.ticketLinks != nil && h.reservations != nil {
+		mux.HandleFunc(ticketLinkRoute, h.openTicketLink)
 	}
 	return mux
 }

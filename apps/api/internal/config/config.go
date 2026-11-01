@@ -72,6 +72,15 @@ type Config struct {
 	// ships in a repository signs nothing, which is why the development default is
 	// accepted only when Environment is development.
 	TicketQRKey string
+	// TicketLinkKey is the HMAC key the signed ticket links a purchase email carries
+	// are signed with. It is a secret and must never be logged, echoed in an error or
+	// committed, and it is deliberately not the QR key: rotating one must not
+	// invalidate the other, so neither can be derived from the other.
+	TicketLinkKey string
+	// TicketLinkTTL is how long a signed ticket link keeps opening the order's
+	// tickets. It defaults to the documented seven day demo window and must be
+	// positive: a non-positive lifetime would mint links that are already closed.
+	TicketLinkTTL time.Duration
 }
 
 // Documented defaults for the reservation surface.
@@ -129,6 +138,25 @@ const (
 	ticketQRKeyMinLength = 32
 )
 
+// The ticket link rules. A purchase email carries a signed link instead of the ticket's
+// permanent URL, so the link needs a key of its own and a lifetime: a QR code is printed
+// on paper and a link lives in a mailbox, and neither may be able to invalidate the other.
+const (
+	// developmentTicketLinkKey is the well-known development link key, accepted only when
+	// API_ENV is development. It is deliberately a different value from
+	// developmentTicketQRKey, so a deployment that mixes the two up still fails instead of
+	// silently signing both with one key.
+	developmentTicketLinkKey = "cinema-m3-development-ticket-link-key"
+	// ticketLinkKeyMinLength is the shortest link key accepted, in bytes, for the reason
+	// ticketQRKeyMinLength states: an HMAC-SHA256 key is only as strong as its entropy.
+	ticketLinkKeyMinLength = 32
+	// defaultTicketLinkTTL is the seven day window a purchase email's link lives. It is the
+	// demo value and it is documented as such: long enough to survive a booking made on a
+	// Friday for a screening the next weekend, short enough that an email read a month
+	// later opens nothing and the buyer comes back through the page instead.
+	defaultTicketLinkTTL = 7 * 24 * time.Hour
+)
+
 // Load reads configuration from the process environment.
 func Load() (Config, error) { return LoadFrom(os.Getenv) }
 
@@ -158,6 +186,12 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	API_TICKET_QR_KEY         HMAC key the ticket QR tokens are signed with: at least 32
 //	                          bytes, a secret, never echoed (default: the development key,
 //	                          and only when API_ENV=development)
+//	API_TICKET_LINK_KEY       HMAC key the signed ticket links in purchase emails are
+//	                          signed with: at least 32 bytes, a secret, never echoed, and
+//	                          never the QR key (default: the development key, and only
+//	                          when API_ENV=development)
+//	API_TICKET_LINK_TTL       lifetime of a signed ticket link as a duration (default
+//	                          "168h", the documented seven day demo window; positive)
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -259,6 +293,10 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := cfg.loadTicketLink(getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
 }
 
@@ -301,6 +339,44 @@ func (c *Config) loadTicketQR(getenv func(string) string) error {
 		return fmt.Errorf("API_TICKET_QR_KEY still holds the development default, which only API_ENV=development accepts: a key that ships in a repository signs nothing")
 	}
 	c.TicketQRKey = key
+	return nil
+}
+
+// loadTicketLink reads and validates API_TICKET_LINK_KEY and API_TICKET_LINK_TTL, the key
+// and lifetime of the signed link a purchase email carries.
+//
+// The key rules are the QR key's, applied to a key of its own: blank and too short are
+// refused at startup, the well-known development default is refused outside development,
+// and an absent key is left to the process that serves the links, for the reason
+// [Config.loadTicketQR] states — this configuration is shared by commands that never sign
+// anything. The lifetime has a documented default and refuses a value that would mint
+// links which are already closed.
+func (c *Config) loadTicketLink(getenv func(string) string) error {
+	key := getenv("API_TICKET_LINK_KEY")
+	switch {
+	case key == "":
+		if c.Environment == "development" {
+			c.TicketLinkKey = developmentTicketLinkKey
+		}
+	case strings.TrimSpace(key) == "":
+		return fmt.Errorf("API_TICKET_LINK_KEY must not be blank: a blank key signs nothing")
+	case len(key) < ticketLinkKeyMinLength:
+		return fmt.Errorf("API_TICKET_LINK_KEY must be at least %d bytes of entropy-bearing text, got %d",
+			ticketLinkKeyMinLength, len(key))
+	case key == developmentTicketLinkKey && c.Environment != "development":
+		return fmt.Errorf("API_TICKET_LINK_KEY still holds the development default, which only API_ENV=development accepts: a key that ships in a repository signs nothing")
+	default:
+		c.TicketLinkKey = key
+	}
+
+	c.TicketLinkTTL = defaultTicketLinkTTL
+	if v := strings.TrimSpace(getenv("API_TICKET_LINK_TTL")); v != "" {
+		ttl, err := parseTicketLinkTTL(v)
+		if err != nil {
+			return err
+		}
+		c.TicketLinkTTL = ttl
+	}
 	return nil
 }
 
@@ -453,6 +529,20 @@ func validBucketName(name string) bool {
 	// A name without a letter is an address such as 192.168.0.1, which S3
 	// refuses because it would collide with a host name.
 	return !addressLike
+}
+
+// parseTicketLinkTTL accepts a Go duration such as "168h" or, for tests, "90m". The
+// lifetime has no other bound: how long an email stays useful is a product decision, and
+// the one rule the signer cannot work without is that some window exists at all.
+func parseTicketLinkTTL(v string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("API_TICKET_LINK_TTL must be a duration such as 168h or 90m: %w", err)
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("API_TICKET_LINK_TTL must be positive, got %q", v)
+	}
+	return ttl, nil
 }
 
 // parseExpiryInterval accepts a Go duration such as "30s" or "5m" for the sweep
