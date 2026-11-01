@@ -214,6 +214,10 @@ type AttemptRequest struct {
 	IdempotencyKey string
 	// Fingerprint identifies the request the key was used with.
 	Fingerprint string
+	// ContactEmail is the address the buyer asked the tickets to be mailed to, when
+	// they gave one. It is optional and unverified, so it is stored as written and
+	// nothing downstream may claim it was proved.
+	ContactEmail string
 	// Provider names the provider that will own the attempt's reference.
 	Provider string
 }
@@ -354,18 +358,49 @@ func NewService(gateway payment.PaymentGateway, store Store, holds HoldReleaser,
 	return &Service{gateway: gateway, store: store, holds: holds, provider: strings.TrimSpace(provider)}
 }
 
-// Charge pays one held reservation, in the three phases the design fixes: store
-// the attempt and commit, call the provider, then store the answer and commit.
+// ChargeRequest is one payment as the public surface receives it.
+type ChargeRequest struct {
+	// ReservationID is the reservation being paid.
+	ReservationID string
+	// IdempotencyKey is the client key naming the attempt inside the reservation.
+	IdempotencyKey string
+	// ContactEmail is the address the buyer asked the tickets to be mailed to. It is
+	// optional: empty means "mail nothing", and the product has never required an
+	// address to buy.
+	ContactEmail string
+}
+
+// Charge is ChargeWithContact for a payment that asks for no email. The gates, the
+// simulated flows and most of the tests pay without one, so this stays the ordinary
+// entry point and the address is an addition rather than a change of shape.
+func (s *Service) Charge(ctx context.Context, reservationID, idempotencyKey string) (Result, error) {
+	return s.ChargeWithContact(ctx, ChargeRequest{
+		ReservationID:  reservationID,
+		IdempotencyKey: idempotencyKey,
+	})
+}
+
+// ChargeWithContact pays one held reservation, in the three phases the design fixes:
+// store the attempt and commit, call the provider, then store the answer and commit.
 //
 // A replay with the same key and fingerprint answers from the stored attempt
 // without calling the provider; a pending attempt resumes from the provider call;
 // a declined payment answers with the decline and changes nothing else.
-func (s *Service) Charge(ctx context.Context, reservationID, idempotencyKey string) (Result, error) {
-	reservation, err := validateReservationID(reservationID)
+//
+// The contact address travels in phase 1, with the attempt and **before** the provider
+// is called. That ordering is the whole point: a process that dies mid-call leaves both
+// the attempt and the address behind, so the email worker never finds a sale it can
+// record but not deliver.
+func (s *Service) ChargeWithContact(ctx context.Context, request ChargeRequest) (Result, error) {
+	reservation, err := validateReservationID(request.ReservationID)
 	if err != nil {
 		return Result{}, err
 	}
-	key, err := validateIdempotencyKey(idempotencyKey)
+	key, err := validateIdempotencyKey(request.IdempotencyKey)
+	if err != nil {
+		return Result{}, err
+	}
+	contact, err := validateContactEmail(request.ContactEmail)
 	if err != nil {
 		return Result{}, err
 	}
@@ -376,6 +411,7 @@ func (s *Service) Charge(ctx context.Context, reservationID, idempotencyKey stri
 		IdempotencyKey: key,
 		Fingerprint:    fingerprint,
 		Provider:       s.provider,
+		ContactEmail:   contact,
 	})
 	if err != nil {
 		return Result{}, mapStoreError(err)
@@ -645,6 +681,40 @@ func validateIdempotencyKey(value string) (string, error) {
 		return "", fmt.Errorf("%w: Idempotency-Key must be at most %d characters", ErrInvalidInput, maxIdempotencyKeyLength)
 	}
 	return key, nil
+}
+
+// maxContactEmailLength is the RFC's ceiling for an address, so a caller cannot store a
+// megabyte of text in a column that is meant to name a mailbox.
+const maxContactEmailLength = 320
+
+// validateContactEmail normalises the address the tickets are to be mailed to.
+//
+// It is deliberately permissive, and the reason is the same one the migration states: Go
+// is not an email validator either. A strict pattern rejects valid addresses (quoted local
+// parts, internationalised domains) and accepts nonsense, so this refuses only what cannot
+// be an address at all — something with no '@', no dot in the domain, whitespace inside, or
+// more characters than the RFC allows. Anything it accepts is stored **unverified**: the
+// system does not know the address belongs to whoever typed it, and no code may pretend it
+// does.
+func validateContactEmail(value string) (string, error) {
+	email := strings.TrimSpace(value)
+	if email == "" {
+		return "", nil
+	}
+	if len(email) > maxContactEmailLength {
+		return "", fmt.Errorf("%w: email must be at most %d characters", ErrInvalidInput, maxContactEmailLength)
+	}
+	if strings.ContainsAny(email, " \t\r\n") {
+		return "", fmt.Errorf("%w: email must not contain whitespace", ErrInvalidInput)
+	}
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		return "", fmt.Errorf("%w: email must be a single address of the form name@domain", ErrInvalidInput)
+	}
+	if !strings.Contains(email[at+1:], ".") {
+		return "", fmt.Errorf("%w: email domain must contain a dot", ErrInvalidInput)
+	}
+	return email, nil
 }
 
 // requestFingerprint identifies the payment request a client key was used with.

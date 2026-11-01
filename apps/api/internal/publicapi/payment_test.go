@@ -34,11 +34,15 @@ type fakePaymentService struct {
 	calls         int
 	reservationID string
 	key           string
+	// email is the address the handler forwarded, so a test can prove the body reached
+	// the service and that a refused body never reached it at all.
+	email string
 }
 
-func (f *fakePaymentService) Charge(_ context.Context, reservationID, idempotencyKey string) (checkout.Result, error) {
+func (f *fakePaymentService) ChargeWithContact(_ context.Context, request checkout.ChargeRequest) (checkout.Result, error) {
 	f.calls++
-	f.reservationID, f.key = reservationID, idempotencyKey
+	f.reservationID, f.key = request.ReservationID, request.IdempotencyKey
+	f.email = request.ContactEmail
 	return f.result, f.err
 }
 
