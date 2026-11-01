@@ -49,6 +49,8 @@ make mail-up
 
 That brings up `axllent/mailpit` (pinned tag) behind its own compose profile, with SMTP on `127.0.0.1:1025` and a web inbox on `http://127.0.0.1:8025`, and waits for the container's own healthcheck. It stays out of `make up` because a mail server must never become a prerequisite of a gate: a sale never depends on the mail, and every gate runs with no provider at all. Skip this step and the application behaves identically — you simply receive nothing.
 
+If it says it is recreating the container, that is a leftover: Mailpit is the only container behind a profile, so it is the only one a `make deps-down` followed by `make up` can leave holding a network that no longer exists, and the target repairs that instead of failing. The inbox it drops is disposable.
+
 ### Step 3 — the schema, the demo data and the bucket
 
 ```sh
