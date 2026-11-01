@@ -246,6 +246,16 @@ segundo.
   13 comportamientos con un store falso y 6 contra PostgreSQL real, incluidos que la fila caducada
   se rechaza estando presente, que la doble revocación conserva el primer instante y que borrar la
   cuenta arrastra sus sesiones.
+- **Slice 3 — emitir y canjear el enlace**: seis archivos nuevos, ~1.800 líneas, casi todas tests.
+  `Issue` cuenta por dirección **antes** de nada, falla cerrado si el contador no responde, firma y
+  luego **relee la caducidad del propio token** en vez de calcularla dos veces, guarda la fila y solo
+  entonces manda el correo — y su error es el mismo tanto si el contador se negó como si el almacén
+  falló, para que la respuesta no sea un oráculo. `Redeem` canjea en **una transacción**: gasta el
+  nonce, crea la cuenta con `verified_at` (la primera verificación es la que cuenta), reclama las
+  órdenes de esa dirección y escribe la sesión — la sesión se escribe ahí y no por `SessionService`
+  justamente porque tiene que estar dentro. Las cinco pruebas gated contra PostgreSQL real cubren el
+  doble canje (segundo intento: `ErrLinkSpent` y nada escrito), la reclamación selectiva y que un
+  segundo enlace no mueve `verified_at`.
 
 ## Log
 
