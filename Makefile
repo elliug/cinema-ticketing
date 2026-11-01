@@ -32,9 +32,19 @@ deps-down:
 # http://127.0.0.1:8025). It is opt-in and deliberately absent from deps-up: the ticket
 # email never blocks a sale (S5), so no verification target may require a mail server.
 # Point the API at it with API_SMTP_ADDR=127.0.0.1:1025 and API_EMAIL_FROM=<any mailbox>.
+#
+# Mailpit is the only container behind a compose profile, and that makes it the only one a
+# `deps-down` followed by `up` can leave behind holding a network that no longer exists:
+# compose then tries to *start* the old container instead of recreating it and the daemon
+# answers "failed to set up container networking: network … not found". The repair is to
+# recreate it, and the inbox that costs is disposable — so the target does that itself
+# rather than making the reader learn a Docker detail to see their mail.
 mail-up:
 	@test -n "$(COMPOSE)" || (echo "Docker Compose is required" >&2; exit 1)
-	$(COMPOSE) --profile mail up -d --wait --wait-timeout 90 mailpit
+	$(COMPOSE) --profile mail up -d --wait --wait-timeout 90 mailpit || \
+	  { echo "mail-up: the container could not join the project network; recreating it" >&2; \
+	    $(COMPOSE) rm -sf mailpit >/dev/null 2>&1 || true; \
+	    $(COMPOSE) --profile mail up -d --wait --wait-timeout 90 mailpit; }
 
 # deps-up waits for the container healthchecks; this waits for the services
 # themselves and names the one that is not ready, so a slow dependency cannot
