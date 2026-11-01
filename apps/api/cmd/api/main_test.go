@@ -1119,3 +1119,86 @@ func TestAdminScreeningRoutesAreBehindTheGuard(t *testing.T) {
 		t.Fatalf("GET one event with the token = %d, want the handler's 400", status)
 	}
 }
+
+// S5 — without a mail provider the email consumer is not built at all: there is nothing to
+// send with, so a worker could only fail every tick. The process says so once, names the
+// setting that is missing, and keeps serving; this is the state every gate runs in.
+func TestMountReservationLeavesTheTicketEmailOffWithoutAProvider(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:    adminTestURL,
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		HoldTTL:        30 * time.Second,
+		ExpiryInterval: 5 * time.Second,
+		ExpiryBatch:    25,
+		TicketQRKey:    testTicketQRKey,
+	}
+	srv := testServer()
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	proc, err := mountReservationWithProbes(cfg, srv, logger, presentSchema, checkoutPresentSchema, ticketPresentSchema, cataloguePresentSchema)
+	if err != nil {
+		t.Fatalf("mountReservation returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("mountReservation returned no process, want the reservation wiring")
+	}
+	defer proc.Close()
+
+	if proc.emailWorker != nil || proc.emailStore != nil {
+		t.Fatal("a deployment with no mail provider wired the ticket email worker")
+	}
+	if !strings.Contains(logged.String(), "ticket email disabled") {
+		t.Fatalf("log = %q, want the one line saying the ticket email is disabled", logged.String())
+	}
+	if !strings.Contains(logged.String(), "API_SMTP_ADDR") || !strings.Contains(logged.String(), "API_EMAIL_FROM") {
+		t.Fatalf("log = %q, want it to name the settings that switch the ticket email on", logged.String())
+	}
+	// Nothing was disabled that the buyer needs: the routes next to it are still mounted.
+	if !ticketRouted(srv) || !paymentRouted(srv) || !reservationRouted(srv) {
+		t.Fatal("a deployment with no mail provider lost a route it does not need a provider for")
+	}
+}
+
+// S3/S5 — the link the email carries is built from the signed ticket link and the public
+// web origin. A worker built without a signer gets an error and therefore logs and retries
+// instead of mailing a link that opens nothing; the refusal never carries a token.
+func TestTicketLinkBuilderRefusesWithoutASigner(t *testing.T) {
+	link, err := ticketLinkBuilder("https://cinema.test", nil)("00000000-0000-0000-0000-00000000e0c1")
+	if err == nil {
+		t.Fatalf("the builder answered a link (%q) without a signer, want an error", link)
+	}
+	if link != "" {
+		t.Fatalf("the builder returned %q next to its error, want no link at all", link)
+	}
+	if !strings.Contains(err.Error(), "API_TICKET_LINK_KEY") {
+		t.Fatalf("error = %q, want it to name the setting that is missing", err)
+	}
+}
+
+// S3 — the built link is the public web's ticket route with the reservation's signed token
+// on it, so the address the buyer receives opens the order the sale recorded.
+func TestTicketLinkBuilderSignsTheReservation(t *testing.T) {
+	const reservationID = "00000000-0000-0000-0000-00000000e0c1"
+	// A trailing slash is trimmed rather than doubled: the link route appends its own.
+	signer, err := tickets.NewLinkSigner(testTicketQRKey, time.Hour)
+	if err != nil {
+		t.Fatalf("NewLinkSigner returned error: %v", err)
+	}
+
+	link, err := ticketLinkBuilder("https://cinema.test/", signer)(reservationID)
+	if err != nil {
+		t.Fatalf("the builder returned error: %v", err)
+	}
+	prefix := "https://cinema.test/t/"
+	if !strings.HasPrefix(link, prefix) {
+		t.Fatalf("link = %q, want it to begin with %q", link, prefix)
+	}
+	claims, err := signer.Verify(strings.TrimPrefix(link, prefix), time.Now())
+	if err != nil {
+		t.Fatalf("the link the builder minted does not verify: %v", err)
+	}
+	if claims.ReservationID != reservationID {
+		t.Fatalf("link names reservation %q, want %q", claims.ReservationID, reservationID)
+	}
+}

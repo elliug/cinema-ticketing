@@ -81,6 +81,23 @@ type Config struct {
 	// tickets. It defaults to the documented seven day demo window and must be
 	// positive: a non-positive lifetime would mint links that are already closed.
 	TicketLinkTTL time.Duration
+	// SMTPAddr is the host:port of the SMTP server the ticket email is delivered
+	// through: Mailpit on mailpit:1025 / 127.0.0.1:1025 locally, a real provider
+	// elsewhere. It is set together with EmailFrom or not at all.
+	SMTPAddr string
+	// EmailFrom is the sender mailbox the ticket email is sent from. A provider
+	// that rejects the sender would make every pass fail identically, so it is
+	// required whenever a provider is configured.
+	EmailFrom string
+	// PublicWebURL is the absolute http or https origin of the public web, used to
+	// build the link the email carries. It defaults to the local web service and
+	// never keeps a trailing slash, because the link route appends its own.
+	PublicWebURL string
+	// EmailEnabled reports whether the ticket email consumer is configured. It is
+	// true only when both SMTPAddr and EmailFrom are set, because a half-configured
+	// provider could only fail every pass; false is the normal state, in which the
+	// process builds no consumer and the gates stay green without a mail server.
+	EmailEnabled bool
 }
 
 // Documented defaults for the reservation surface.
@@ -157,6 +174,17 @@ const (
 	defaultTicketLinkTTL = 7 * 24 * time.Hour
 )
 
+// The ticket email rules. The consumer is optional by design (S5): a sale never
+// depends on the mail, so an unconfigured provider is a normal state and not an
+// error. What *is* an error is half a provider, because neither half can do anything
+// alone and every pass would fail the same way.
+const (
+	// defaultPublicWebURL is the local web service, so a developer who starts
+	// Mailpit and sets the two provider variables gets a link that opens on their
+	// own machine with no third variable.
+	defaultPublicWebURL = "http://localhost:3000"
+)
+
 // Load reads configuration from the process environment.
 func Load() (Config, error) { return LoadFrom(os.Getenv) }
 
@@ -192,6 +220,13 @@ func Load() (Config, error) { return LoadFrom(os.Getenv) }
 //	                          when API_ENV=development)
 //	API_TICKET_LINK_TTL       lifetime of a signed ticket link as a duration (default
 //	                          "168h", the documented seven day demo window; positive)
+//	API_SMTP_ADDR             host:port of the SMTP server the ticket email is
+//	                          delivered through (default: none, which disables the
+//	                          ticket email consumer; set together with API_EMAIL_FROM)
+//	API_EMAIL_FROM            sender mailbox of the ticket email (default: none; set
+//	                          together with API_SMTP_ADDR)
+//	API_PUBLIC_WEB_URL        absolute http or https origin the ticket link is built
+//	                          from (default "http://localhost:3000")
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Addr:             ":8080",
@@ -297,7 +332,80 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := cfg.loadEmail(getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadEmail reads the ticket email surface: whether a provider is configured, and the
+// public origin the link it carries is built from.
+//
+// Neither provider variable set is the normal state and is not an error: a sale never
+// depends on the mail (S5), so a deployment with no provider simply builds no consumer,
+// and the gates run with no mail server at all. Exactly one set is refused instead of
+// completed, because the two halves are useless alone — an address with no sender is
+// rejected by every provider, and a sender with no address has nowhere to connect — and
+// a half-configured provider would fail every pass identically. The message names the
+// missing key, never the value: the sender mailbox is not a secret, but there is nothing
+// to gain from echoing configuration back into a log.
+func (c *Config) loadEmail(getenv func(string) string) error {
+	c.PublicWebURL = defaultPublicWebURL
+	if v := strings.TrimSpace(getenv("API_PUBLIC_WEB_URL")); v != "" {
+		origin, err := normalizePublicWebURL(v)
+		if err != nil {
+			return err
+		}
+		c.PublicWebURL = origin
+	}
+
+	addr := strings.TrimSpace(getenv("API_SMTP_ADDR"))
+	from := strings.TrimSpace(getenv("API_EMAIL_FROM"))
+	switch {
+	case addr == "" && from == "":
+		// No provider: the ticket email consumer is not built. The normal state.
+		return nil
+	case addr == "":
+		return fmt.Errorf("API_SMTP_ADDR must be set together with API_EMAIL_FROM, and it is missing: a sender with no mail server can only fail every pass")
+	case from == "":
+		return fmt.Errorf("API_EMAIL_FROM must be set together with API_SMTP_ADDR, and it is missing: a mail server with no sender can only fail every pass")
+	}
+	c.SMTPAddr = addr
+	c.EmailFrom = from
+	c.EmailEnabled = true
+	return nil
+}
+
+// normalizePublicWebURL validates the origin the ticket link is built from and drops a
+// trailing slash.
+//
+// The scheme is checked because the link is pasted into a mail client and opened by a
+// browser: a link that a browser cannot open is worse than no email. A path is kept, so a
+// deployment served under a prefix still produces a link inside it. Credentials, a query
+// or a fragment are refused: they would travel inside every ticket email, and a fragment
+// in particular would sit in front of the token the link exists to carry.
+func normalizePublicWebURL(v string) (string, error) {
+	u, err := url.Parse(v)
+	if err != nil {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must be an absolute http or https URL such as http://localhost:3000")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must be an absolute http or https URL such as http://localhost:3000, got scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must include a host, such as http://localhost:3000")
+	}
+	if u.RawQuery != "" {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must not carry a query: it would be sent with every ticket link")
+	}
+	if u.Fragment != "" {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must not carry a fragment: it would be placed in front of the ticket token")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("API_PUBLIC_WEB_URL must not carry credentials: they would be sent with every ticket link")
+	}
+	return strings.TrimRight(v, "/"), nil
 }
 
 // loadTicketQR reads and validates API_TICKET_QR_KEY, the key the ticket QR tokens

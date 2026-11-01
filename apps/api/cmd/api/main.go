@@ -8,13 +8,16 @@
 // surface with its expiry worker, and M3 adds the checkout route that pays a held
 // reservation, the ticket detail route the confirmation page and the PDF read, the
 // ticket PDF download route and the worker that stores those PDFs in the object
-// bucket. M3.5 adds the reads the public web needs: the catalogue of screenings a buyer
+// bucket. The ticket email is a second consumer of the same outbox: it is built beside the
+// PDF worker when a mail provider is configured, and never blocks a sale when one is not.
+// M3.5 adds the reads the public web needs: the catalogue of screenings a buyer
 // can buy, one screening of that catalogue for the seat page, and the confirmation's read
 // of one reservation.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -38,6 +41,7 @@ import (
 	"cinema.local/ticketing/apps/api/internal/catalog"
 	"cinema.local/ticketing/apps/api/internal/checkout"
 	"cinema.local/ticketing/apps/api/internal/config"
+	"cinema.local/ticketing/apps/api/internal/email"
 	"cinema.local/ticketing/apps/api/internal/health"
 	"cinema.local/ticketing/apps/api/internal/httpserver"
 	"cinema.local/ticketing/apps/api/internal/log"
@@ -142,6 +146,20 @@ func run() int {
 		}()
 	}
 
+	// The ticket email worker belongs to the process too, and for the same reason: it
+	// delivers the message of every sale the checkout recorded and stops before the
+	// deferred Close releases its pool. A deployment with no mail provider starts none —
+	// that is S5, and it is the state every gate runs in — so a missing mail server never
+	// fails startup and never blocks a sale.
+	var emailWorkerStopped chan struct{}
+	if reservationProcess != nil && reservationProcess.emailWorker != nil {
+		emailWorkerStopped = make(chan struct{})
+		go func() {
+			defer close(emailWorkerStopped)
+			reservationProcess.emailWorker.Run(ctx)
+		}()
+	}
+
 	logger.Info("starting api", "addr", cfg.Addr, "log_level", cfg.LogLevel)
 	serveErr := srv.Serve(ctx)
 	if serveErr != nil {
@@ -162,6 +180,7 @@ func run() int {
 		{"expiry sweep", sweepStopped},
 		{"payment reconciliation", reconcileStopped},
 		{"ticket PDF worker", pdfWorkerStopped},
+		{"ticket email worker", emailWorkerStopped},
 	} {
 		if worker.stopped == nil {
 			continue
@@ -194,6 +213,15 @@ const (
 	pdfWorkerInterval = 5 * time.Second
 	pdfWorkerBatch    = 20
 	pdfWorkerTimeout  = 30 * time.Second
+)
+
+// The ticket email worker's cadence and bounds, the PDF worker's for the same reasons.
+// The batch is the same twenty because one pass is a mail conversation per row: a larger
+// batch would hold the pass open for longer without delivering anything sooner.
+const (
+	emailWorkerInterval = 5 * time.Second
+	emailWorkerBatch    = 20
+	emailWorkerTimeout  = 30 * time.Second
 )
 
 // expirySweepMaxBatches bounds how many batches one tick may run. The next tick
@@ -231,10 +259,12 @@ type reservationProcess struct {
 	ticketStore   *tickets.PostgresStore
 	catalogStore  *catalog.PostgresStore
 	outboxStore   *pdf.OutboxStore
+	emailStore    *email.PostgresStore
 	redis         *redis.Client
 	sweeper       *reservation.Sweeper
 	reconciler    *checkout.Reconciler
 	pdfWorker     *pdf.Worker
+	emailWorker   *email.Worker
 }
 
 // Close releases the pooled connections. It is nil-safe so the process wiring can
@@ -257,6 +287,9 @@ func (p *reservationProcess) Close() {
 	}
 	if p.outboxStore != nil {
 		p.outboxStore.Close()
+	}
+	if p.emailStore != nil {
+		p.emailStore.Close()
 	}
 	if p.redis != nil {
 		_ = p.redis.Close()
@@ -556,6 +589,37 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		}
 	}
 
+	// The ticket email is the second consumer of the same outbox and keeps a delivery record
+	// of its own (S4), so it is built next to the PDF worker and never instead of it. A
+	// provider that is not configured is not a failure: the sale never depended on the mail
+	// (S5), so the process says so once and keeps serving, which is the state every gate runs
+	// in. The worker is also refused when the pieces it needs to send anything are missing —
+	// a signed link key and the checkout outbox — because a worker that could only fail every
+	// tick is noise, and one line at startup says exactly what is missing.
+	var emailStore *email.PostgresStore
+	var emailWorker *email.Worker
+	switch {
+	case !cfg.EmailEnabled:
+		logger.Info("ticket email disabled: no mail provider is configured", "required", missingEmailSetting(cfg))
+	case !ticketPresent:
+		logger.Info("ticket schema not present; ticket email worker disabled", "required", "0005_checkout")
+	case ticketLinks == nil:
+		logger.Info("ticket email worker disabled: the signed ticket link key is missing", "required", "API_TICKET_LINK_KEY")
+	case !checkoutPresent:
+		logger.Info("checkout outbox not present; ticket email worker disabled", "required", "0005_checkout")
+	default:
+		emailStore, emailWorker, err = newTicketEmailWorker(cfg, ticketLinks, logger)
+		if err != nil {
+			ticketStore.Close()
+			if checkoutStore != nil {
+				checkoutStore.Close()
+			}
+			_ = client.Close()
+			store.Close()
+			return nil, fmt.Errorf("configure the ticket email worker: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
+		}
+	}
+
 	// The catalogue, the seat page's read of one screening and the confirmation's read are
 	// the three things the public web needs and the API did not have: a stranger needs no
 	// event identifier to reach the seat page, the page keeps the entry it arrived with,
@@ -572,6 +636,9 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		if checkoutStore != nil {
 			checkoutStore.Close()
 		}
+		if emailStore != nil {
+			emailStore.Close()
+		}
 		_ = client.Close()
 		store.Close()
 		return nil, fmt.Errorf("open the catalogue store: %s", redactDatabaseURL(err.Error(), cfg.DatabaseURL))
@@ -582,6 +649,9 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		ticketStore.Close()
 		if checkoutStore != nil {
 			checkoutStore.Close()
+		}
+		if emailStore != nil {
+			emailStore.Close()
 		}
 		_ = client.Close()
 		store.Close()
@@ -633,9 +703,15 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			"route", "/api/v1/tickets/{ticketId}/pdf", "bucket", cfg.S3Bucket,
 			"presign_ttl", cfg.S3PresignTTL, "worker", pdfWorker != nil)
 	}
+	if emailWorker != nil {
+		// The sender mailbox and the public origin are not secrets; the signed token the
+		// email carries is, and it is never logged.
+		logger.Info("ticket emails are delivered from the checkout outbox; worker started",
+			"smtp", cfg.SMTPAddr, "from", cfg.EmailFrom, "public_web_url", cfg.PublicWebURL)
+	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
-		catalogStore: catalogStore, outboxStore: outboxStore, redis: client, sweeper: sweeper,
-		reconciler: reconciler, pdfWorker: pdfWorker}, nil
+		catalogStore: catalogStore, outboxStore: outboxStore, emailStore: emailStore, redis: client,
+		sweeper: sweeper, reconciler: reconciler, pdfWorker: pdfWorker, emailWorker: emailWorker}, nil
 }
 
 // newTicketArchive builds the artefact archive over the S3 adapter. The adapter
@@ -679,6 +755,74 @@ func newTicketPDFWorker(cfg config.Config, archive *pdf.Archive, logger *slog.Lo
 		return nil, nil, err
 	}
 	return outbox, worker, nil
+}
+
+// newTicketEmailWorker builds the consumer of the checkout's outbox that mails the ticket.
+// It mirrors the PDF worker: its own startup budget, a store that answers before the API
+// starts listening, and a worker the process starts beside the others and stops with them.
+//
+// It is only called when a provider is configured (S5), so a deployment with no mail server
+// never reaches the store's ping and never has a startup it could fail.
+func newTicketEmailWorker(cfg config.Config, signer *tickets.LinkSigner, logger *slog.Logger) (*email.PostgresStore, *email.Worker, error) {
+	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancel()
+
+	store, err := email.NewPostgresStore(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	sender, err := email.NewSMTP(cfg.SMTPAddr, cfg.EmailFrom)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	worker, err := email.NewWorker(store, sender, ticketLinkBuilder(cfg.PublicWebURL, signer), email.WorkerConfig{
+		Interval: emailWorkerInterval,
+		Batch:    emailWorkerBatch,
+		Timeout:  emailWorkerTimeout,
+		From:     cfg.EmailFrom,
+		Logger:   logger,
+	})
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	return store, worker, nil
+}
+
+// ticketLinkBuilder builds the URL a ticket email carries: the public web's link route and
+// the signed token of one reservation. The token is the credential the email exists to
+// carry, so nothing here logs it and nothing here puts it in an error.
+//
+// A builder with no signer refuses instead of answering an empty link: the worker logs the
+// failure and retries on the next tick, which is the difference between a message that is
+// late and a message that carries a link opening nothing.
+func ticketLinkBuilder(publicWebURL string, signer *tickets.LinkSigner) email.LinkBuilder {
+	return func(reservationID string) (string, error) {
+		if signer == nil {
+			return "", errors.New("the signed ticket link key is missing (API_TICKET_LINK_KEY)")
+		}
+		token, err := signer.Sign(reservationID, time.Now())
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(publicWebURL, "/") + "/t/" + token, nil
+	}
+}
+
+// missingEmailSetting names the variable that keeps the ticket email disabled, for the one
+// startup line an operator reads. config.LoadFrom refuses a half-configured provider, so a
+// served process reaches this with both variables empty; naming whichever is empty keeps
+// the line true for a programmatically built Config too.
+func missingEmailSetting(cfg config.Config) string {
+	switch {
+	case cfg.SMTPAddr == "" && cfg.EmailFrom == "":
+		return "API_SMTP_ADDR and API_EMAIL_FROM"
+	case cfg.SMTPAddr == "":
+		return "API_SMTP_ADDR"
+	default:
+		return "API_EMAIL_FROM"
+	}
 }
 
 // mountAdmin wires the administrative venue API behind the local-development

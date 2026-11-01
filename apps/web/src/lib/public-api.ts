@@ -20,7 +20,9 @@
 // the buyer clicked on), the M3.5 read of one order (so a reloaded confirmation keeps
 // its screening, its seats, its deadline and its tickets without asking the payment
 // route again), the M3 ticket verification a page uses to say plainly whether a
-// ticket admits its holder, and the M4.1 admission the door performs with the same code.
+// ticket admits its holder, the M4.1 admission the door performs with the same code, and
+// the signed link a purchase email carries (so the web route behind it redeems the tokens
+// in this process and the browser never learns the API's address).
 // The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
@@ -268,6 +270,27 @@ export interface PublicTicket {
   qrToken: string;
 }
 
+/**
+ * GET /ticket-links/{token} — what the signed link a purchase email carries opens.
+ *
+ * The token is the whole request and the whole credential: it names a paid order and the
+ * instant it stops verifying, signed with the link key. It lives in the path because that
+ * is the shape of a URL, which is also why nothing here parses, prints or re-derives it.
+ *
+ * The three fields are the answer and nothing else is: the order the signature named, the
+ * expiry the signature spelled, and the tickets the sale issued. There is no buyer in it,
+ * no address and no payment detail, so a link that leaks into a shared mailbox leaks the
+ * tickets it opens and not who bought them.
+ */
+export interface PublicTicketLink {
+  /** The order inside the signature, as the read confirmed it. */
+  reservationId: string;
+  /** The instant the link stops opening, RFC 3339, read from the signature. */
+  expiresAt: string;
+  /** The order's tickets, ascending as the API answers them; never re-sorted here. */
+  ticketIds: string[];
+}
+
 /** POST /tickets/verify — what a presented code is, checked server side. */
 export interface PublicVerification {
   ticketId: string;
@@ -456,6 +479,17 @@ export interface PublicClient {
   getReservation(reservationId: string): Promise<PublicResult<PublicReservation>>;
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
   getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
+  /**
+   * Redeems the signed link a purchase email carries: the order it opens, and when it
+   * stops opening.
+   *
+   * The API answers every way of not opening — forged, tampered, expired, an order this
+   * database never sold, an order that was never paid — with one `404`, deliberately, so
+   * a probe cannot confirm that a reservation exists and an aged-out email is
+   * indistinguishable from a guess. It arrives here as the `not_found` problem an unknown
+   * ticket already reads as; a `503` is our failure and says nothing about the link.
+   */
+  redeemTicketLink(token: string): Promise<PublicResult<PublicTicketLink>>;
   verifyTicket(token: string): Promise<PublicResult<PublicVerification>>;
   /**
    * Presents a code at the door: the server verifies it and admits the ticket it names once.
@@ -800,6 +834,32 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseTicket(result.value);
+    },
+
+    async redeemTicketLink(token) {
+      const presented = token.trim();
+      if (presented === "") {
+        // A link with no token names nothing, and the API would only answer it with the
+        // refusal it gives a forged one. Asking would tell the page nothing new.
+        return { ok: false, error: invalidInput("this page needs a link token") };
+      }
+
+      // A read: no key, no body. It redeems the link, not the tickets, so a reload of the
+      // page costs the same answer and never spends anything.
+      const result = await send<unknown>(
+        `/ticket-links/${encodeURIComponent(presented)}`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        },
+      );
+      if (!result.ok) {
+        // The route's one refusal is already the problem an unknown ticket answers with,
+        // so it is handed on unchanged rather than translated into a second vocabulary.
+        return result;
+      }
+      return parseTicketLink(result.value);
     },
 
     async verifyTicket(token) {
@@ -1191,6 +1251,59 @@ function parseTicket(value: unknown): PublicResult<PublicTicket> {
       qrToken,
     },
   };
+}
+
+function parseTicketLink(value: unknown): PublicResult<PublicTicketLink> {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the link answer is not an order"),
+    };
+  }
+  const reservationId = servedString(value.reservationId);
+  if (reservationId === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(200, "the link answer names no order"),
+    };
+  }
+  // The expiry is what the page prints to say when the email stops opening, and the
+  // signature is the only thing that knows it: a missing one is refused rather than
+  // filled in with a guess. The token itself is never echoed, here or anywhere below.
+  const expiresAt = servedString(value.expiresAt);
+  if (expiresAt === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the link to order ${reservationId} carries no expiresAt, so when the link stops opening cannot be said`,
+      ),
+    };
+  }
+  if (!Array.isArray(value.ticketIds)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the link to order ${reservationId} carries no ticket list, so what it opens cannot be said`,
+      ),
+    };
+  }
+  // Only a paid sale with tickets opens a link (see the API's own route), so a `200` with
+  // nothing in it is a broken answer. Reading it as an empty order would have the page
+  // print that the link opens nothing, which is a claim no one made.
+  const ticketIds = value.ticketIds.filter((id): id is string => typeof id === "string");
+  if (ticketIds.length === 0) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        `the link to order ${reservationId} names no ticket, so it opens nothing to show`,
+      ),
+    };
+  }
+
+  return { ok: true, value: { reservationId, expiresAt, ticketIds } };
 }
 
 function parseVerification(value: unknown): PublicResult<PublicVerification> {
