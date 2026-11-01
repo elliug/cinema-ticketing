@@ -4,8 +4,8 @@ Estudio previo a la implementación. Tres decisiones ya tomadas por el responsab
 un conjunto de restricciones que el código existente impone y que no son negociables sin
 reescribir contratos documentados.
 
-Estado: **estudio**. No hay código todavía, y este documento pasa a ser la especificación de la
-feature cuando empiece la implementación.
+Estado: **implementación**. Slices 1–4 entregados en `feat/email-delivery`; queda el slice 5 (la
+UI del checkout y los textos).
 
 ## Decisiones tomadas
 
@@ -164,7 +164,36 @@ T4–T7 como segundo.
   comportamiento; trocearlo daría commits que compilan y no prueban nada. **Todavía no envía
   nada**: sin config ni cableado en `cmd/api`, sin Mailpit en compose y sin test gated contra
   PostgreSQL.
-- **Slice 4 — el cableado y el enlace firmado**, **slice 5 — la UI y los textos**. Pendientes.
+- **Slice 4 — el cableado y el enlace firmado**: tres commits, 813 líneas.
+  - `feat(tickets): a signed link that opens the tickets and then stops working` (359 líneas):
+    `tickets.LinkSigner` con clave propia, payload `v1|reservationId|<exp>` en RFC 3339 UTC,
+    comparación canónica y sentinel `ErrLinkExpired`; `API_TICKET_LINK_KEY` y
+    `API_TICKET_LINK_TTL` (168h por defecto); y `GET /api/v1/ticket-links/{token}`, que abre solo
+    una venta pagada y responde un **único** 404 opaco para falsificado, caducado, desconocido e
+    impagado.
+  - `feat(web): the mailed link lands somewhere that keeps the tickets` (346 líneas):
+    `/t/[token]` como componente de servidor que canjea el token en el proceso (el navegador
+    nunca conoce la URL de la API), guarda **todas** las entradas en la lista de la pestaña,
+    `force-dynamic` y sin indexar, y tres estados decididos en un módulo puro: abierto, cerrado
+    (una sola página para caducado y nunca existido) y no disponible (reintentable).
+  - `feat(email): start the ticket email consumer beside the PDF one` (108 líneas):
+    `API_SMTP_ADDR` + `API_EMAIL_FROM` (nunca medio proveedor) y `API_PUBLIC_WEB_URL`; el segundo
+    consumidor arranca solo si hay proveedor, con el enlace firmado y sin bloquear nunca una
+    venta (S5); Mailpit en `compose.yaml` bajo el perfil `mail` detrás de `make mail-up`, fuera de
+    `deps-up`. El test gated contra PostgreSQL destapó un fallo real: `Recipient` de una reserva
+    inexistente respondía «sin dirección», así que el worker habría marcado como entregada una
+    venta que no pudo leer; ahora es un error.
+
+  El cableado llevó `API_SMTP_ADDR` en lugar del `API_SMTP_URL` que se propuso aquí: el adaptador
+  ya existente pide `host:port`, y un «URL» que no acepta esquema sería un nombre que miente.
+- **Slice 5 — la UI y los textos**. Pendiente.
+
+## Entrega
+
+El trabajo va en PRs encadenados, uno por grupo de slices, porque el conjunto pasa de 4.700 líneas
+revisadas y una sola PR de ese tamaño no se revisa: `feat/email-delivery` se parte al abrirlas (PR 1:
+slices 1–3; PR 2: slice 4; PR 3: slice 5). Abrir las PRs y mergear es decisión del responsable del
+producto, no del agente.
 
 ## Log
 
