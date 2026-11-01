@@ -4,13 +4,14 @@ Estudio previo a la implementación. Cinco decisiones que solo puede tomar el re
 producto, y un conjunto de restricciones que el código existente impone y que no son negociables
 sin reescribir contratos documentados.
 
-Estado: **estudio**. No hay código todavía. Este documento pasa a ser la especificación de la
-feature cuando empiece la implementación.
+Estado: **estudio cerrado, decisiones tomadas** (D1–D5, ver L2). No hay código todavía: este
+documento es la especificación de la feature.
 
-## Decisiones que hay que tomar
+## Decisiones tomadas
 
-Las cinco están abiertas. Cada una lleva una recomendación y el motivo; la decisión es del
-responsable del producto y se anota aquí cuando exista.
+Tomadas por el responsable del producto (L2). Cada una lleva la opción elegida y, debajo, las
+alternativas que se descartaron y por qué: el motivo importa tanto como la decisión, porque es lo
+que evitará volver a discutirlas.
 
 ### D1 — Qué identifica a una persona
 
@@ -20,7 +21,7 @@ responsable del producto y se anota aquí cuando exista.
 | Google OAuth | Sin correo saliente, sin caducidad, y con el «Entrar con Google» que la gente reconoce | Tercero, credenciales y consentimiento; no verifica nada que el enlace no verifique; y **no reutiliza nada** de lo construido |
 | Correo + contraseña | Familiar | Hay que almacenar hashes, política de contraseñas, reset, bloqueo por intentos y protección contra brechas. Todo eso es superficie nueva para un demo |
 
-**Recomendación: enlace mágico.** Es la única opción cuyo coste marginal es casi cero, porque el
+**Decidido: enlace mágico.** Es la única opción cuyo coste marginal es casi cero, porque el
 canal de correo ya existe y es el que verifica. OAuth entra después como **un identificador más de
 la misma cuenta**, sin rehacer nada.
 
@@ -32,7 +33,7 @@ la misma cuenta**, sin rehacer nada.
 | Cookie firmada sin estado | Sin tabla | No se puede revocar: cerrar sesión es solo borrar la cookie del cliente, y una copia robada sigue valiendo hasta caducar |
 | Token en `localStorage` | Trivial de implementar | Cualquier XSS se lleva la sesión, y el navegador tendría que hablar con el API, cosa que hoy **no** hace |
 
-**Recomendación: token opaco en base de datos.** La revocación es la propiedad que importa.
+**Decidido: token opaco en base de datos.** La revocación es la propiedad que importa.
 
 ### D3 — Qué gana quien entra
 
@@ -44,7 +45,7 @@ cuenta, y entonces:
 - deja de haber identificadores de entradas guardados en el navegador;
 - y por primera vez el sistema puede decir «estas son *tus* entradas» sin mentir.
 
-**Recomendación: sí, y es el único motivo por el que merece la pena hacer login.** Sin esto, una
+**Decidido: sí, y es el único motivo por el que merece la pena hacer login.** Sin esto, una
 cuenta sería un formulario que no cambia nada.
 
 ### D4 — Qué pasa con la compra de invitado
@@ -54,7 +55,7 @@ cuenta sería un formulario que no cambia nada.
 | **Seguir comprando sin cuenta** | Es lo que el producto promete hoy: una entrada se abre por su enlace, y quien compra no tiene que registrarse | Nada nuevo que ganar salvo la lista del punto D3 |
 | Exigir cuenta para comprar | Una cuenta por comprador | Rompe la promesa de invitado, añade fricción antes de cobrar y contradice `ARCHITECTURE.md` |
 
-**Recomendación: la sesión es opcional.** Nadie necesita cuenta ni para comprar ni para abrir una
+**Decidido: la sesión es opcional.** Nadie necesita cuenta ni para comprar ni para abrir una
 entrada; entrar añade la lista del punto D3 y nada más.
 
 ### D5 — Qué se hace con las compras anteriores a la identidad
@@ -66,7 +67,7 @@ Las reservas que ya existen guardan una dirección **nunca verificada** en
   prueba que faltaba; o
 - **no reclamar nada**, y que solo las compras nuevas con sesión queden asociadas.
 
-**Recomendación: reclamar**, y solo en el momento de la verificación. No es una reescritura de
+**Decidido: reclamar**, y solo en el momento de la verificación. No es una reescritura de
 datos: es atar hacia atrás lo que estaba escrito sin garantía, en el único instante en que la
 garantía existe. Se anota en el log y se hace en una transacción.
 
@@ -218,3 +219,8 @@ segundo.
 
 - **L1** — Petición del usuario, literal: «estaba login y pago, con qué continuamos?» Elegido en la
   pregunta de continuidad: **estudiar identidad y login** antes que pagos reales.
+- **L2** — Decisiones del usuario, las cuatro: **identifica el enlace mágico por correo**; **entrar
+  gana que «mis entradas» pase a ser una lectura del servidor**; **la compra de invitado sigue sin
+  cuenta**; y **al verificar se reclaman las compras anteriores hechas con esa dirección**. La
+  quinta (`D2`) se cerró en el estudio como decisión de ingeniería: token opaco en base de datos,
+  porque una sesión sin estado no se puede revocar.
