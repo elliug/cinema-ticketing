@@ -8,7 +8,7 @@ Identity, reporting and audit do not exist yet. `## What this build does not do`
 
 Prerequisites: Go 1.27+, Node.js 22+, pnpm 12+, Docker Engine, Docker Compose, and `curl`.
 
-To run the product and click through a purchase, follow [`## Run locally`](#run-locally): four commands, two of them long-running.
+To run the product and click through a purchase, follow [`## Run locally, from zero`](#run-locally-from-zero): six numbered steps, two of them long-running. The only optional one starts the mail server; skipping it changes nothing except that no email is delivered.
 
 To prove the build instead, without reading anything else:
 
@@ -21,20 +21,45 @@ make check
 
 Expected result: Go tests and vet pass, and the web tests, lint, typecheck and build pass. The milestones also have their own end-to-end gates — `make verify-m1`, `make verify-m2`, `make verify-m3`, `make verify-m35` and `make verify-m41` — which start their own stack and prove the behaviour rather than the compilation.
 
-## Run locally
+## Run locally, from zero
 
-Four commands. The first two finish; the last two stay running, each in its own terminal.
+Prerequisites: Go 1.27+, Node.js 22+, pnpm 12+, Docker Engine with Compose v2, and `curl`. Nothing else is installed by hand: PostgreSQL, Redis, the local S3 and the mail server are containers this repository defines, and the schema, the demo data and the ticket bucket are created by the commands below.
+
+Six steps. Steps 1–3 finish and give the terminal back; steps 4 and 5 stay running, each in its own terminal. Every step is re-runnable: running one twice changes nothing.
+
+### Step 1 — the JavaScript dependencies (once per clone)
+
+```sh
+pnpm install
+```
+
+### Step 2 — the containers
 
 ```sh
 make up
+```
+
+`make deps-up` creates the volumes and starts the three services the application cannot work without: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci`, pinned by digest because CI starts it on every run, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. `make up` then waits for the services themselves within a bounded timeout: PostgreSQL with `pg_isready` inside its container, Redis with `PING`, and Floci with `GET http://127.0.0.1:4566/_floci/health`. A service that does not answer fails the target and is named (`postgres is not ready after 1m0s: …`); the wait only reads and never touches the database, and its budget can be changed with `make up WAIT_TIMEOUT=120s`. Redis runs with `--maxmemory-policy noeviction`, because an eviction policy could drop a hold key before its TTL and let a second buyer hold the same seat. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three containers; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
+
+The mail server is the one container `make up` deliberately leaves out. Start it only if you want to see the ticket email:
+
+```sh
+make mail-up
+```
+
+That brings up `axllent/mailpit` (pinned tag) behind its own compose profile, with SMTP on `127.0.0.1:1025` and a web inbox on `http://127.0.0.1:8025`, and waits for the container's own healthcheck. It stays out of `make up` because a mail server must never become a prerequisite of a gate: a sale never depends on the mail, and every gate runs with no provider at all. Skip this step and the application behaves identically — you simply receive nothing.
+
+### Step 3 — the schema, the demo data and the bucket
+
+```sh
 API_ENV=development make bootstrap
 ```
 
-`make up` creates the containers and their volumes and waits until all three are healthy. `make bootstrap` applies the six migrations, seeds the development data and creates the ticket bucket. Both are re-runnable: a second run changes nothing.
+It runs three things in order: `migrate-all` reads `platform.schema_migrations`, compares it with `db/migrations/*.up.sql` and applies only the missing ones (on a fresh database, all of them); `seed-dev` loads `db/seeds/dev_seed.sql` — one cinema, one room with a published irregular layout, two films and two screenings; `ensure-bucket` creates the ticket bucket when it is missing. It refuses to run without `API_ENV=development`, because it writes demo data.
 
-`make deps-up` starts the three local services: PostgreSQL (`postgres:17.6-alpine`, port 5432), Redis (`redis:7.4.6-alpine`, port 6379) and Floci (`floci/floci`, pinned by digest because CI starts it on every run, port 4566), the local S3 that stores the M3 ticket PDFs and answers path-style requests at `http://127.0.0.1:4566` with the dummy `floci`/`floci` credentials. `make up` then waits for the services themselves within a bounded timeout: PostgreSQL with `pg_isready` inside its container, Redis with `PING`, and Floci with `GET http://127.0.0.1:4566/_floci/health`. A service that does not answer fails the target and is named (`postgres is not ready after 1m0s: …`); the wait only reads and never touches the database, and its budget can be changed with `make up WAIT_TIMEOUT=120s`. Redis runs with `--maxmemory-policy noeviction`, because an eviction policy could drop a hold key before its TTL and let a second buyer hold the same seat. Floci's image carries its own healthcheck (a shell probe of `/_floci/init`), so `make deps-up` waits for all three containers; because the image has neither `curl` nor `wget`, scripts that need an explicit check poll `http://127.0.0.1:4566/_floci/health` from the host. The API's object-storage settings therefore default to that service (`API_S3_ENDPOINT=http://127.0.0.1:4566`, `API_S3_BUCKET=cinema-m3-tickets`, `API_S3_REGION=us-east-1`, `API_S3_PRESIGN_TTL=5m`), and a non-local endpoint is refused while the development credentials are in place.
+### Step 4 — the API, first terminal (stays running)
 
-Run the API in the first terminal. Every variable below matters, and the next section says what breaks without each one:
+One command, and every variable must be in **this same invocation**: the API reads its environment once, at startup, and decides there whether it mounts the checkout, the administration and the email consumer. There is no second pass and no "add the mail variables later".
 
 ```sh
 API_ENV=development \
@@ -42,16 +67,56 @@ API_DATABASE_URL="postgres://cinema:cinema_local_only@127.0.0.1:5432/cinema?sslm
 API_DEPENDENCIES=postgresql,redis \
 API_LOCAL_ADMIN=true \
 API_LOCAL_ADMIN_TOKEN=change_me_in_local \
+API_SMTP_ADDR=127.0.0.1:1025 \
+API_EMAIL_FROM=tickets@cinema.local \
+API_PUBLIC_WEB_URL=http://localhost:3000 \
    go run ./apps/api/cmd/api
 ```
 
-Run the web application in the second terminal, with **the same token**:
+What each one is doing there:
+
+| Variable | Why it is in the command |
+|---|---|
+| `API_ENV=development` | The only value that enables the documented development defaults (the ticket keys) and the local administrative surface. |
+| `API_DATABASE_URL` | Without it **no customer surface is mounted at all**: holds, payments and tickets answer `404` while the process still reports healthy. |
+| `API_DEPENDENCIES=postgresql,redis` | Names the TCP probes `GET /health/ready` reports on. |
+| `API_LOCAL_ADMIN` and its token | Mounts `/api/v1/admin/`. The web must be started with **the same token**. |
+| `API_SMTP_ADDR` and `API_EMAIL_FROM` | Start the ticket email consumer. Omit **both** and the sale, the PDF and every gate are unaffected; omit only one and the process refuses to start, because a half-configured provider would fail every send. |
+| `API_PUBLIC_WEB_URL` | The origin the mailed link points at, as `<origin>/t/<token>`. Absolute `http`/`https`. |
+
+Nothing has to be exported or repeated if you do not want to: `set -a; …; set +a` around these lines, or exporting them once in that terminal, works the same. What does **not** work is expecting a `.env` file to do it — `.env` is read by Docker Compose for the container ports, not by the API process.
+
+Two lines in the startup log say whether the mail half is live:
+
+- `ticket email worker started` with `interval=5s`, `batch=20`, `timeout=30s`, `from=tickets@cinema.local` — it will deliver;
+- `ticket email disabled: no mail provider is configured` — it will not, and nothing else changes.
+
+The email consumer, the PDF worker, the expiry sweep and the payment reconciler are goroutines of **this one process**. Starting `go run ./apps/api/cmd/api` a second time does not add a worker: it fails on the listen address (`:8080` by default, `API_ADDR` decides), and it would be wrong even on another port, because a second sweep and a second consumer on one database is not a second worker but two writers.
+
+### Step 5 — the web, second terminal (stays running)
 
 ```sh
 API_LOCAL_ADMIN_TOKEN=change_me_in_local pnpm web:dev
 ```
 
-Open `http://localhost:3000` to buy, and `http://localhost:3000/admin/venues` to administer. `change_me_in_local` is a placeholder you choose: any value works locally, as long as **both** processes are started with the same one.
+The token must match the API's. `change_me_in_local` is a placeholder you choose: any value works locally, as long as **both** processes are started with the same one. When they disagree, the administration answers `404` rather than `401`, so nobody can tell a missing surface from a wrong token.
+
+### Step 6 — use it
+
+| Where | What |
+|---|---|
+| `http://localhost:3000` | Buy: catalogue, seat map, hold, pay, ticket. |
+| `http://localhost:3000/admin/venues` | Administer: cinemas, rooms, layouts, films and screenings. |
+| `http://localhost:3000/tickets` | The tickets this browser kept. |
+| `http://127.0.0.1:8025` | The mail inbox, when `make mail-up` is running: one message per paid order that carried an address. |
+
+To see an email end to end: pay an order leaving an address in the checkout field, then wait one worker tick (five seconds) and open the inbox; the message carries a signed link that opens the tickets and expires seven days later. The same link can be mailed to another address from the ticket page, at most three times per order per hour.
+
+### Stopping, and starting again
+
+`Ctrl-C` in each of the two terminals. `make deps-down` stops every container — Mailpit included, because `compose down` takes the whole project — and keeps the volumes, so `make up` comes back with the same data; `make migrate-down` is the explicit way to roll the schema back, and `make deps-down` alone never deletes a database.
+
+### The browser gate
 
 The browser gate drives Chromium and Firefox, so install both once:
 
@@ -149,38 +214,9 @@ make deps-down          # stop local containers without deleting volumes
 
 `Makefile` automatically uses either `docker compose` or `docker-compose`.
 
-### Mail locally (optional)
+## What `make bootstrap` does
 
-The ticket email is the one part of the stack that is **not** started by `make up`. Mailpit, the local mail server the message is delivered to, lives behind its own compose profile for a reason: a mail server must never become a prerequisite of a gate, because the sale never depends on the mail.
-
-```sh
-make mail-up
-```
-
-That starts `axllent/mailpit` (pinned tag) with SMTP on `127.0.0.1:1025` and a web inbox on `http://127.0.0.1:8025`; the target waits for the container's own healthcheck, and `make deps-down` stops it with the rest.
-
-The API starts its email consumer only when both of these are set, so running it without them is normal and mails nothing:
-
-```sh
-API_SMTP_ADDR=127.0.0.1:1025 \
-API_EMAIL_FROM=tickets@cinema.local \
-API_PUBLIC_WEB_URL=http://localhost:3000 \
-   go run ./apps/api/cmd/api
-```
-
-`API_PUBLIC_WEB_URL` is the origin the mailed link points at (`<origin>/t/<token>`), and it must be an absolute `http`/`https` origin. `API_TICKET_LINK_KEY` signs that link with a key of its own, so rotating it cannot invalidate a printed QR code; in development an unset key falls back to a documented value, and outside development a real key of at least 32 bytes is required. The link expires seven days after it is minted, which `API_TICKET_LINK_TTL` changes.
-
-What arrives in the inbox is one message per paid order that carried an address, sent by a worker that reads the outbox on its own cadence, retries on the next pass when the provider is down, and records its own delivery so a second tick cannot mail twice. Order does not matter: starting Mailpit after the API only means the first passes log a failure until it answers.
-
-## Bootstrap
-
-The whole local environment is two commands, and both are re-runnable:
-
-```sh
-make up
-export API_ENV=development
-make bootstrap
-```
+Step 3 of [the local walkthrough](#run-locally-from-zero) runs it once; this is the detail behind each of its three parts. It is re-runnable: a second run applies nothing, seeds nothing and creates nothing.
 
 `make bootstrap` runs `migrate-all`, then `seed-dev`, then `ensure-bucket`:
 
