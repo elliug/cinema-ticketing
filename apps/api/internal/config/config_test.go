@@ -1278,6 +1278,86 @@ func TestIdentityLinkConfiguration(t *testing.T) {
 	}
 }
 
+// TestSessionConfiguration mirrors the access link's configuration test for API_SESSION_TTL:
+// a documented default of thirty days, an explicit lifetime honoured however it is spelled,
+// and every value that cannot work refused by name. A session lifetime is not a secret, so a
+// refusal may echo it; what it may never do is accept a lifetime that closes a session before
+// it opens.
+func TestSessionConfiguration(t *testing.T) {
+	cases := []struct {
+		name     string
+		env      map[string]string
+		want     time.Duration
+		wantErr  string
+		wantWord string
+	}{
+		{
+			// Thirty days: long enough that a person does not sign in every day, short enough
+			// that a stolen cookie is not eternal (S1).
+			name: "the default lifetime is thirty days",
+			want: 720 * time.Hour,
+		},
+		{
+			name: "an explicit lifetime in hours is honoured",
+			env:  map[string]string{"API_SESSION_TTL": "24h"},
+			want: 24 * time.Hour,
+		},
+		{
+			name: "an explicit lifetime in seconds is honoured",
+			env:  map[string]string{"API_SESSION_TTL": " 90s "},
+			want: 90 * time.Second,
+		},
+		{
+			name:     "a zero lifetime is refused",
+			env:      map[string]string{"API_SESSION_TTL": "0s"},
+			wantErr:  "API_SESSION_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "a negative lifetime is refused",
+			env:      map[string]string{"API_SESSION_TTL": "-1h"},
+			wantErr:  "API_SESSION_TTL",
+			wantWord: "positive",
+		},
+		{
+			name:     "an unparsable lifetime is refused",
+			env:      map[string]string{"API_SESSION_TTL": "thirty days"},
+			wantErr:  "API_SESSION_TTL",
+			wantWord: "duration",
+		},
+		{
+			name:     "a lifetime without a unit is refused",
+			env:      map[string]string{"API_SESSION_TTL": "30"},
+			wantErr:  "API_SESSION_TTL",
+			wantWord: "duration",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg, err := config.LoadFrom(func(key string) string { return testCase.env[key] })
+			if testCase.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error naming %s, got nil", testCase.wantErr)
+				}
+				if !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("error = %q, want it to name %s", err, testCase.wantErr)
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), testCase.wantWord) {
+					t.Fatalf("error = %q, want it to mention %q", err, testCase.wantWord)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom returned error: %v", err)
+			}
+			if cfg.IdentitySessionTTL != testCase.want {
+				t.Fatalf("IdentitySessionTTL = %v, want %v", cfg.IdentitySessionTTL, testCase.want)
+			}
+		})
+	}
+}
+
 // TestTheThreeDevelopmentLinkKeysAreDistinct pins the separation the first two keys already
 // had, extended to the access link: a QR code is printed on paper, a ticket link lives in a
 // mailbox and an access link proves a mailbox, so rotating or leaking one must never touch
