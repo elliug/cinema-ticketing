@@ -70,7 +70,7 @@
  *                                    the hand-written components in components/ that the
  *                                    barrel still exports
  *   .notice, .list                   the home page
- *   .site-header*, .brand*, .site-nav*, .demo-switcher*, .site-footer*
+ *   .site-header*, .brand*, .site-nav*, .site-header__account, .site-footer*
  *                                    the shell (site-header.tsx, site-footer.tsx)
  *   body, h1–h3, p, li, a, code, :focus-visible
  *                                    base element rules every remaining screen inherits
@@ -411,7 +411,7 @@ code {
 
 /* ── Site header ─────────────────────────────────────────────────────────────
  * Flex with wrapping, not a media query per breakpoint: on a phone the brand, the
- * navigation and the session switcher become three stacked rows on their own,
+ * navigation and the sign-in link become three stacked rows on their own,
  * and nothing overflows a 360px screen because no item has a minimum width.
  */
 .site-header {
@@ -494,66 +494,17 @@ code {
   color: var(--color-text-muted);
 }
 
-/* ── Demo session switcher ───────────────────────────────────────────────────
- * Permanent, in the header, and never inside a menu: the sentence next to the
- * name is the whole point (S2, S8), so it is always on screen in both schemes.
+/* ── The way in to signing in ────────────────────────────────────────────────
+ * One link, and the label is the whole of it: no name, no avatar, no "signed in as", and
+ * no "signed out" either. The header cannot know whether this browser holds a session
+ * without reading the cookie, and a client-side guess would hydrate into a disagreement
+ * with the server's render (identity-login T6 · S7). The link itself is styled by
+ * `.site-nav__link`, so it is not a second kind of link in the same row.
  */
-.demo-switcher {
+.site-header__account {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface-muted);
-}
-
-.demo-switcher__label {
-  margin: 0;
-  max-width: 42ch;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  line-height: var(--line-height-normal);
-}
-
-.demo-switcher__form {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  font-size: var(--font-size-sm);
-}
-
-.demo-switcher__form label {
-  color: var(--color-text);
-  font-weight: var(--font-weight-medium);
-}
-
-.demo-switcher__form select {
-  font: inherit;
-  color: var(--color-text);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
-}
-
-.demo-switcher__reset {
-  font: inherit;
-  color: var(--color-accent);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-
-.demo-switcher__reset:hover {
-  color: var(--color-accent-hover);
-  border-color: var(--color-border-strong);
+  min-width: 0;
 }
 
 /* ── Site footer ─────────────────────────────────────────────────────────── */

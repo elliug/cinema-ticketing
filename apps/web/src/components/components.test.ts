@@ -15,13 +15,10 @@
 //     rather than the only one;
 //   - that the alert keeps telling interruptive messages from polite ones;
 //   - that the `"use client"` boundary stays in the one component that has state;
-//   - and above all that the demo-session sentence in the header is the exported
-//     constant rather than a copy of it, because a copy is a claim that can drift
-//     from the documented one (S2, S8).
+//   - and that the demonstration session stays retired (identity-login T6 · S7).
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
-import { DEMO_SESSION_LABEL } from "../lib/demo-session.ts";
 
 /** Every module of the component set, in the order components/index.ts exports it. */
 const COMPONENT_MODULES = [
@@ -39,6 +36,26 @@ const COMPONENT_MODULES = [
 
 function sourceOf(moduleName: string): string {
   return readFileSync(new URL(`./${moduleName}.tsx`, import.meta.url), "utf8");
+}
+
+/**
+ * Every source file this application ships, under `src/`.
+ *
+ * TypeScript and TSX, and no test file except the caller's own: a rule about what the product
+ * shows is a rule about what it renders, and the tests are not rendered.
+ */
+function sourceFiles(root: URL): URL[] {
+  const found: URL[] = [];
+  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !/\.tsx?$/.test(entry.name) || entry.name.endsWith(".test.ts")) {
+      continue;
+    }
+    if (entry.name === "components.test.ts") {
+      continue;
+    }
+    found.push(new URL(`${entry.parentPath}/${entry.name}`, "file://"));
+  }
+  return found;
 }
 
 test("no component carries its own colour; every value comes from a token", () => {
@@ -90,21 +107,75 @@ test("the alert interrupts for a problem and waits its turn for a confirmation",
   }
 });
 
-test("the header renders the exported demo-session sentence instead of a copy", () => {
+// ── The demonstration session is gone (identity-login T6 · S7) ──────────────
+//
+// This file used to assert the opposite: that the header rendered the exported
+// `DEMO_SESSION_LABEL` sentence rather than a copy of it. That assertion existed because the
+// milestone kept a fake session in the header, and the only thing it could promise was that it
+// granted nothing.
+//
+// `odd/tasks/m35-product-web.md` forbids (S2, S8, L3) presenting the demonstration session as
+// authentication, and the day a real one arrived, keeping the fake one beside it became exactly
+// that claim: two names in one header, one of them a real credential. So the switcher and its
+// module were deleted, and what is pinned here is the absence — the module does not exist, no
+// shipped source mentions it, and the header offers a link that claims nothing instead.
+
+test("the demonstration session is gone from the tree, not merely hidden from the header", () => {
+  for (const removed of ["../lib/demo-session.ts", "../lib/demo-session.test.ts"]) {
+    assert.equal(
+      existsSync(new URL(removed, import.meta.url)),
+      false,
+      `${removed} must not exist: a module nobody renders is a module somebody renders again`,
+    );
+  }
+});
+
+test("no shipped source mentions the demonstration session any more", () => {
+  // Test files are read too, minus this one: an assertion that the session is gone has to be
+  // able to name it. Everything that ships is scanned, because the rule is about what a person
+  // can be shown, not about one component.
+  const forbidden = ["demo-session", "DemoSession", "DEMO_SESSION_LABEL", "demo-switcher"];
+  const offenders: string[] = [];
+
+  for (const file of sourceFiles(new URL("../", import.meta.url))) {
+    const source = readFileSync(file, "utf8");
+    for (const term of forbidden) {
+      if (source.includes(term)) {
+        offenders.push(`${file.pathname.split("/src/")[1]}: ${term}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    "S7 retired the demonstration session; nothing shipped may name it again",
+  );
+});
+
+test("the header offers the way in and claims nothing about who is signed in", () => {
   const source = sourceOf("site-header");
 
-  assert.equal(
-    source.includes("DEMO_SESSION_LABEL"),
-    true,
-    "site-header.tsx must import DEMO_SESSION_LABEL",
+  // The label is the whole affordance. "Sign in" is a link to the screen that asks for one;
+  // "signed in as Ana" would need the cookie, which this component cannot read, and a
+  // client-side guess would hydrate differently from the server's HTML.
+  assert.match(
+    source,
+    /href=\{SIGN_IN_PATH\}[\s\S]{0,120}>\s*Sign in\s*</,
+    "site-header.tsx must link to the sign-in screen, labelled plainly",
   );
-  // The first half of the exported sentence: if it appears verbatim in the
-  // component, the header has its own copy and the two can drift.
-  const snippet = DEMO_SESSION_LABEL.slice(0, 40);
+  for (const claim of ["Signed in as", "Signed out", "Sign out", "Your account"]) {
+    assert.equal(
+      source.includes(claim),
+      false,
+      `the header cannot know "${claim}": that sentence would have to come from the cookie`,
+    );
+  }
+  // The constant, not a second copy of the path: `/sign-in` is one string in this application.
   assert.equal(
-    source.includes(snippet),
+    source.includes('href="/sign-in"'),
     false,
-    "site-header.tsx must render DEMO_SESSION_LABEL, not a copy of its text",
+    "site-header.tsx must use SIGN_IN_PATH rather than restating the route",
   );
 });
 

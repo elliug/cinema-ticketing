@@ -6,11 +6,14 @@
 //   1. this is a local development build of the M3.5 milestone, not a service;
 //   2. tickets and reservations are opened by their identifier — a forwarded link
 //      works for whoever holds it, by design (milestone log, L3);
-//   3. the session switcher is a demonstration. The sentence is the same exported
-//      constant the header renders, so the two can never say different things.
+//   3. signing in is real and optional: a session is what makes "these are your tickets"
+//      something the box office answers instead of something this browser remembers, and
+//      nothing in the purchase path requires one (identity-login T6 · D3, D4, S7).
+//
+// The demonstration session this paragraph used to describe is gone: a fake session labelled
+// beside a real one is a claim that the fake one authenticates somebody, and S7 retired it.
 //
 // No `"use client"`: the footer has no behaviour.
-import { DEMO_SESSION_LABEL } from "@/lib/demo-session";
 
 export function SiteFooter() {
   return (
@@ -26,9 +29,10 @@ export function SiteFooter() {
           anyone.
         </p>
         <p>
-          Tickets and reservations are opened by their identifier, so anyone holding
-          a link sees them — by design, and recorded in the milestone log. The name
-          in the header is the demonstration session: {DEMO_SESSION_LABEL}
+          Tickets and reservations are opened by their identifier, so anyone holding a
+          link sees them — by design, and recorded in the milestone log. There is no
+          demonstration session in this build any more: signing in is real, it is
+          optional, and nothing in the purchase path asks for it.
         </p>
       </div>
     </footer>

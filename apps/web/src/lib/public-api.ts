@@ -24,7 +24,9 @@
 // signed link a purchase email carries (so the web route behind it redeems the tokens
 // in this process and the browser never learns the API's address), and the resend action a
 // ticket page offers (so mailing that link to an address typed there is also a call this
-// process makes, with the address stored nowhere and the hourly bound read from the API).
+// process makes, with the address stored nowhere and the hourly bound read from the API), and
+// the two halves of signing in (so a link is asked for and spent in this process as well, and
+// the browser only ever holds the session cookie this application issues).
 // The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
@@ -70,6 +72,11 @@ export type PublicErrorCode =
   | "rate_limited"
   | "voided"
   | "event_cancelled"
+  // The one refusal the sign-in routes give for a link that was spent, expired or never signed.
+  // It is a code of its own rather than an unreadable answer: without it a page could not tell
+  // the box office's opaque "no" from a body this client failed to parse, and would print a
+  // broken-answer message for a link that was simply used twice.
+  | "unauthorized"
   | "network_error"
   | "unexpected_response";
 
@@ -400,6 +407,33 @@ export interface RedeemTicketInput {
 }
 
 /** One screening of the public catalogue, as `GET /events` answers it. */
+/**
+ * POST /identity/links — the answer of "mail me a sign-in link".
+ *
+ * It carries one bit, because the route carries one: a link that was mailed, one the hourly
+ * allowance refused and one whose counter could not be read all answer the same `202` with the
+ * same body. Nothing here can distinguish them, which is what makes the request safe to send an
+ * address to: the answer is not an oracle for "does this person have an account".
+ */
+export interface PublicSignInLinkRequested {
+  /** Always `true`: the request was accepted, and nothing more was said about it. */
+  accepted: true;
+}
+
+/**
+ * POST /identity/sessions — the session a spent sign-in link opened.
+ *
+ * The `201` is the only moment this token exists in a response: the API sets no cookie, so it is
+ * this application that puts it in one (lib/session.ts), `HttpOnly`, and never puts it anywhere
+ * else — not in a URL, not in a page, not in a log line.
+ */
+export interface PublicSignInSession {
+  /** The opaque session token. A credential: it goes into the cookie and stops there. */
+  token: string;
+  /** When the session stops working, as the row the API wrote keeps it. */
+  expiresAt: string;
+}
+
 export interface PublicScreening {
   /** Event id; the seat page is reached at `/events/{id}/seats`. */
   id: string;
@@ -527,6 +561,39 @@ export interface PublicClient {
   getReservation(reservationId: string): Promise<PublicResult<PublicReservation>>;
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
   getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
+  /**
+   * Asks the box office to mail a sign-in link to this address.
+   *
+   * The single answer covers every outcome the route is allowed to talk about: a link was
+   * mailed, the hourly allowance refused it, or the counter that keeps that allowance could not
+   * be read. All three are `202 {"status":"accepted"}`, deliberately, so a page can only say the
+   * one true thing — "if that address can receive mail, a link is on its way" — instead of
+   * becoming a way to ask whether an account exists.
+   *
+   * The two refusals that are *not* about the address's mailbox:
+   *
+   *   - `400 invalid_input` is the API's own rule refusing the value (or a blank field), and its
+   *     `detail` is the sentence a page prints verbatim;
+   *   - `503 service_unavailable` is a store or a mail provider that could not answer. It is
+   *     retryable, and it decides nothing about the address.
+   *
+   * Nothing is logged here, and the address travels in the body: it is a person, and a problem
+   * that echoed it would put it in page text.
+   */
+  requestSignInLink(email: string): Promise<PublicResult<PublicSignInLinkRequested>>;
+  /**
+   * Spends the token a sign-in email carried, and answers the session it opened.
+   *
+   * A link expires in minutes and works once, so the API answers every way of not opening —
+   * spent, expired, forged, tampered — with one opaque `401` whose body is fixed. It arrives
+   * here as the `unauthorized` problem so a page can render the single honest state that
+   * refusal means; the distinction is not available, and no surface may imply it is.
+   *
+   * A `503` is our failure and stands apart from that refusal: an outage must never read as a
+   * link somebody already used. The token is sent in the body, never in the path, so it does not
+   * spend its life in access logs and `Referer` headers.
+   */
+  redeemSignInLink(token: string): Promise<PublicResult<PublicSignInSession>>;
   /**
    * Redeems the signed link a purchase email carries: the order it opens, and when it
    * stops opening.
@@ -662,6 +729,10 @@ const PROBLEM_CODES: readonly PublicErrorCode[] = [
   // ticket and a cancelled screening are the API's own words for why nobody walks in.
   "voided",
   "event_cancelled",
+  // The opaque refusal of a sign-in link that was spent, expired or never signed. Without it in
+  // this vocabulary the refusal would arrive as an unreadable answer, and the page behind it
+  // could not tell the box office's own "no" from a body that failed to parse.
+  "unauthorized",
   "unexpected_response",
 ];
 
@@ -954,6 +1025,57 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
         return result;
       }
       return parseTicketEmail(result.value);
+    },
+
+    async requestSignInLink(email) {
+      // A blank field is a question this client already answers, and the API's answer to it is
+      // the `400` this refusal mirrors; asking would spend a round trip to learn nothing.
+      const address = email.trim();
+      if (address === "") {
+        return {
+          ok: false,
+          error: invalidInput("an address is needed to send the sign-in link"),
+        };
+      }
+
+      const result = await send<unknown>("/identity/links", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({ email: address }),
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseSignInLinkRequest(result.value);
+    },
+
+    async redeemSignInLink(token) {
+      const presented = token.trim();
+      if (presented === "") {
+        // A link with no token cannot be spent, and the API would only answer it with the
+        // refusal it gives a forged one.
+        return { ok: false, error: invalidInput("this page needs a sign-in link token") };
+      }
+
+      // A write, so no cache: this call spends the link, and a cached answer would be a second
+      // session handed out for a token the store has already consumed.
+      const result = await send<unknown>("/identity/sessions", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({ token: presented }),
+      });
+      if (!result.ok) {
+        return result;
+      }
+      return parseSignInSession(result.value);
     },
 
     async redeemTicketLink(token) {
@@ -1424,6 +1546,68 @@ function parseTicketLink(value: unknown): PublicResult<PublicTicketLink> {
   }
 
   return { ok: true, value: { reservationId, expiresAt, ticketIds } };
+}
+
+/** The one body the link route serves for every outcome it is willing to report. */
+const SIGN_IN_LINK_ACCEPTED = "accepted";
+
+/**
+ * Reads the one acceptance, and refuses every other `202`.
+ *
+ * A `202` says the request was accepted, which is true even when nothing was mailed; only the
+ * body's own word says the route took it in the shape the route documents. Anything else is not
+ * a confirmation, and a client that read it as one would tell a person to wait for a message
+ * nobody promised.
+ */
+function parseSignInLinkRequest(
+  value: unknown,
+): PublicResult<PublicSignInLinkRequested> {
+  if (!isRecord(value) || value.status !== SIGN_IN_LINK_ACCEPTED) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        202,
+        "the sign-in link answer does not say the request was accepted",
+      ),
+    };
+  }
+  return { ok: true, value: { accepted: true } };
+}
+
+/**
+ * Reads the session a spent link opened, and refuses a `201` that is not one.
+ *
+ * Both fields are required and neither is defaulted. An empty token would be a credential that
+ * names nothing, and this application would write it into a cookie; an expiry it cannot read
+ * would become a lifetime invented here, and both possible inventions (a session that never ends,
+ * a session that died at once) are claims about a row nobody read. The token is not echoed in a
+ * refusal: a problem reaches page text and logs.
+ */
+function parseSignInSession(value: unknown): PublicResult<PublicSignInSession> {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(201, "the sign-in answer is not a session"),
+    };
+  }
+  const token = servedString(value.token);
+  if (token === undefined) {
+    return {
+      ok: false,
+      error: unexpectedResponse(201, "the sign-in answer carries no session token"),
+    };
+  }
+  const expiresAt = servedString(value.expiresAt);
+  if (expiresAt === undefined || Number.isNaN(Date.parse(expiresAt))) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        201,
+        "the sign-in answer carries no readable expiresAt, so the session's lifetime is unknown",
+      ),
+    };
+  }
+  return { ok: true, value: { token, expiresAt } };
 }
 
 function parseTicketEmail(value: unknown): PublicResult<PublicTicketEmailSent> {

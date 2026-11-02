@@ -31,7 +31,7 @@ export type { FieldIds, FieldLabelProps, FieldProps } from "./field";
 export { PageHeader } from "./page-header";
 export type { PageHeaderProps } from "./page-header";
 
-export { DemoSessionSwitcher, SITE_NAV, SITE_NAV_PENDING_LABEL, SiteHeader } from "./site-header";
+export { SITE_NAV, SITE_NAV_PENDING_LABEL, SiteHeader } from "./site-header";
 export type { SiteNavItem } from "./site-header";
 
 export { SiteFooter } from "./site-footer";
