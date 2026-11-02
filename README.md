@@ -2,7 +2,7 @@
 
 M0 provides a runnable monorepo baseline for the cinema ticketing system: a Go modular monolith, a Next.js web application, PostgreSQL, Redis, reversible migrations, and CI checks. On top of it, four milestones are delivered: **M1** venues, rooms and versioned layouts; **M2** durable seat holds with per-seat exclusivity and expiry; **M3** the purchase path — a guest holds seats, pays through a simulated provider, and receives a ticket with a signed code and a PDF stored in S3; **M3.5** the product web — catalogue, keyboard-operable seat map, checkout, tickets, and an administration surface that can price and publish a screening.
 
-Identity, reporting and audit do not exist yet. `## What this build does not do` lists them, with what each one currently costs.
+Identity arrived after M3.5 and is **optional**: an account keeps one list, the tickets bought with a proved address, and no route stops being public because of it. Reporting and audit do not exist yet. `## What this build does not do` lists the gaps, with what each one currently costs.
 
 ## Quick path
 
@@ -378,14 +378,14 @@ M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and adm
 | `/events` | the catalogue: screenings on sale, the venue's own hour, price per seat, seats available — one page at a time, with the cursor in the address so the next page is a link a buyer can bookmark, share and reload |
 | `/events/{id}/seats` | the seat map: the real layout, operable with the keyboard alone, states legible without colour |
 | `/reservations/{id}` | the checkout: pays with a key it keeps per reservation, and answers thirteen outcomes as thirteen states |
-| `/tickets/{id}` · `/tickets` | the ticket and the list of what this browser tab kept |
+| `/tickets/{id}` · `/tickets` | the ticket, and the list: the account's, read from the box office, when this browser holds a session; this tab's own note of what it bought when it does not |
 | `/admin/venues` · `/admin/layouts` · `/admin/schedule` | cinemas, layouts and screenings — including the price and the status that put a screening on sale, which travel with the scheduling form so one submit schedules a screening the catalogue already sells |
 | `/admin/door` | the door: one field and one action for the code a buyer shows, and one answer a cashier cannot misread — admitted with its seat and screening, already used with the hour it was first used, not a ticket of ours in the API's own words, or not admissible because the ticket was voided or its screening was cancelled. The code is posted, answered and forgotten: nothing is kept in the browser |
 
 Two things this build is honest about:
 
-- **The session in the header is a demonstration**, not authentication: it grants no access, no page sends it to the API, and the wording is one exported constant so the interface and these lines cannot drift.
-- **"My tickets" is what the tab kept**, because without accounts no route can list a buyer's tickets. Unavailable storage says so rather than showing an empty list.
+- **Signing in is optional, and it protects the list rather than the tickets.** An account exists once an address is proved by a link mailed to it — a link that expires in minutes and works once. It adds exactly one thing: `/tickets` becomes the account's list, read from the box office, so it follows you to another browser, another device and a cleared site. Nobody needs an account to buy a ticket or to open one, and a ticket is opened by its own link, which admits whoever holds it — so login never protected a link already handed out.
+- **Without a session, "My tickets" is what this tab kept**, and it says so. Unavailable storage says it cannot be read rather than showing an empty list, and an account is offered as the way to have a list the box office answers.
 
 `make verify-m35` proves all of it in a real browser: administration creates a screening already priced and on sale in one request, then edits it through the price-and-status form; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
 
@@ -399,7 +399,7 @@ The milestones delivered so far, and what they leave out, are part of the delive
 
 | Not there | What it costs today |
 |---|---|
-| **Identity and authorization** | There are no accounts. A ticket and a reservation are opened by their identifier, so anyone holding the link sees them — by design for M3.5, and recorded in its milestone log. The session in the header is a demonstration that grants nothing. |
+| **Identity and authorization** | Accounts exist, and they authorize one thing: the list of tickets bought with the address a mailed link proved. They are optional — buying a ticket and opening one need no account — and they never protect a link already handed out: a ticket and a reservation are still opened by their identifier, so anyone holding the link sees them. There is no address change and no account deletion, so a person has no way to ask for their data to be removed; a session ends when it expires, and signing out removes this browser's cookie without revoking the row at the box office yet. |
 | **Cashier, reporting and audit** | No takings and no record of who changed what: the door screen admits a ticket once, but nothing counts the evening's takings or says who held the till. The administrative surface is local-only and unauthenticated beyond a shared token. |
 | **Catalogue filters beyond time** | `GET /events` pages with a keyset cursor and bounds each page with `from`/`to`, and nothing else: there is no film or cinema filter until a deployment has more than one cinema. |
 | **Email** | A purchase may carry one address, asked for at the checkout and never verified. Where the deployment configures a mail provider, a worker mails a signed link that expires; with no provider configured nothing is mailed at all. |

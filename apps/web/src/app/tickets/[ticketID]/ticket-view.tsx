@@ -1,7 +1,7 @@
 "use client";
 
 // The presentation of the two ticket surfaces (M3 · T7, M3.5 · T7 · S1, S3, S8):
-// one ticket, and the list of the tickets this browser tab kept.
+// one ticket, and the guest list of the tickets this browser tab kept.
 //
 // Both live in one module because they print the same things — a screening, a seat, an
 // order total, the entry code and the PDF — and because a second copy of that shape is
@@ -23,13 +23,14 @@
 //   - the QR image is what a door checks, and its `alt` names the ticket rather than the
 //     object, because "QR code" repeated on every ticket names nothing.
 //
-// Why a client module at all: the *list* is browser state. There is no identity in this
-// application (milestone log, L3), so the "my tickets" screen cannot be a server-side
-// query — it can only show what this tab kept, which means reading storage after mount.
-// The ticket view shares the module because it is where a ticket is opened, and opening
-// one is what makes this tab remember it. Everything either surface prints is still
-// server-rendered HTML, so both read with JavaScript disabled; only the list's own
-// storage work needs it.
+// Why a client module at all: the *guest* list is browser state. A browser with no session has no
+// account to ask, so the "my tickets" screen can only show what this tab kept, which means reading
+// storage after mount. (A browser that holds a session gets the account's list instead, read from
+// the box office by the page — `apps/web/src/app/tickets/page.tsx` — and drawn with the same
+// [TicketSummary] this module renders.) The ticket view shares the module because it is where a
+// ticket is opened, and opening one is what makes this tab remember it. Everything either surface
+// prints is still server-rendered HTML, so both read with JavaScript disabled; only the guest
+// list's own storage work needs it.
 //
 // Accessibility: one `h1` per surface (the page header's, the screening or the page's
 // own name — never a heading in here), one polite live region per widget (the retention note
@@ -242,7 +243,7 @@ type Retention = "reading" | "kept" | "refused";
 
 const retentionNotices: Record<Retention, string> = {
   reading: "Keeping this ticket in this tab's list…",
-  kept: "This tab now lists this ticket on My tickets. That list is this browser's own note of what it bought — not an account, and not a record the box office keeps.",
+  kept: "This tab now lists this ticket on My tickets. That list is this browser's own note of what it opened here — an account's list is a different one, which the box office answers when you sign in.",
   refused:
     "This tab refused to keep a record of this ticket, so it will not appear on My tickets. The ticket itself is unaffected: this link opens it again at any time.",
 };
@@ -250,10 +251,11 @@ const retentionNotices: Record<Retention, string> = {
 /**
  * Keeps this ticket in the tab's list, once, and reports whether it could.
  *
- * Opening a ticket is the moment this browser learns about it — there is no identity to
- * ask the box office what "my" tickets are (L3), so the purchase link is the only source
- * of truth, and the page records it here. `rememberIssuedTicket` is idempotent, so a
- * double render (React's strict mode in development) costs nothing.
+ * Opening a ticket is the moment this browser learns about it: the purchase link is the source
+ * of truth for a guest, and this note is what makes the next visit find it. An account's list is
+ * the box office's answer instead (`GET /me/tickets`), so the two are different lists and neither
+ * claims to be the other. `rememberIssuedTicket` is idempotent, so a double render (React's
+ * strict mode in development) costs nothing.
  */
 function useKeptInThisTab(ticketId: string): Retention {
   const [retention, setRetention] = useState<Retention>("reading");
@@ -395,11 +397,13 @@ export interface KeptTicketListProps {
 }
 
 /**
- * "My tickets": the ticket ids this browser tab kept, each one re-read.
+ * "My tickets" for a browser with no session: the ticket ids this tab kept, each one re-read.
  *
- * This screen admits what it is, in its own words: it is a note this tab keeps, not an
- * account, and every id on it is read from the box office again rather than trusted. Its
- * states stay apart, because each one means something different:
+ * This is the guest half of the screen, and it admits what it is in its own words: it is a note
+ * this tab keeps, not an account's list, and every id on it is read from the box office again
+ * rather than trusted. (A browser that holds a session gets the account's list instead — see
+ * `apps/web/src/app/tickets/page.tsx`.) Its states stay apart, because each one means something
+ * different:
  *
  *   1. the tab's records are still being read (a real region, not a blank list);
  *   2. this browser will not let the page read what it keeps — which is not "no
@@ -562,9 +566,9 @@ export function KeptTicketList({ readTicket }: KeptTicketListProps) {
           </ul>
 
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This list is what this browser tab kept, not an account: nothing on this page
-            checks who you are, and a forwarded ticket link opens the same ticket for
-            whoever holds it.
+            This list is what this browser tab kept, not an account&apos;s list: no session is
+            signed in on this browser, so nothing here is read by name — and a forwarded ticket
+            link opens the same ticket for whoever holds it.
           </p>
         </section>
       ) : null}
@@ -596,6 +600,66 @@ function announceKept(
     : `${ids.length} tickets this tab kept, read from the box office.`;
 }
 
+/**
+ * One ticket of a list, in the shape both lists print.
+ *
+ * The guest list draws this for a ticket it could read, and the account's list draws it too
+ * (`apps/web/src/app/tickets/page.tsx`), because a second rendering of a ticket is how two
+ * screens start disagreeing about the film, the hour, the seat or the money. It is a client
+ * component only because the module it lives in is one; it takes nothing but the ticket, so a
+ * server component can render it.
+ */
+export function TicketSummary({ ticket }: { ticket: PublicTicket }) {
+  // The heading id is derived from the ticket id and stripped of whitespace, so the
+  // `aria-labelledby` target is always a valid id and always unique per row.
+  const headingId = `kept-ticket-${ticket.ticketId.replace(/\s+/g, "-")}`;
+  const title =
+    ticket.event.filmTitle.trim() === "" ? "A screening" : ticket.event.filmTitle;
+  const venue = [ticket.event.cinemaName, ticket.event.roomName]
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join(" · ");
+  const startsAt = ticket.event.startsAt === "" ? undefined : ticket.event.startsAt;
+
+  return (
+    <Card aria-labelledby={headingId} className="flex flex-col gap-3 p-5">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <h3 id={headingId} className="m-0 text-base font-semibold break-words">
+          {title}
+        </h3>
+        <Badge variant="outline">
+          {ticket.status.trim() === "" ? "status not served" : ticket.status.trim()}
+        </Badge>
+      </div>
+      <p className="m-0 break-words text-sm">
+        <span className="text-muted-foreground">{venue === "" ? "Venue not served" : venue}</span>
+        {venue === "" ? null : <span className="text-muted-foreground"> · </span>}
+        <time dateTime={startsAt} className="font-medium">
+          {ticket.event.startsAtLocal}
+        </time>
+        <span className="text-muted-foreground">
+          {ticket.event.timezone === "" ? "" : ` (${ticket.event.timezone})`}
+        </span>
+      </p>
+      <p className="m-0 break-words text-sm">
+        <span className="text-muted-foreground">Seat </span>
+        <span className="font-medium">
+          {ticket.seats.length === 0
+            ? "not served"
+            : ticket.seats.map(ticketSeatLabel).join(", ")}
+        </span>
+      </p>
+      {/* The checkout's own link shape: the ticket page and the PDF, printed the same
+          way on the confirmation and here. */}
+      <IssuedTickets ticketIds={[ticket.ticketId]} />
+      <p className="m-0 max-w-prose text-sm text-muted-foreground">
+        Whether this ticket still admits you is answered by the box office when it is
+        scanned, not by this list. Open it to see the answer for this moment.
+      </p>
+    </Card>
+  );
+}
+
 /** One kept ticket, in whichever of its four states it is. */
 function KeptTicketCard({
   ticketId,
@@ -621,55 +685,7 @@ function KeptTicketCard({
   }
 
   if (row.kind === "found") {
-    const { ticket } = row;
-    // The heading id is derived from the ticket id and stripped of whitespace, so the
-    // `aria-labelledby` target is always a valid id and always unique per row.
-    const headingId = `kept-ticket-${ticketId.replace(/\s+/g, "-")}`;
-    const title =
-      ticket.event.filmTitle.trim() === "" ? "A screening" : ticket.event.filmTitle;
-    const venue = [ticket.event.cinemaName, ticket.event.roomName]
-      .map((part) => part.trim())
-      .filter((part) => part !== "")
-      .join(" · ");
-    const startsAt = ticket.event.startsAt === "" ? undefined : ticket.event.startsAt;
-
-    return (
-      <Card aria-labelledby={`kept-${ticketId}`} className="flex flex-col gap-3 p-5">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <h3 id={headingId} className="m-0 text-base font-semibold break-words">
-            {title}
-          </h3>
-          <Badge variant="outline">
-            {ticket.status.trim() === "" ? "status not served" : ticket.status.trim()}
-          </Badge>
-        </div>
-        <p className="m-0 break-words text-sm">
-          <span className="text-muted-foreground">{venue === "" ? "Venue not served" : venue}</span>
-          {venue === "" ? null : <span className="text-muted-foreground"> · </span>}
-          <time dateTime={startsAt} className="font-medium">
-            {ticket.event.startsAtLocal}
-          </time>
-          <span className="text-muted-foreground">
-            {ticket.event.timezone === "" ? "" : ` (${ticket.event.timezone})`}
-          </span>
-        </p>
-        <p className="m-0 break-words text-sm">
-          <span className="text-muted-foreground">Seat </span>
-          <span className="font-medium">
-            {ticket.seats.length === 0
-              ? "not served"
-              : ticket.seats.map(ticketSeatLabel).join(", ")}
-          </span>
-        </p>
-        {/* The checkout's own link shape: the ticket page and the PDF, printed the same
-            way on the confirmation and here. */}
-        <IssuedTickets ticketIds={[ticket.ticketId]} />
-        <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          Whether this ticket still admits you is answered by the box office when it is
-          scanned, not by this list. Open it to see the answer for this moment.
-        </p>
-      </Card>
-    );
+    return <TicketSummary ticket={row.ticket} />;
   }
 
   // Unknown and unreadable are different facts, and only the first one offers to be
@@ -726,8 +742,8 @@ function NothingKept({ unreadable }: { unreadable: number }) {
       <h2 id="kept-empty">This tab has kept no ticket</h2>
       <p className="m-0 max-w-prose">
         This screen shows the tickets this browser kept from the purchases it made in it,
-        so it is empty until one is opened here. It is not an account, and the box office
-        keeps no list this page can ask for.
+        so it is empty until one is opened here. It is not an account&apos;s list — no session
+        is signed in on this browser, so the box office has no list to answer for it.
       </p>
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
         A ticket is opened by its own link: the one your payment returned, or the PDF you

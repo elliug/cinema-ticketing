@@ -2143,3 +2143,172 @@ test("a code outside the vocabulary is still an unreadable answer, never a code 
   assert.equal(problem.code, "unexpected_response");
   assert.equal(problem.status, 418);
 });
+
+// ── The account's own list (identity-login T7 · S5, D3) ─────────────────────
+//
+// `GET /me/tickets` is the first request in this application that carries a credential to the
+// API. The token is the one this application keeps in its own `HttpOnly` cookie (lib/session.ts)
+// and presents here on the server's behalf, because the API sets no cookie and knows nothing
+// about this application's jar. Three rules follow from that, and they are the ones tested:
+//
+//   - the credential travels in the `Authorization` header and nowhere else — never in the path,
+//     never in a query string, never in the body, and never logged;
+//   - its two refusals stay readable as what they are. A `401` is the opaque refusal the sign-in
+//     route already gives (a session that expired, was revoked or never existed), and a `503` is
+//     our failure and retryable. An outage must never arrive as a sign-out;
+//   - the body is the ticket page's own projection or it is refused. An empty account answers
+//     `{"tickets": []}`, so a missing list is a broken answer, not a list of nothing.
+
+test("myTickets reads GET /me/tickets with the session as a bearer, and never in the URL", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, { tickets: [TICKET_BODY] }));
+
+  const list = unwrap(await makeClient(recorder).myTickets("session-token-1"));
+
+  const call = recorder.calls[0];
+  assert.equal(call.url, `${BASE_URL}/api/v1/me/tickets`);
+  assert.equal(call.init.method, "GET");
+  // A read: no key, no body, and no cache that could answer a second person with the first
+  // person's list.
+  assert.equal(call.init.cache, "no-store");
+  assert.equal(call.init.body, undefined);
+  assert.equal(headerValue(call.init, "Idempotency-Key"), undefined);
+  // The one credential this client ever sends, in the one place a credential belongs.
+  assert.equal(headerValue(call.init, "Authorization"), "Bearer session-token-1");
+  assert.equal(
+    call.url.includes("session-token-1"),
+    false,
+    "a token in an address spends its life in access logs and Referer headers",
+  );
+
+  // The list is the ticket page's own document, so the row a person reads here and the ticket
+  // page they open cannot disagree about the film, the hour, the seat or the amount.
+  assert.equal(list.tickets.length, 1);
+  assert.equal(list.tickets[0].ticketId, "ticket-1");
+  assert.equal(list.tickets[0].event.startsAtLocal, "2026-05-04T20:30:00+02:00");
+  assert.deepEqual(list.tickets[0].seats, [
+    { eventSeatId: 11, rowLabel: "A", seatNumber: "1" },
+  ]);
+  assert.equal(list.tickets[0].orderAmountDisplay, "19.98");
+  assert.equal(list.tickets[0].qrToken, "cGF5bG9hZA.c2ln");
+});
+
+test("myTickets keeps the served order, which is newest first and never re-sorted here", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(200, {
+      tickets: [
+        { ...TICKET_BODY, ticketId: "ticket-b", issuedAt: "2026-05-05T18:30:00Z" },
+        { ...TICKET_BODY, ticketId: "ticket-a", issuedAt: "2026-05-05T18:30:00Z" },
+        { ...TICKET_BODY, ticketId: "ticket-c", issuedAt: "2026-05-04T18:30:00Z" },
+      ],
+    }),
+  );
+
+  const list = unwrap(await makeClient(recorder).myTickets("session-token-1"));
+
+  // Two tickets of one order share an instant, and the API breaks that tie by identifier; a
+  // client that sorted again would be a second opinion about somebody's history.
+  assert.deepEqual(
+    list.tickets.map((entry) => entry.ticketId),
+    ["ticket-b", "ticket-a", "ticket-c"],
+  );
+});
+
+test("an empty account is a list of nothing, not a refusal and not an error", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, { tickets: [] }));
+
+  const list = unwrap(await makeClient(recorder).myTickets("session-token-1"));
+
+  assert.deepEqual(list.tickets, []);
+});
+
+test("the account's opaque 401 is the unauthorized code, with or without a body to read", async () => {
+  // The route answers the login route's own fixed body. Two of them must read the same, because
+  // the browser cannot tell a session that expired from one that was revoked — that is the point.
+  const withBody = recordingFetch(() =>
+    jsonResponse(401, {
+      type: "https://cinema.local/problems/unauthorized",
+      title: "Unauthorized",
+      status: 401,
+      code: "unauthorized",
+      detail: "this sign-in link cannot be used",
+    }),
+  );
+  const withoutBody = recordingFetch(() => new Response("", { status: 401 }));
+
+  for (const recorder of [withBody, withoutBody]) {
+    const problem = unwrapError(await makeClient(recorder).myTickets("session-token-1"));
+
+    assert.equal(problem.code, "unauthorized");
+    assert.equal(problem.status, 401);
+    // A credential never reaches page text: a refusal is printed by a surface.
+    assert.equal(JSON.stringify(problem).includes("session-token-1"), false);
+  }
+});
+
+test("a store that cannot answer is retryable, and never a silent sign-out", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "your tickets cannot be read right now; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).myTickets("session-token-1"));
+
+  assert.equal(problem.code, "service_unavailable");
+  assert.equal(problem.status, 503);
+  assert.notEqual(problem.code, "unauthorized");
+  // A 503 whose body this client cannot read is still the same retryable failure, because the
+  // status is the API's own word for "not now".
+  const bodiless = recordingFetch(() => new Response("", { status: 503 }));
+  assert.equal(
+    unwrapError(await makeClient(bodiless).myTickets("session-token-1")).code,
+    "service_unavailable",
+  );
+});
+
+test("a body without a ticket list is refused instead of half-rendered", async () => {
+  // An empty account answers `{"tickets": []}`. Anything else is a broken read, and reading it
+  // as nothing bought would be a claim about somebody's account that nobody made.
+  for (const body of [
+    {},
+    { tickets: null },
+    { tickets: { ticketId: "ticket-1" } },
+    { events: [] },
+    [],
+  ]) {
+    const recorder = recordingFetch(() => jsonResponse(200, body));
+
+    const problem = unwrapError(await makeClient(recorder).myTickets("session-token-1"));
+
+    assert.equal(
+      problem.code,
+      "unexpected_response",
+      `a 200 answering ${JSON.stringify(body)} must not become a list`,
+    );
+  }
+
+  // One unreadable entry refuses the whole list: dropping it would hide a ticket the account
+  // owns, and printing it would render half a ticket.
+  const broken = recordingFetch(() =>
+    jsonResponse(200, {
+      tickets: [TICKET_BODY, { ticketId: "ticket-2", status: "issued" }],
+    }),
+  );
+  assert.equal(
+    unwrapError(await makeClient(broken).myTickets("session-token-1")).code,
+    "unexpected_response",
+  );
+});
+
+test("a blank session is refused before anything leaves the process", async () => {
+  const recorder = recordingFetch(() => jsonResponse(200, { tickets: [] }));
+
+  const problem = unwrapError(await makeClient(recorder).myTickets("   "));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(recorder.calls.length, 0);
+});
