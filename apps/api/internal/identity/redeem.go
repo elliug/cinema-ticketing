@@ -44,6 +44,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"cinema.local/ticketing/apps/api/internal/venue"
@@ -63,6 +64,23 @@ var (
 	ErrLinkUnavailable = errors.New("identity: the identity store did not answer")
 )
 
+// Redemption is what a committed redemption wrote, as far as anybody outside the transaction
+// may know: which account the link verified, and how many older orders that address claimed
+// (D5). It carries no address on purpose — the identifier is what the log and the caller can
+// join on, and the mailbox has already served its purpose by the time this value exists.
+//
+// Claimed is the rows the claim statement touched, which is why the store reads it from
+// `RowsAffected` instead of counting: a count computed here could disagree with what the
+// transaction wrote, and the log would then describe something that did not happen.
+type Redemption struct {
+	// CustomerID is the account the transaction resolved: a new row on a first sign-in, the
+	// existing one afterwards.
+	CustomerID string
+	// Claimed is how many orders the verified address took over. Zero is an ordinary answer —
+	// an account with no history — and not a failure.
+	Claimed int
+}
+
 // RedemptionStore is everything the redeemer needs from storage: one transaction that either
 // spends the link and writes everything it proves, or writes nothing at all. It is a single
 // method on purpose — a store assembled from separate calls could be committed in halves, which
@@ -71,17 +89,19 @@ type RedemptionStore interface {
 	// Redeem spends the link the claim names, verifies the address it carries, claims the
 	// orders placed with that address, and writes the session — all in one transaction, in that
 	// order. It answers [ErrLinkSpent] when the link cannot be spent and [ErrLinkUnavailable]
-	// when the store could not answer; a failure it reports must leave nothing written.
-	Redeem(ctx context.Context, claim AccessClaims, session Session, tokenHash []byte) error
+	// when the store could not answer; a failure it reports must leave nothing written, and it
+	// then answers no redemption at all.
+	Redeem(ctx context.Context, claim AccessClaims, session Session, tokenHash []byte) (Redemption, error)
 }
 
 // Redeemer turns one presented link into one session. It holds the signer that owns the key and
-// the link lifetime, the store, and the session lifetime; it holds no clock, so the session
-// begins at the instant of the call.
+// the link lifetime, the store, the session lifetime and the logger the claim is recorded in;
+// it holds no clock, so the session begins at the instant of the call.
 type Redeemer struct {
 	signer *AccessSigner
 	store  RedemptionStore
 	ttl    time.Duration
+	logger *slog.Logger
 }
 
 // NewRedeemer builds the redeeming half and refuses a wiring that could not open a session.
@@ -90,7 +110,10 @@ type Redeemer struct {
 // login step lives would sign everybody out before they finished reading the page. The lifetime
 // is not a sentinel error because configuration refuses it before a process starts (see
 // API_SESSION_TTL); this guard is for a programmatically built value.
-func NewRedeemer(signer *AccessSigner, store RedemptionStore, ttl time.Duration) (*Redeemer, error) {
+//
+// A nil logger is the process's own, the way the email worker treats its own: a redeemer that
+// refused to be built without one would turn a missing log into a login nobody can perform.
+func NewRedeemer(signer *AccessSigner, store RedemptionStore, ttl time.Duration, logger *slog.Logger) (*Redeemer, error) {
 	if signer == nil {
 		return nil, errors.New("identity: a redeemer needs a signer, and it was given none")
 	}
@@ -100,10 +123,14 @@ func NewRedeemer(signer *AccessSigner, store RedemptionStore, ttl time.Duration)
 	if ttl <= 0 {
 		return nil, fmt.Errorf("identity: the session lifetime must be positive, got %s", ttl)
 	}
-	return &Redeemer{signer: signer, store: store, ttl: ttl}, nil
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Redeemer{signer: signer, store: store, ttl: ttl, logger: logger}, nil
 }
 
-// Redeem verifies one link and answers the session token it opens, once.
+// Redeem verifies one link and answers the session token it opens, once, together with how many
+// orders the verified address claimed.
 //
 // The order is the contract. The token is verified before anything is minted, so a forged or
 // expired link cannot even cause a session token to exist, and the expiry is the signer's
@@ -113,10 +140,22 @@ func NewRedeemer(signer *AccessSigner, store RedemptionStore, ttl time.Duration)
 //
 // The returned session describes what this layer knew when it asked for the write: the row's
 // identifier, the instant it was created and when it ends. The account it belongs to is decided
-// inside the store's transaction and is empty here — see the file comment.
-func (r *Redeemer) Redeem(ctx context.Context, token string) (string, Session, error) {
-	if r == nil || r.signer == nil || r.store == nil {
-		return "", Session{}, errors.New("identity: a redeemer needs a signer and a store, and it was built without them")
+// inside the store's transaction and is empty here — see the file comment. The claimed count is
+// the store's answer and not a second count kept beside it, so the line this function writes
+// says what the transaction actually wrote.
+//
+// A successful redemption writes that one line. D5 says the claim of older orders is recorded
+// in the log, and the redemption is the only place that knows the whole of it: which account now
+// owns them and how many there were. The line carries those two facts and nothing else — the
+// address is a person, the link and the token are credentials, and their hashes are what a
+// database dump already holds. Zero claimed is still one line: an account with no purchase
+// behind it is a fact an operator may need, and a branch that logs only when something was
+// claimed is a branch nothing exercises. A refusal writes nothing here at all: it has already
+// been accounted for by whoever answered the person, and a line about a link somebody presented
+// is a line about a credential.
+func (r *Redeemer) Redeem(ctx context.Context, token string) (string, Session, int, error) {
+	if r == nil || r.signer == nil || r.store == nil || r.logger == nil {
+		return "", Session{}, 0, errors.New("identity: a redeemer needs a signer, a store and a logger, and it was built without one of them")
 	}
 
 	now := time.Now().UTC()
@@ -124,12 +163,12 @@ func (r *Redeemer) Redeem(ctx context.Context, token string) (string, Session, e
 	if err != nil {
 		// Forwarded as it is: the signer already refuses without naming the token, the address
 		// or the nonce, and its two answers are the ones the surface can act on.
-		return "", Session{}, err
+		return "", Session{}, 0, err
 	}
 
 	sessionToken, err := NewSessionToken()
 	if err != nil {
-		return "", Session{}, err
+		return "", Session{}, 0, err
 	}
 	session := Session{
 		// The project's one UUID minter, so a session id is shaped like every other id here.
@@ -137,10 +176,14 @@ func (r *Redeemer) Redeem(ctx context.Context, token string) (string, Session, e
 		CreatedAt: now,
 		ExpiresAt: now.Add(r.ttl),
 	}
-	if err := r.store.Redeem(ctx, claims, session, HashSessionToken(sessionToken)); err != nil {
+	redemption, err := r.store.Redeem(ctx, claims, session, HashSessionToken(sessionToken))
+	if err != nil {
 		// The token dies here. The error is wrapped so errors.Is finds ErrLinkSpent or
 		// ErrLinkUnavailable, and it never carries the token or the address.
-		return "", Session{}, fmt.Errorf("identity: redeem the access link: %w", err)
+		return "", Session{}, 0, fmt.Errorf("identity: redeem the access link: %w", err)
 	}
-	return sessionToken, session, nil
+
+	r.logger.Info("identity: address verified",
+		"customer", redemption.CustomerID, "claimed", redemption.Claimed)
+	return sessionToken, session, redemption.Claimed, nil
 }

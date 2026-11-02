@@ -279,6 +279,15 @@ segundo.
   esperaba el orden ascendente mientras la consulta desempata descendente. El fallo era del test, no
   de la consulta, y se corrigió el test — no la consulta.
 
+- **Slice 6 — el reclamo se anota (T5)**: la redención devuelve ahora `Redemption{CustomerID,
+  Claimed}` —el número sale del `RowsAffected` de la propia sentencia de reclamo, no de un segundo
+  conteo— y el `Redeemer` escribe **una** línea al terminar bien:
+  `identity: address verified` con `customer=<id>` y `claimed=<n>`. Ni la dirección, ni el enlace, ni
+  el token, ni un hash; una redención rechazada no escribe nada. El recuento **no** viaja al cliente:
+  cuántos pedidos reclamó una cuenta no es asunto de quien llama, y el cuerpo del `201` sigue siendo
+  exactamente el mismo. Cero reclamados también se registra: una cuenta nueva sin historial es un
+  dato, y una rama que solo loguea cuando `n > 0` es una rama que nadie prueba.
+
 ## Revisión nativa
 
 | PR | Lentes | Resultado |
