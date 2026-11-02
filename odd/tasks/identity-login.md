@@ -279,6 +279,29 @@ segundo.
   esperaba el orden ascendente mientras la consulta desempata descendente. El fallo era del test, no
   de la consulta, y se corrigió el test — no la consulta.
 
+## Revisión nativa
+
+| PR | Lentes | Resultado |
+|---|---|---|
+| #111 | risk, resilience | aprobada, autoridad quemada |
+| #112 | risk, resilience | aprobada, autoridad quemada |
+| #113 | — (documentación) | sin revisión: no hay cambio ejecutable |
+| #114 | risk, resilience | aprobada, autoridad quemada |
+| #115 | risk, resilience | aprobada, autoridad quemada |
+| #116 | risk, resilience | **risk admitido; resilience nunca admitido** |
+
+En #116 el modelo del lente de resiliencia emite un payload con un campo `evidence` en la raíz **y**
+dentro de cada hallazgo, que no está en el esquema del admittedor: `json: unknown field "evidence"`,
+rechazado dos veces y con el segundo intento devolviendo los mismos bytes en 143 ms. Se intentó lo
+que manda el proveedor —`STATUS` fresco y sólo ese slot— y el `start` posterior respondió
+`"action": "replayed"`: no había nada nuevo que ejecutar. La autoridad quedó **sin quemar** y el
+payload rechazado conservado por el proveedor.
+
+Decisión del responsable del producto: **fusionar** con la carencia escrita, como en el gate del
+email, y **abandonar el linaje** después. La revisión local fue completa —`go test ./apps/api/...`
+verde, el gated contra PostgreSQL real pasado, y el flujo probado a mano de punta a punta— así que lo
+que falta es una vista externa, no una comprobación.
+
 ## Log
 
 - **L1** — Petición del usuario, literal: «estaba login y pago, con qué continuamos?» Elegido en la
