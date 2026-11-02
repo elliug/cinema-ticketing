@@ -19,6 +19,7 @@
 // The words are the part that must not drift: none of them may claim an address was verified, and
 // none may carry a credential.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   describeAccountTickets,
@@ -216,4 +217,23 @@ test("no state claims an address was verified, and none carries a credential", (
       );
     }
   }
+});
+
+test("the account's screen offers the way out, through the one sign-out there is", () => {
+  const page = readFileSync(new URL("../app/tickets/page.tsx", import.meta.url), "utf8");
+
+  // A signed-in person on this screen has no other exit: the header cannot know the session
+  // exists, and `/sign-in` is a screen they have no reason to visit. The action is imported
+  // rather than reimplemented, so "ask the box office, then clear this browser" stays one piece
+  // of code with one order.
+  assert.match(
+    page,
+    /import \{ signOutAction \} from "@\/app\/sign-in\/actions"/,
+    "the tickets screen must use the existing sign-out action, not invent a second one",
+  );
+  assert.equal(
+    (page.match(/<form action=\{signOutAction\}/g) ?? []).length,
+    2,
+    "both signed-in states (a list, and an account that bought nothing) must offer sign-out",
+  );
 });
