@@ -41,6 +41,10 @@ import type { TicketResponse } from "@/lib/public-api";
 import { createPublicClient, resolvePublicConfig } from "@/lib/public-api";
 import { readSessionToken } from "@/lib/session";
 import { clearDeadSessionAction, readAccountTicketsAction } from "./actions";
+// The sign-out action belongs to the account surface, not to the screen that asks for a link:
+// a person who is signed in needs it here, and importing the action is what keeps one
+// implementation of "ask the box office, then clear this browser".
+import { signOutAction } from "@/app/sign-in/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -127,6 +131,16 @@ async function AccountTickets() {
           device show the same tickets. A ticket is still opened by its own link, which admits
           whoever holds it.
         </p>
+        <form action={signOutAction} className="flex flex-wrap items-center gap-2 pt-1">
+          <Button type="submit" size="sm" variant="outline">
+            Sign out
+          </Button>
+          {/* Said plainly, because the button now does two things and used to do one: the row
+              behind this cookie is revoked at the box office, not just forgotten here. */}
+          <span className="text-sm text-muted-foreground">
+            Ends this session at the box office too, not only in this browser.
+          </span>
+        </form>
       </section>
     );
   }
@@ -137,10 +151,17 @@ async function AccountTickets() {
         <h2 id="account-empty">{view.headline}</h2>
         <p className="m-0 max-w-prose">{view.message}</p>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">{view.nextStep}</p>
-        <div className="flex flex-wrap gap-2 pt-1">
+        <div className="flex flex-wrap items-center gap-2 pt-1">
           <Button asChild size="sm">
             <Link href="/events">See what is on sale</Link>
           </Button>
+          {/* A signed-in account with nothing to show still needs the way out, or the only exit
+              is a screen this person has no reason to visit. */}
+          <form action={signOutAction}>
+            <Button type="submit" size="sm" variant="outline">
+              Sign out
+            </Button>
+          </form>
         </div>
       </Card>
     );
