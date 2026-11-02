@@ -4,8 +4,9 @@ Estudio previo a la implementación. Cinco decisiones que solo puede tomar el re
 producto, y un conjunto de restricciones que el código existente impone y que no son negociables
 sin reescribir contratos documentados.
 
-Estado: **estudio cerrado, decisiones tomadas** (D1–D5, ver L2). No hay código todavía: este
-documento es la especificación de la feature.
+Estado: **entregado y en `main`**, en nueve PRs encadenadas. Lo que sigue abierto no es la feature:
+son sus límites, escritos al final, y una carencia de revisión que está documentada con nombre y
+apellidos en la sección homónima.
 
 ## Decisiones tomadas
 
@@ -300,6 +301,30 @@ segundo.
   La cookie es `HttpOnly`, `SameSite=Lax`, `path=/` y `Secure` **solo** cuando la petición es https,
   porque el demo local va en http y una cookie `Secure` allí nunca se escribe; su `maxAge` se redondea
   a la baja desde el instante que respondió el API, para que la cookie no sobreviva a su fila.
+
+- **Slice 8 — `/tickets` lee la cuenta** (`feat(web): my tickets is the account's list when there is
+  a session`): con sesión, la pantalla es la respuesta del box office para esa cuenta; sin sesión es
+  la nota de la pestaña, que sigue existiendo porque la compra de invitado no cambia (D4).
+  Es la **primera** petición de la aplicación que lleva una credencial, y el token solo aparece en
+  esa cabecera: ni en una URL, ni en un log, ni en una caché.
+  Tres estados distintos, no dos: lista, lista vacía y **no se pudo leer**. Una lista vacía es una
+  afirmación sobre la cuenta, así que una caída nunca puede mostrarla. Y cuando la sesión muere
+  entre la página y su lectura, la pantalla lo dice y ofrece un botón que borra la cookie y lleva a
+  la entrada — borrarla durante el render no está permitido, de ahí que sea un formulario.
+
+- **Slice 9 — el gate** (`test(gate): prove the login end to end, or it is only claimed`):
+  `make verify-identity` sobre su propio stack, con Mailpit arrancado a propósito porque este flujo
+  necesita correo. Prueba la cadena entera: una compra con dirección no pertenece a nadie → pedir el
+  enlace responde `202` y llega **un** mensaje con `/in/<token>` → ese token canjea **una vez** en
+  una sesión cuya fila guarda su **SHA-256** y no el token, y reclama el pedido anterior → la lista
+  responde exactamente esas entradas, mientras sin token y con uno nunca emitido responden el mismo
+  `401` opaco → el mismo enlace otra vez responde igual y no escribe una segunda sesión → tres
+  enlaces por dirección se admiten y los cuatro siguientes responden **el mismo `202`** sin mensaje
+  → y una sesión cerrada con SQL responde ese mismo `401`, porque la fila decide.
+  Las propiedades se probaron por mutación sobre copias del script: hashear otra cadena, excluir el
+  pedido del reclamo y esperar cuatro negativas donde la ventana permite tres producen cada una su
+  fallo con nombre. La revocación se prueba **como predicado, no como flujo**: todavía no hay ruta
+  de cerrar sesión, y la cabecera del gate lo dice en vez de insinuar lo contrario.
 
 ## Revisión nativa
 
