@@ -288,6 +288,19 @@ segundo.
   exactamente el mismo. Cero reclamados también se registra: una cuenta nueva sin historial es un
   dato, y una rama que solo loguea cuando `n > 0` es una rama que nadie prueba.
 
+- **Slice 7 — la web del acceso** (`feat(web): a real sign-in, and the demonstration session
+  retires`): pantalla de acceso, `/in/<token>`, cookie de sesión y **retirada de la sesión de
+  demostración** (S7) — su módulo, su conmutador, su CSS y el test que la afirmaba.
+  El detalle que no se ve en el diff: la página `/in/<token>` **no** escribe la cookie desde su
+  propio render, porque Next solo permite `cookies().set()` en fase de acción y un componente de
+  servidor que lo intente lanza en **ejecución** — algo que el build nunca habría detectado.
+  Renderiza un formulario atado a una acción de servidor que canjea, escribe la cookie y redirige;
+  el formulario se envía solo al llegar, con el botón como camino sin JavaScript. El efecto
+  secundario es deseable: **el `GET` de un escáner de correo no puede gastar el enlace**.
+  La cookie es `HttpOnly`, `SameSite=Lax`, `path=/` y `Secure` **solo** cuando la petición es https,
+  porque el demo local va en http y una cookie `Secure` allí nunca se escribe; su `maxAge` se redondea
+  a la baja desde el instante que respondió el API, para que la cookie no sobreviva a su fila.
+
 ## Revisión nativa
 
 | PR | Lentes | Resultado |
@@ -298,6 +311,7 @@ segundo.
 | #114 | risk, resilience | aprobada, autoridad quemada |
 | #115 | risk, resilience | aprobada, autoridad quemada |
 | #116 | risk, resilience | **risk admitido; resilience nunca admitido** |
+| #119 | risk, resilience | **risk admitido; resilience nunca admitido** |
 
 En #116 el modelo del lente de resiliencia emite un payload con un campo `evidence` en la raíz **y**
 dentro de cada hallazgo, que no está en el esquema del admittedor: `json: unknown field "evidence"`,
@@ -305,6 +319,16 @@ rechazado dos veces y con el segundo intento devolviendo los mismos bytes en 143
 que manda el proveedor —`STATUS` fresco y sólo ese slot— y el `start` posterior respondió
 `"action": "replayed"`: no había nada nuevo que ejecutar. La autoridad quedó **sin quemar** y el
 payload rechazado conservado por el proveedor.
+
+En #119 ocurrió lo mismo por otra puerta: **`evidence references a path outside the frozen
+repository`**. El lente de resiliencia citó una ruta que no existe en el candidato congelado, y el
+reintento del mismo slot devolvió los mismos bytes en 177 ms. Dos PRs, cinco intentos, y el mismo
+patrón: el reviewer de ese lente escribe un payload que el contrato del proveedor rechaza.
+
+Lo que esto **no** significa: que el código no se haya mirado. En las dos PRs se admitió el lente de
+riesgo, el CI completo pasó —incluidos `verify-email` y el gate de migraciones— y la revisión local
+fue entera: tests unitarios, tests contra PostgreSQL real y, en #114, el flujo de extremo a extremo
+con `curl` y Mailpit. Lo que falta es una segunda opinión, no una comprobación.
 
 Decisión del responsable del producto: **fusionar** con la carencia escrita, como en el gate del
 email, y **abandonar el linaje** después. La revisión local fue completa —`go test ./apps/api/...`
