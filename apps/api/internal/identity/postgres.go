@@ -25,6 +25,15 @@
 // the hash it is given, and the account the transaction just resolved — and it never sees the
 // token, only its digest (S1).
 //
+// # What one redemption answers besides "it worked"
+//
+// It answers which account the link verified and how many orders that address claimed, because
+// D5 records the claim in the log and nowhere else: no column says "claimed", and a table of
+// past claims would be a second history of the same fact, aging beside the rows it describes.
+// The count is the claim statement's own `RowsAffected`, read after the commit so it describes
+// work that survived; a number computed separately from the write could describe nothing at
+// all.
+//
 // # What the statements refuse
 //
 // The guards live in the SQL as well as in the calling code, because this store is not the only
@@ -41,7 +50,9 @@
 //   - the account's `verified_at` keeps its first value, so a second sign-in records a new
 //     session without rewriting when the mailbox was first proved;
 //   - claiming orders matches the address exactly and only touches rows that have no account
-//     yet, so a verified address cannot take over an order somebody else already owns.
+//     yet, so a verified address cannot take over an order somebody else already owns, and the
+//     redemption reports the rows that statement matched — the claim is recorded in the log,
+//     and a number computed apart from the write could be a number about nothing.
 package identity
 
 import (
@@ -181,24 +192,26 @@ func (s *PostgresStore) Save(ctx context.Context, link AccessLink) error {
 //     refused a token whose window closed; this is the row's independent record of when the
 //     link was issued, and it wins if the two ever disagree.
 //  4. Find or create the account, and write the first `verified_at` (S3).
-//  5. Claim the unowned orders placed with that address (D5).
+//  5. Claim the unowned orders placed with that address (D5), and keep the number of rows the
+//     statement matched: D5 asks for the claim to be recorded, and the row count is the only
+//     honest record of what it did.
 //  6. Write the session, for the account the transaction just resolved. It is written here and
 //     not through [SessionService] because it must be part of this transaction: see the file
 //     comment.
 //
 // Any failure rolls the transaction back, so a refusal writes nothing at all — not a spent link,
-// not an account, not a session. The instant every stamp uses is the one the caller put in the
-// session's `created_at`, so the link, the verification and the session agree about when this
-// happened.
-func (s *PostgresStore) Redeem(ctx context.Context, claim AccessClaims, session Session, tokenHash []byte) error {
+// not an account, not a session — and the redemption it answers is empty. The instant every
+// stamp uses is the one the caller put in the session's `created_at`, so the link, the
+// verification and the session agree about when this happened.
+func (s *PostgresStore) Redeem(ctx context.Context, claim AccessClaims, session Session, tokenHash []byte) (Redemption, error) {
 	if s == nil || s.pool == nil {
-		return fmt.Errorf("%w: the identity store is not configured", ErrLinkUnavailable)
+		return Redemption{}, fmt.Errorf("%w: the identity store is not configured", ErrLinkUnavailable)
 	}
 
 	now := session.CreatedAt.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: begin the redemption: %v", ErrLinkUnavailable, err)
+		return Redemption{}, fmt.Errorf("%w: begin the redemption: %v", ErrLinkUnavailable, err)
 	}
 	// Rollback after a commit is a no-op, so this is the one exit that is always safe.
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -207,44 +220,45 @@ func (s *PostgresStore) Redeem(ctx context.Context, claim AccessClaims, session 
 	var expiresAt time.Time
 	err = tx.QueryRow(ctx, consumeAccessLinkQuery, claim.Nonce, now).Scan(&storedEmail, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrLinkSpent
+		return Redemption{}, ErrLinkSpent
 	}
 	if err != nil {
 		// A nonce PostgreSQL cannot even read as an identifier names no row this store ever
 		// wrote, which is the same answer as a row that is gone. Only this code signs nonces, so
 		// reaching it is a defect, and it is still refused rather than reported as an outage.
-		return classifyConsumeError(err)
+		return Redemption{}, classifyConsumeError(err)
 	}
 	if storedEmail != claim.Email {
 		// The signature binds the address to the nonce, so a row naming another address is a
 		// defect in whatever wrote it — and spending that row to verify this claim would verify
 		// an address this link never proved.
-		return fmt.Errorf("%w: the recorded link names another address than the one it was signed for", ErrLinkSpent)
+		return Redemption{}, fmt.Errorf("%w: the recorded link names another address than the one it was signed for", ErrLinkSpent)
 	}
 	if !expiresAt.After(now) {
 		// The row's lifetime is measured from when it was issued, which is what this column
 		// records; a signature that still verified does not extend it.
-		return ErrLinkSpent
+		return Redemption{}, ErrLinkSpent
 	}
 
 	customerID := ""
 	if err := tx.QueryRow(ctx, upsertCustomerQuery, venue.NewID(), storedEmail, now).Scan(&customerID); err != nil {
-		return fmt.Errorf("%w: record the verified account: %v", ErrLinkUnavailable, err)
+		return Redemption{}, fmt.Errorf("%w: record the verified account: %v", ErrLinkUnavailable, err)
 	}
 
-	if _, err := tx.Exec(ctx, claimReservationsQuery, customerID, storedEmail); err != nil {
-		return fmt.Errorf("%w: claim the orders of the verified address: %v", ErrLinkUnavailable, err)
+	claimed, err := tx.Exec(ctx, claimReservationsQuery, customerID, storedEmail)
+	if err != nil {
+		return Redemption{}, fmt.Errorf("%w: claim the orders of the verified address: %v", ErrLinkUnavailable, err)
 	}
 
 	if _, err := tx.Exec(ctx, insertRedeemedSessionQuery,
 		session.ID, customerID, tokenHash, session.CreatedAt.UTC(), session.ExpiresAt.UTC()); err != nil {
-		return fmt.Errorf("%w: write the session: %v", ErrLinkUnavailable, err)
+		return Redemption{}, fmt.Errorf("%w: write the session: %v", ErrLinkUnavailable, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("%w: commit the redemption: %v", ErrLinkUnavailable, err)
+		return Redemption{}, fmt.Errorf("%w: commit the redemption: %v", ErrLinkUnavailable, err)
 	}
-	return nil
+	return Redemption{CustomerID: customerID, Claimed: int(claimed.RowsAffected())}, nil
 }
 
 // classifyConsumeError turns a failure of the spending statement into the flow's vocabulary. A

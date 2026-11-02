@@ -66,7 +66,7 @@ func TestASavedLinkRedeemsOnceAndWritesTheAccountAndTheSession(t *testing.T) {
 	sessionToken, session := db.newSession(address, time.Now().UTC())
 
 	claim := identity.AccessClaims{Email: address, Nonce: nonce, ExpiresAt: expiresAt}
-	if err := db.store.Redeem(db.ctx, claim, session, identity.HashSessionToken(sessionToken)); err != nil {
+	if _, err := db.store.Redeem(db.ctx, claim, session, identity.HashSessionToken(sessionToken)); err != nil {
 		t.Fatalf("Redeem() = unexpected error %v", err)
 	}
 
@@ -102,15 +102,14 @@ func TestRedeemingTheSameNonceTwiceAnswersSpentAndWritesNothing(t *testing.T) {
 	sessionToken, session := db.newSession(address, time.Now().UTC())
 	claim := identity.AccessClaims{Email: address, Nonce: nonce, ExpiresAt: expiresAt}
 
-	if err := db.store.Redeem(db.ctx, claim, session, identity.HashSessionToken(sessionToken)); err != nil {
+	if _, err := db.store.Redeem(db.ctx, claim, session, identity.HashSessionToken(sessionToken)); err != nil {
 		t.Fatalf("first Redeem() = unexpected error %v", err)
 	}
 	firstConsumed := db.consumedAt(nonce)
 	firstCustomer := db.customerOf(address)
 
 	secondToken, second := db.newSession(address, time.Now().UTC().Add(time.Minute))
-	err := db.store.Redeem(db.ctx, claim, second, identity.HashSessionToken(secondToken))
-	if !errors.Is(err, identity.ErrLinkSpent) {
+	if _, err := db.store.Redeem(db.ctx, claim, second, identity.HashSessionToken(secondToken)); !errors.Is(err, identity.ErrLinkSpent) {
 		t.Fatalf("second Redeem() = %v, want ErrLinkSpent", err)
 	}
 
@@ -137,19 +136,17 @@ func TestAnExpiredOrUnknownLinkWritesNothing(t *testing.T) {
 	expired := db.newAddress("expired")
 	expiredNonce, expiredExpiry := db.saveLinkAt(expired, now.Add(-time.Minute))
 	sessionToken, session := db.newSession(expired, now)
-	err := db.store.Redeem(db.ctx,
+	if _, err := db.store.Redeem(db.ctx,
 		identity.AccessClaims{Email: expired, Nonce: expiredNonce, ExpiresAt: expiredExpiry},
-		session, identity.HashSessionToken(sessionToken))
-	if !errors.Is(err, identity.ErrLinkSpent) {
+		session, identity.HashSessionToken(sessionToken)); !errors.Is(err, identity.ErrLinkSpent) {
 		t.Fatalf("Redeem() of an expired link = %v, want ErrLinkSpent", err)
 	}
 
 	unknown := db.newAddress("unknown")
 	unknownToken, unknownSession := db.newSession(unknown, now)
-	err = db.store.Redeem(db.ctx,
+	if _, err := db.store.Redeem(db.ctx,
 		identity.AccessClaims{Email: unknown, Nonce: newFixtureUUID(t), ExpiresAt: now.Add(redemptionLinkTTL)},
-		unknownSession, identity.HashSessionToken(unknownToken))
-	if !errors.Is(err, identity.ErrLinkSpent) {
+		unknownSession, identity.HashSessionToken(unknownToken)); !errors.Is(err, identity.ErrLinkSpent) {
 		t.Fatalf("Redeem() of a nonce nobody issued = %v, want ErrLinkSpent", err)
 	}
 
@@ -175,7 +172,7 @@ func TestRedeemingClaimsTheOrdersOfTheVerifiedAddressAndOnlyThose(t *testing.T) 
 	nonce, expiresAt := db.saveLink(address)
 	sessionToken, session := db.newSession(address, time.Now().UTC())
 
-	if err := db.store.Redeem(db.ctx,
+	if _, err := db.store.Redeem(db.ctx,
 		identity.AccessClaims{Email: address, Nonce: nonce, ExpiresAt: expiresAt},
 		session, identity.HashSessionToken(sessionToken)); err != nil {
 		t.Fatalf("Redeem() = unexpected error %v", err)
@@ -191,6 +188,47 @@ func TestRedeemingClaimsTheOrdersOfTheVerifiedAddressAndOnlyThose(t *testing.T) 
 	}
 }
 
+// D5 (S3): the redemption reports how many orders it claimed, and it reports the rows the
+// statement actually touched. Three orders carry the verified address and one of them already
+// belongs to another account: two are claimed, the third is left where it is, and the count
+// says two — a number taken from `RowsAffected` and not from a count this code guessed.
+func TestRedeemingReportsTheOrdersItClaimed(t *testing.T) {
+	db := newIdentityDB(t)
+	address := db.newAddress("reported")
+	owner, _ := db.newAccount("owner")
+	first := db.newReservation(address)
+	second := db.newReservation(address)
+	taken := db.newReservationOwnedBy(address, owner)
+	nonce, expiresAt := db.saveLink(address)
+	sessionToken, session := db.newSession(address, time.Now().UTC())
+
+	redemption, err := db.store.Redeem(db.ctx,
+		identity.AccessClaims{Email: address, Nonce: nonce, ExpiresAt: expiresAt},
+		session, identity.HashSessionToken(sessionToken))
+	if err != nil {
+		t.Fatalf("Redeem() = unexpected error %v", err)
+	}
+
+	customer := db.customerOf(address)
+	if redemption.CustomerID != customer {
+		t.Fatalf("the redemption named account %q, want the one it resolved (%q)", redemption.CustomerID, customer)
+	}
+	if redemption.Claimed != 2 {
+		t.Fatalf("the redemption claimed %d order(s), want 2: the count is the rows the claim statement touched",
+			redemption.Claimed)
+	}
+	for name, id := range map[string]string{"first": first, "second": second} {
+		if got := db.customerOfReservation(id); got != customer {
+			t.Fatalf("the %s order belongs to %q, want %q: it was unowned and its address was proved",
+				name, got, customer)
+		}
+	}
+	if got := db.customerOfReservation(taken); got != owner {
+		t.Fatalf("an order that already belonged to %q now belongs to %q: it was counted as claimed",
+			owner, got)
+	}
+}
+
 // S3: the first verification is the one that counts. A second link for an account that
 // already exists does not move `verified_at`, so the column records when the mailbox was
 // first proved rather than when it was last used.
@@ -201,7 +239,7 @@ func TestASecondLinkDoesNotMoveTheFirstVerifiedAt(t *testing.T) {
 
 	firstNonce, firstExpiry := db.saveLinkAt(address, first.Add(redemptionLinkTTL))
 	firstToken, firstSession := db.newSession(address, first)
-	if err := db.store.Redeem(db.ctx,
+	if _, err := db.store.Redeem(db.ctx,
 		identity.AccessClaims{Email: address, Nonce: firstNonce, ExpiresAt: firstExpiry},
 		firstSession, identity.HashSessionToken(firstToken)); err != nil {
 		t.Fatalf("first Redeem() = unexpected error %v", err)
@@ -215,7 +253,7 @@ func TestASecondLinkDoesNotMoveTheFirstVerifiedAt(t *testing.T) {
 	later := first.Add(48 * time.Hour)
 	secondNonce, secondExpiry := db.saveLinkAt(address, later.Add(redemptionLinkTTL))
 	secondToken, secondSession := db.newSession(address, later)
-	if err := db.store.Redeem(db.ctx,
+	if _, err := db.store.Redeem(db.ctx,
 		identity.AccessClaims{Email: address, Nonce: secondNonce, ExpiresAt: secondExpiry},
 		secondSession, identity.HashSessionToken(secondToken)); err != nil {
 		t.Fatalf("second Redeem() = unexpected error %v", err)
@@ -342,16 +380,42 @@ func (db *identityDB) newSession(customer string, createdAt time.Time) (string, 
 	}
 }
 
+// newAccount writes an account this run owns, as a verified sign-in would have, so an order
+// can already belong to somebody else. It answers the account and its address.
+func (db *identityDB) newAccount(label string) (string, string) {
+	db.t.Helper()
+	address := db.newAddress(label)
+	customer := newFixtureUUID(db.t)
+	if _, err := db.pool.Exec(db.ctx, `
+INSERT INTO cinema.guest_customers (id, email, verified_at) VALUES ($1::uuid, $2, now())`,
+		customer, address); err != nil {
+		db.t.Fatalf("insert an account for %q: %v", address, err)
+	}
+	return customer, address
+}
+
 // newReservation writes a held reservation whose contact address is address, as a sale from
 // before identity existed did.
 func (db *identityDB) newReservation(address string) string {
 	db.t.Helper()
+	return db.newReservationOwnedBy(address, "")
+}
+
+// newReservationOwnedBy writes a held reservation for address that already belongs to owner,
+// which is how an order placed by an account that had signed in looks. An empty owner leaves
+// it unowned, which is what 0009 alone could produce.
+func (db *identityDB) newReservationOwnedBy(address, owner string) string {
+	db.t.Helper()
 	id := newFixtureUUID(db.t)
 	db.reservations = append(db.reservations, id)
+	var ownerID any
+	if owner != "" {
+		ownerID = owner
+	}
 	if _, err := db.pool.Exec(db.ctx, `
-INSERT INTO cinema.reservations (id, event_id, status, expires_at, contact_email)
-VALUES ($1::uuid, $2::uuid, 'held', now() + interval '10 minutes', $3)`,
-		id, redemptionEvent, address); err != nil {
+INSERT INTO cinema.reservations (id, event_id, status, expires_at, contact_email, customer_id)
+VALUES ($1::uuid, $2::uuid, 'held', now() + interval '10 minutes', $3, $4::uuid)`,
+		id, redemptionEvent, address, ownerID); err != nil {
 		db.t.Fatalf("insert a reservation for %q: %v", address, err)
 	}
 	return id

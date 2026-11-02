@@ -84,14 +84,20 @@ type IdentityLinkService interface {
 }
 
 // IdentitySessionService is the redeeming half: spend one presented link and answer the
-// session token it opens, exactly once. It is satisfied by [identity.Redeemer].
+// session token it opens, exactly once, beside how many older orders the verified address
+// claimed. It is satisfied by [identity.Redeemer].
+//
+// The claimed count is answered to this layer and not published by it: D5 asks for the claim to
+// be recorded, and the record is the one line the redeemer writes — not a field in a body whose
+// only reason to exist is to carry a credential. A caller is told what it must present next, not
+// how much history its mailbox turned out to have.
 //
 // It answers the signer's own opaque refusals ([identity.ErrInvalidToken],
 // [identity.ErrAccessLinkExpired]), the store's one [identity.ErrLinkSpent], and
 // [identity.ErrLinkUnavailable] or [identity.ErrInvalidKey] when the deployment cannot answer
 // at all — which the route maps to a retryable failure, never to a refusal of the credential.
 type IdentitySessionService interface {
-	Redeem(ctx context.Context, token string) (string, identity.Session, error)
+	Redeem(ctx context.Context, token string) (string, identity.Session, int, error)
 }
 
 // identityLinkRoute and identitySessionRoute are the two route patterns, relative to the
@@ -176,7 +182,9 @@ func (h *Handler) redeemIdentitySession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sessionToken, session, err := h.identitySessions.Redeem(r.Context(), token)
+	// The claimed count is read and dropped: it is the operator's fact, not the caller's. See
+	// IdentitySessionService.
+	sessionToken, session, _, err := h.identitySessions.Redeem(r.Context(), token)
 	if err != nil {
 		switch {
 		case errors.Is(err, identity.ErrLinkSpent), errors.Is(err, identity.ErrAccessLinkExpired),

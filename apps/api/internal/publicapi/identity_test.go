@@ -108,19 +108,24 @@ func (l *identityFakeLimiter) Allow(_ context.Context, key string) (bool, time.D
 	return l.counts[key] <= l.limit, l.retryAfter, nil
 }
 
-// identityFakeRedemptionStore records the transaction the redeemer delegated, and can refuse.
+// identityFakeRedemptionStore records the transaction the redeemer delegated, answers what it
+// wrote, and can refuse.
 type identityFakeRedemptionStore struct {
-	calls []identity.AccessClaims
-	hash  []byte
-	err   error
+	calls      []identity.AccessClaims
+	hash       []byte
+	redemption identity.Redemption
+	err        error
 }
 
 var _ identity.RedemptionStore = (*identityFakeRedemptionStore)(nil)
 
-func (s *identityFakeRedemptionStore) Redeem(_ context.Context, claim identity.AccessClaims, session identity.Session, tokenHash []byte) error {
+func (s *identityFakeRedemptionStore) Redeem(_ context.Context, claim identity.AccessClaims, session identity.Session, tokenHash []byte) (identity.Redemption, error) {
 	s.calls = append(s.calls, claim)
 	s.hash = append([]byte(nil), tokenHash...)
-	return s.err
+	if s.err != nil {
+		return identity.Redemption{}, s.err
+	}
+	return s.redemption, nil
 }
 
 // identityFakeIssuer and identityFakeRedeemer are the collaborators a route case does not
@@ -133,13 +138,14 @@ func (i *identityFakeIssuer) Issue(_ context.Context, _ string) error { i.calls+
 type identityFakeRedeemer struct {
 	token   string
 	session identity.Session
+	claimed int
 	err     error
 	calls   int
 }
 
-func (r *identityFakeRedeemer) Redeem(_ context.Context, _ string) (string, identity.Session, error) {
+func (r *identityFakeRedeemer) Redeem(_ context.Context, _ string) (string, identity.Session, int, error) {
 	r.calls++
-	return r.token, r.session, r.err
+	return r.token, r.session, r.claimed, r.err
 }
 
 // identitySigner builds the signer of the login links these cases mint and present.
@@ -164,10 +170,12 @@ func identityIssuer(t *testing.T, store identity.AccessLinkStore, limiter identi
 	return issuer
 }
 
-// identityRedeemer builds the real redeeming half over the fake store.
+// identityRedeemer builds the real redeeming half over the fake store. Its log is discarded:
+// the line it writes is pinned by the identity package's own suite.
 func identityRedeemer(t *testing.T, signer *identity.AccessSigner, store identity.RedemptionStore) *identity.Redeemer {
 	t.Helper()
-	redeemer, err := identity.NewRedeemer(signer, store, identitySessionTTL)
+	redeemer, err := identity.NewRedeemer(signer, store, identitySessionTTL,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewRedeemer() = unexpected error %v", err)
 	}
@@ -456,7 +464,11 @@ func TestIdentityLinkRouteLogsTheOutcomeWithoutTheAddressTokenOrKey(t *testing.T
 // access link itself is a credential and is not echoed back in the answer.
 func TestIdentitySessionRouteAnswersTheSessionTokenOnce(t *testing.T) {
 	signer := identitySigner(t, identityTestLinkKey, identity.LinkWindow)
-	store := &identityFakeRedemptionStore{}
+	// The claim of D5 wrote three orders for this account, and the answer must not mention it:
+	// how much history an address brought is not a fact the caller asked for and not one the
+	// body has any business carrying beside a token.
+	store := &identityFakeRedemptionStore{redemption: identity.Redemption{
+		CustomerID: "9a1f7b2c-0000-4000-8000-0000000000c1", Claimed: 3}}
 	ts := mountedIdentityServer(t, &identityFakeIssuer{}, identityRedeemer(t, signer, store))
 
 	linkToken, err := signer.Sign(identityRouteEmail, "9a1f7b2c-0000-4000-8000-000000000001", time.Now())
@@ -470,6 +482,12 @@ func TestIdentitySessionRouteAnswersTheSessionTokenOnce(t *testing.T) {
 	}
 	if keys := objectKeys(t, raw); !equalKeys(keys, []string{"expiresAt", "token"}) {
 		t.Fatalf("answer keys = %v, want the token and its expiry", keys)
+	}
+	// The count of orders the address claimed is the operator's fact, not the caller's.
+	for _, forbidden := range []string{"claimed", "count", "orders", "customer"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("the answer names the claim (%q): %s", forbidden, raw)
+		}
 	}
 	if strings.Contains(string(raw), linkToken) {
 		t.Fatalf("the answer echoes the access link: %s", raw)

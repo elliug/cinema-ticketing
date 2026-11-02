@@ -1012,8 +1012,10 @@ func newIdentitySurface(cfg config.Config, sender email.Sender, client redis.Uni
 		return nil, nil
 	}
 	// The session's lifetime is its own and not the link's: a session that inherited the
-	// fifteen minutes a login step lives would sign everybody out mid-page.
-	redeemer, redeemerErr := identity.NewRedeemer(signer, store, cfg.IdentitySessionTTL)
+	// fifteen minutes a login step lives would sign everybody out mid-page. The process logger
+	// goes in with it, because the check of an address and the claim of its older orders is
+	// recorded in the log and nowhere else (D5).
+	redeemer, redeemerErr := identity.NewRedeemer(signer, store, cfg.IdentitySessionTTL, logger)
 	if redeemerErr != nil {
 		store.Close()
 		logger.Info("identity login disabled: the session could not be wired", "error", redeemerErr.Error())
