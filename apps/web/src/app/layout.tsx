@@ -1,25 +1,25 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { SiteFooter, SiteHeader } from "@/components";
-import { DEMO_SESSION_LABEL } from "@/lib/demo-session";
 
 import "./globals.css";
 
 // The root layout is the product shell (M3.5 · T3 · S1): a header with the product
-// name, the primary navigation and the demonstration session, the page in the
-// middle, and a footer that says what this build is.
+// name, the primary navigation and the way in to signing in, the page in the middle,
+// and a footer that says what this build is.
 //
 // The pages themselves are untouched by it. Every surface in this application —
 // the M0 health contract aside — renders `<main id="main-content">`, so Next's
 // layout composition puts the existing seat, confirmation, ticket and administration
 // screens inside the frame without a single edit to those files (S1).
 //
-// The description is built from the same exported constant the header renders, so
-// the page metadata cannot describe the session differently from the interface
-// (S2, S8).
+// The description says what is true of every page of this build, and nothing about who
+// is signed in: a session is optional, and metadata is not the place to guess at one
+// (identity-login T6 · S7).
 export const metadata: Metadata = {
   title: "Cinema Ticketing",
-  description: `Public purchase and local administration for the cinema ticketing platform. ${DEMO_SESSION_LABEL}`,
+  description:
+    "Public purchase and local administration for the cinema ticketing platform. Buying a ticket and opening one need no account; signing in is optional and only makes the list of your tickets something the box office answers.",
 };
 
 // No remote fonts or images are loaded: typography comes from the system font

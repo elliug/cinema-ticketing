@@ -1,21 +1,22 @@
 "use client";
 
-// Site header (M3.5 · T3 · S1, S2, S8).
+// Site header (M3.5 · T3 · S1, S8; identity-login T6 · S7).
 //
-// The frame every page inherits: the product name, the primary navigation, and the
-// demonstration session switcher. It is a client component for exactly two reasons —
-// the current page has to be marked with `aria-current`, which needs the pathname,
-// and the switcher changes state — and for no other. Nothing here reads the API.
+// The frame every page inherits: the product name, the primary navigation, and the way in to
+// signing in. It is a client component for exactly one reason — the current page has to be marked
+// with `aria-current`, which needs the pathname — and for no other. Nothing here reads the API.
 //
-// The demonstration session is labelled here, permanently, in words (S2, S8). The
-// sentence is `DEMO_SESSION_LABEL` from lib/demo-session.ts, imported rather than
-// copied: a second copy of that promise in this file could drift from the documented
-// one, and a drifted promise is a claim the system does not keep.
+// The header used to carry a demonstration session: a switcher whose name was a demonstration
+// name, labelled with a sentence promising that it granted no access. It is gone (S7), and the
+// reason is worth keeping written down: this application has a real session now, and a real one
+// standing beside a fake one is exactly the claim that the fake one is authentication — which
+// `odd/tasks/m35-product-web.md` (S2, S8, L3) forbids.
 //
-// What it must never look like: a login. There is no "sign in", no user menu, no
-// avatar, no padlock. The switcher is a dashed box that says what it does, and the
-// name it shows is a demonstration name, not an identity: nothing downstream trusts
-// it, and tickets stay addressable by their identifier (milestone log, L3).
+// What replaced it is a link, and its label makes no claim: "Sign in". The header cannot know
+// whether this browser holds a session — that would mean reading the cookie here, and a
+// client-side guess would render differently from the server's HTML and hydrate into a
+// disagreement. So it offers the way in and says nothing about who is already in, which is a
+// sentence only a surface that can read the cookie is entitled to write.
 //
 // Accessibility:
 //
@@ -25,23 +26,14 @@
 //     is current on every page of its section, not only on the one it links to;
 //   - a route this milestone has not built is plain text with a "not built yet"
 //     badge, never a link that 404s (S8);
-//   - the switcher's `select` is named by a visible label that includes the active
-//     name, so the name on screen is text as well as a form value;
-//   - the whole row wraps instead of overflowing: at 360px the brand, the navigation
-//     and the switcher become three stacked rows.
+//   - the sign-in link is a link like any other: same styling, same focus treatment, and it is
+//     `aria-current` on `/sign-in` because that is the page being read, never as a claim about a
+//     session;
+//   - the whole row wraps instead of overflowing: at 360px the brand, the navigation and the
+//     sign-in link become three stacked rows.
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import type { DemoPerson } from "@/lib/demo-session";
-import {
-  DEMO_PEOPLE,
-  DEMO_SESSION_LABEL,
-  clearDemoSession,
-  defaultDemoPerson,
-  demoSessionStorage,
-  readDemoSession,
-  switchDemoSession,
-} from "@/lib/demo-session";
+import { SIGN_IN_PATH } from "@/lib/identity";
 import { Badge } from "./badge";
 
 /** One primary navigation entry. */
@@ -168,63 +160,19 @@ export function SiteHeader() {
           </ul>
         </nav>
 
-        <DemoSessionSwitcher />
+        <div className="site-header__account">
+          {/* The label is the whole affordance: no name, no avatar, no "signed in as", and no
+              "not signed in" either — the header would have to read the cookie to know, and a
+              client-side answer would disagree with the server's render (S7). */}
+          <Link
+            className="site-nav__link"
+            href={SIGN_IN_PATH}
+            aria-current={pathname === SIGN_IN_PATH ? "page" : undefined}
+          >
+            Sign in
+          </Link>
+        </div>
       </div>
     </header>
-  );
-}
-
-/**
- * The demonstration session, and the sentence that says what it is.
- *
- * The server render and the first client render both show the default person; the
- * effect then replaces it with this browser's stored choice. Reading storage during
- * render would make the two renders disagree and React would throw the server
- * markup away, so the name can change once after hydration — a page that shows the
- * default name for a moment is still honest, a hydration mismatch is a bug.
- */
-export function DemoSessionSwitcher() {
-  const [active, setActive] = useState<DemoPerson>(defaultDemoPerson);
-
-  useEffect(() => {
-    setActive(readDemoSession(demoSessionStorage(window)));
-  }, []);
-
-  const choose = (personId: string) => {
-    setActive(switchDemoSession(demoSessionStorage(window), personId));
-  };
-
-  const reset = () => {
-    setActive(clearDemoSession(demoSessionStorage(window)));
-  };
-
-  return (
-    <div className="demo-switcher">
-      <p className="demo-switcher__label">
-        <Badge tone="neutral" pill>
-          Demo
-        </Badge>{" "}
-        {DEMO_SESSION_LABEL}
-      </p>
-      <div className="demo-switcher__form">
-        <label htmlFor="demo-session-person">
-          Viewing as <strong>{active.displayName}</strong>
-        </label>
-        <select
-          id="demo-session-person"
-          value={active.id}
-          onChange={(event) => choose(event.target.value)}
-        >
-          {DEMO_PEOPLE.map((person) => (
-            <option key={person.id} value={person.id}>
-              {person.displayName}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="demo-switcher__reset" onClick={reset}>
-          Reset
-        </button>
-      </div>
-    </div>
   );
 }

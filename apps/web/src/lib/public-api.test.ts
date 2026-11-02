@@ -1947,3 +1947,199 @@ test("a 202 that does not say the message was sent is refused, never read as a s
   );
   assert.equal(JSON.stringify(problem).includes("colleague@example.com"), false);
 });
+
+// ── Signing in (identity-login T6 · S1, S2) ──────────────────────────────────
+//
+// Two routes, and the shape of each answer is the whole contract:
+//
+//   - `POST /identity/links` answers one `202` body for a link that was mailed, one the hourly
+//     allowance refused and one whose counter could not be read. This client has one reading
+//     for it, because a client that told those three apart would be the oracle the route
+//     refuses to be;
+//   - `POST /identity/sessions` answers `201 {token, expiresAt}` exactly once, and one opaque
+//     `401` for a link that was spent, expired or never signed. An outage is a `503` and arrives
+//     as its own problem, so a bad minute is never read as a spent link.
+
+test("a sign-in link is asked for with the address in the body, and read as the one acceptance", async () => {
+  const recorder = recordingFetch(() => jsonResponse(202, { status: "accepted" }));
+
+  const answer = unwrap(await makeClient(recorder).requestSignInLink("  ana@example.com "));
+
+  assert.deepEqual(answer, { accepted: true });
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/identity/links`);
+  assert.equal(recorder.calls[0].init.method, "POST");
+  // Trimmed, because the API trims it before its own rule reads it: what leaves is what was
+  // accepted. It travels in the body and never in the address of the request.
+  assert.deepEqual(JSON.parse(String(recorder.calls[0].init.body)), {
+    email: "ana@example.com",
+  });
+  assert.equal(recorder.calls[0].url.includes("ana"), false);
+});
+
+test("a 202 that is not the documented acceptance is refused, never read as a link sent", async () => {
+  for (const body of [{}, { status: "sent" }, { status: true }, { sent: true }]) {
+    const recorder = recordingFetch(() => jsonResponse(202, body));
+
+    const problem = unwrapError(await makeClient(recorder).requestSignInLink("ana@example.com"));
+
+    assert.equal(
+      problem.code,
+      "unexpected_response",
+      `a 202 answering ${JSON.stringify(body)} must not become a confirmation`,
+    );
+    // The address travelled in the request, and a problem reaches page text: it must not be
+    // repeated back by a refusal that has no business naming a mailbox.
+    assert.equal(JSON.stringify(problem).includes("ana@example.com"), false);
+  }
+});
+
+test("a refused address arrives with the API's own sentence, untranslated", async () => {
+  const sentence = "email is not an address this sign-in link can be sent to";
+  const recorder = recordingFetch(() =>
+    jsonResponse(400, {
+      type: "https://cinema.local/problems/invalid-input",
+      title: "Invalid input",
+      status: 400,
+      code: "invalid_input",
+      detail: sentence,
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).requestSignInLink("ana@localhost"));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(problem.status, 400);
+  assert.equal(problem.detail, sentence, "the page prints the rule's own words, not a second wording of it");
+});
+
+test("a deployment that cannot send mail is a retryable 503 and decides nothing about the address", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the sign-in link cannot be sent right now; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).requestSignInLink("ana@example.com"));
+
+  assert.equal(problem.code, "service_unavailable");
+  assert.equal(problem.status, 503);
+});
+
+test("a blank address is refused before anything leaves the process", async () => {
+  const recorder = recordingFetch(() => jsonResponse(202, { status: "accepted" }));
+
+  const problem = unwrapError(await makeClient(recorder).requestSignInLink("   "));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(recorder.calls.length, 0, "an empty field is a question this client already answers");
+});
+
+test("the link is spent with the token in the body, and the session token is read once", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(201, { token: "session-token-1", expiresAt: "2026-04-01T10:00:00Z" }),
+  );
+
+  const session = unwrap(await makeClient(recorder).redeemSignInLink("  link.token  "));
+
+  assert.deepEqual(session, { token: "session-token-1", expiresAt: "2026-04-01T10:00:00Z" });
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/identity/sessions`);
+  assert.equal(recorder.calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(String(recorder.calls[0].init.body)), { token: "link.token" });
+  // A credential in a path spends its life in access logs and `Referer` headers, which is why
+  // the route reads it from the body and why this client never puts it in the address.
+  assert.equal(recorder.calls[0].url.includes("link.token"), false);
+});
+
+test("the opaque 401 is one problem, and it names nothing about the link", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(401, {
+      type: "https://cinema.local/problems/unauthorized",
+      title: "Unauthorized",
+      status: 401,
+      code: "unauthorized",
+      detail: "this sign-in link cannot be used",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).redeemSignInLink("link.token"));
+
+  // Without the code in the client's vocabulary this refusal would arrive as an unreadable
+  // answer, and a page could not tell it from a broken one.
+  assert.equal(problem.code, "unauthorized");
+  assert.equal(problem.status, 401);
+  assert.equal(JSON.stringify(problem).includes("link.token"), false);
+});
+
+test("a 503 stands apart from the opaque 401, so an outage is never read as a spent link", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the sign-in link cannot be redeemed right now; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).redeemSignInLink("link.token"));
+
+  assert.equal(problem.code, "service_unavailable");
+  assert.notEqual(problem.status, 401);
+});
+
+test("a 201 without a token or a readable expiry is a broken answer, not a session", async () => {
+  const answers = [
+    {},
+    { token: "", expiresAt: "2026-04-01T10:00:00Z" },
+    { token: "session-token-1" },
+    { token: "session-token-1", expiresAt: "soon" },
+  ];
+
+  for (const body of answers) {
+    const recorder = recordingFetch(() => jsonResponse(201, body));
+
+    const problem = unwrapError(await makeClient(recorder).redeemSignInLink("link.token"));
+
+    assert.equal(
+      problem.code,
+      "unexpected_response",
+      `a 201 answering ${JSON.stringify(body)} must not become a session`,
+    );
+    // The cookie's lifetime is the API's instant: a value this side cannot read is refused
+    // rather than defaulted, because both defaults would be a claim about a row nobody read.
+    assert.equal(JSON.stringify(problem).includes("session-token-1"), false);
+  }
+});
+
+test("a blank link is refused before anything leaves the process", async () => {
+  const recorder = recordingFetch(() => jsonResponse(201, { token: "t", expiresAt: "2026-04-01T10:00:00Z" }));
+
+  const problem = unwrapError(await makeClient(recorder).redeemSignInLink("  "));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(recorder.calls.length, 0);
+});
+
+test("a code outside the vocabulary is still an unreadable answer, never a code invented here", async () => {
+  // PRESERVE: adding `unauthorized` to the shared problem vocabulary must not make every unknown
+  // code readable. A body this client does not know stays `unexpected_response`, so no surface
+  // prints a verdict the API never gave.
+  const recorder = recordingFetch(() =>
+    jsonResponse(418, {
+      type: "https://cinema.local/problems/teapot",
+      title: "Teapot",
+      status: 418,
+      code: "teapot",
+      detail: "a code this client does not read",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).getTicket("ticket-1"));
+
+  assert.equal(problem.code, "unexpected_response");
+  assert.equal(problem.status, 418);
+});

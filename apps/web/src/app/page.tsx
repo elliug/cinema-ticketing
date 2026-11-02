@@ -2,7 +2,8 @@
 //
 // A stranger's first screen, and it tells the truth about the state of the product:
 // the buyer's path in three steps, what exists today with a link to each of those
-// surfaces, and a note about the demonstration session in the header.
+// surfaces, and a note about signing in — which is real, and optional (identity-login
+// T6 · D3, D4, S7).
 //
 // What it deliberately does not do is pretend a catalogue exists. There is no list
 // of screenings here, no film title, no price, no seat count: T4 builds the catalogue
@@ -11,12 +12,11 @@
 import Link from "next/link";
 import {
   Alert,
-  Badge,
   Card,
   PageHeader,
   StatusPill,
 } from "@/components";
-import { DEMO_SESSION_LABEL } from "@/lib/demo-session";
+import { SIGN_IN_PATH } from "@/lib/identity";
 
 export default function HomePage() {
   return (
@@ -104,19 +104,25 @@ export default function HomePage() {
         </p>
       </Card>
 
-      <Alert tone="info" title="About the name in the header">
-        <p>{DEMO_SESSION_LABEL}</p>
+      <Alert tone="info" title="About signing in">
         <p>
-          The switcher picks one of two fixed demonstration names, Ana or Luis, so a
-          walkthrough of the interface can be given a name. It is stored in this
-          browser only and no page asks the API about it. A ticket stays openable by
-          whoever holds its link, which is how this milestone already works.
+          Signing in is real, and it is optional: a link mailed to your address signs
+          you in for a while, and that session is what lets the box office answer
+          &quot;these are your tickets&quot; instead of this browser keeping its own
+          note. Nothing in the purchase path asks for an account, and nothing here
+          checks who you are before it sells you a seat.
         </p>
         <p>
-          <Badge tone="neutral" pill>
-            demo
-          </Badge>{" "}
-          Real identity, with accounts and ownership, is a milestone of its own.
+          The header offers a plain <Link href={SIGN_IN_PATH}>Sign in</Link> link and says
+          nothing about whether this browser is signed in — it would have to read the
+          session cookie to know that, and a guess rendered in the browser would
+          disagree with the page the server sent. The link in your email lands on
+          <code> /in/&#123;token&#125;</code>, and that page is the one that knows.
+        </p>
+        <p>
+          The demonstration session this page used to describe is gone. Having a
+          pretend session beside a real one is exactly the claim that the pretend one
+          authenticates somebody, so it was retired the day real sign-in arrived.
         </p>
       </Alert>
     </main>
