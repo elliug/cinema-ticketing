@@ -789,6 +789,13 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	if accountTickets != nil {
 		publicHandler = publicHandler.WithIdentityTickets(login.authenticator, accountTickets)
 	}
+	// Signing out is the end of the act those routes start, and it needs only the session
+	// service: the route presents the token to Close, which is quiet by design. It is attached
+	// exactly where the login is, so a deployment without identity advertises no sign-out — there
+	// would be nothing to sign out of — and one with the login always serves it.
+	if login != nil {
+		publicHandler = publicHandler.WithIdentitySignOut(login.authenticator)
+	}
 	srv.WithPublic(publicHandler.Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
@@ -950,9 +957,11 @@ type identitySurface struct {
 	// sessionStore is the pool behind [identity.SessionService]; the process closes it with
 	// every other pool it opened.
 	sessionStore *identity.PostgresSessionStore
-	// authenticator proves the session a presented token opens. It is what GET /me/tickets
-	// asks who is calling, before it reads anything.
-	authenticator publicapi.SessionAuthenticator
+	// authenticator proves the session a presented token opens and ends one, which is what
+	// GET /me/tickets asks before it reads anything and what DELETE /identity/sessions presents
+	// the token to. It is the concrete service — not one of the two interfaces this transport
+	// defines — because it is wired as both. One row, one service.
+	authenticator *identity.SessionService
 }
 
 // newIdentitySurface builds the login surface, or says in one line what it is missing and

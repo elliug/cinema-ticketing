@@ -374,3 +374,25 @@ test("the interactive primitives declare their client boundary", () => {
     );
   }
 });
+
+test("the door is reachable from the administration, not from the primary navigation", () => {
+  const header = sourceOf("site-header");
+  // `sourceOf` resolves beside this test, in the components directory; the administration's
+  // list lives in `lib`, so it is read from its own address rather than through that helper.
+  const sections = readFileSync(new URL("../lib/admin-sections.ts", import.meta.url), "utf8");
+
+  // Two reasons, and both were the maintainer's: the primary navigation is the buyer's, and a
+  // screen only an operator uses belongs where the operator already is — described with the
+  // other administration screens and their order, instead of sitting beside them as a peer of
+  // "Now showing".
+  assert.equal(
+    header.includes('href: "/admin/door"'),
+    false,
+    "the primary navigation must not carry the door: it lives inside the administration",
+  );
+  assert.match(
+    sections,
+    /href: ADMIN_DOOR_PATH/,
+    "the administration index must keep linking the door, or the screen becomes unreachable",
+  );
+});

@@ -19,6 +19,11 @@
 //   - anyone with access to that mailbox can sign in with it. A shared inbox is a shared account,
 //     and hiding it would not make it false.
 //
+// Signing out is the third rule here, and it has no screen of its own: the action that performs it
+// cannot be tested from this suite (it imports Next's request machinery), so the decision it would
+// otherwise make inline — what a box office failure means for this browser — is [decideSignOut],
+// a pure function with a test.
+//
 // Nothing here claims an address was verified or that a message was sent. The request screen
 // cannot know either; the page behind the link does not need to. The only place verification
 // becomes true is the box office, when the link is spent (S3).
@@ -27,6 +32,7 @@ import type {
   PublicResult,
   PublicSignInLinkRequested,
   PublicSignInSession,
+  PublicSignOutRevoked,
 } from "./public-api.ts";
 
 /** Where a sign-in link is asked for. One path, because two spellings would drift. */
@@ -34,6 +40,14 @@ export const SIGN_IN_PATH = "/sign-in";
 
 /** Where a browser that has just signed in is sent. The list is the account's own (D3). */
 export const TICKETS_PATH = "/tickets";
+
+/**
+ * Where a browser that has just signed out is sent: the front page, which belongs to nobody.
+ *
+ * It is the same page whether the box office confirmed the revocation or could not be asked —
+ * see [decideSignOut] — because that answer changes nothing about this browser.
+ */
+export const SIGNED_OUT_PATH = "/";
 
 /**
  * The one confirmation the request screen shows, in the same words for all three outcomes.
@@ -134,6 +148,62 @@ export function describeSignInRequest(
       "Send it again. If it keeps failing, this deployment's mail side is down, and signing in will not work until it is back.",
     retryable: true,
     problem,
+  };
+}
+
+// ── Signing out ────────────────────────────────────────────────────────────────
+
+/**
+ * What signing out does with the box office's answer, as one decision.
+ *
+ * Three answers, and the only thing they do not agree on is what was reported:
+ *
+ *   - `closed` — the box office closed the row, or there was nothing left open to close;
+ *   - `unavailable` — it could not be asked, so the row is still live at the box office until it
+ *     expires. That failure is carried here rather than swallowed, because nothing downstream
+ *     should be able to present it as a revocation that happened;
+ *   - `no-session` — this browser held no cookie, so no credential was presented and there was
+ *     nothing to ask about.
+ *
+ * All three clear the cookie and land on the same page, and that is the design rather than
+ * laziness: **a failed revocation must not leave somebody signed in in their own browser**. The
+ * row expires on its own, and holding a person inside a session they asked to leave — pending an
+ * API call that may never succeed — is the one outcome worth refusing. The alternative, keeping
+ * the cookie when the box office could not be reached, would mean the button says "sign out" and
+ * the browser says otherwise.
+ */
+export type SignOutDecision =
+  | { kind: "closed"; clearCookie: true; redirectTo: string }
+  | {
+      kind: "unavailable";
+      clearCookie: true;
+      redirectTo: string;
+      /** Our failure, said as ours: the revocation did not happen, and this is why. */
+      problem: PublicProblem;
+    }
+  | { kind: "no-session"; clearCookie: true; redirectTo: string };
+
+/**
+ * One sign-out, turned into what this application does next.
+ *
+ * `null` is "nothing was presented": a browser with no session cookie has nothing to revoke, and
+ * asking would put an empty credential on the wire. It is not a failure and it is not a success
+ * about a row — it is the state the visitor asked for, reached without a round trip.
+ */
+export function decideSignOut(
+  result: PublicResult<PublicSignOutRevoked> | null,
+): SignOutDecision {
+  if (result === null) {
+    return { kind: "no-session", clearCookie: true, redirectTo: SIGNED_OUT_PATH };
+  }
+  if (result.ok) {
+    return { kind: "closed", clearCookie: true, redirectTo: SIGNED_OUT_PATH };
+  }
+  return {
+    kind: "unavailable",
+    clearCookie: true,
+    redirectTo: SIGNED_OUT_PATH,
+    problem: result.error,
   };
 }
 

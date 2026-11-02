@@ -16,7 +16,8 @@
 // the resend route that mails that same ticket email to an address typed on a ticket page
 // (POST /tickets/{ticketId}/email), which stores nothing it is given, the sign-in link a login
 // email carries (POST /identity/links), the route that spends one for a session token
-// (POST /identity/sessions), and the account's own list (GET /me/tickets), which is the read
+// (POST /identity/sessions), the route that ends that session again
+// (DELETE /identity/sessions), and the account's own list (GET /me/tickets), which is the read
 // that makes signing in worth anything.
 //
 // Routes here are public application routes. They are mounted outside the
@@ -70,6 +71,9 @@ type Handler struct {
 	// not at all: see [Handler.WithIdentity].
 	identityLinks    IdentityLinkService
 	identitySessions IdentitySessionService
+	// identitySignOut ends the session the sign-out route presents. It is the session
+	// service's Close, and it is mounted inside the login surface: see [Handler.Mux].
+	identitySignOut IdentitySessionCloser
 	// sessionAuthenticator reads the session a presented token opens, and accountTickets lists
 	// the tickets the account behind it owns. Together they are GET /me/tickets, which is
 	// mounted only inside the login surface and only with both of them: see [Handler.Mux].
@@ -167,6 +171,14 @@ func (h *Handler) Mux() *http.ServeMux {
 	if h.identityLinks != nil && h.identitySessions != nil {
 		mux.HandleFunc(identityLinkRoute, h.issueIdentityLink)
 		mux.HandleFunc(identitySessionRoute, h.redeemIdentitySession)
+		// Signing out is the end of the session the two routes above open, so it is mounted
+		// inside the same block: a deployment without identity has nothing a person could be
+		// signed out of. It is the one route here with a third collaborator — the session
+		// service's Close — so it is absent where that is absent, rather than mounted against
+		// nothing: a sign-out that could close nothing would be a button that lies.
+		if h.identitySignOut != nil {
+			mux.HandleFunc(identitySignOutRoute, h.closeIdentitySession)
+		}
 		// The account's own list is mounted inside the login surface, never beside it: a
 		// deployment without identity has no signed-in account for it to answer for, so
 		// advertising "these are your tickets" there would advertise a route that could only
