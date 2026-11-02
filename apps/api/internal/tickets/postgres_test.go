@@ -9,13 +9,18 @@
 // reservation and the same charge; that the amount stays the recorded charge when
 // the event price moves afterwards; that a voided ticket and a cancelled screening
 // still answer with their statuses; and that an identifier naming no ticket is
-// simply not found.
+// simply not found. It also proves the read behind the account's own list (T4): an
+// account sees the tickets of the orders it owns and no others, an order with no
+// account belongs to nobody, a voided ticket stays in the record, and the list is
+// newest first.
 package tickets_test
 
 import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +57,11 @@ const (
 	orderReservation     = "00000000-0000-0000-0000-00000000e0c1"
 	voidReservation      = "00000000-0000-0000-0000-00000000e0c2"
 	cancelledReservation = "00000000-0000-0000-0000-00000000e0c3"
+
+	// The two accounts the account-list read is proven with. They are fixed for the same
+	// reason the venue is: a failed run leaves rows the next one can find by name.
+	accountOne = "00000000-0000-0000-0000-00000000e0c4"
+	accountTwo = "00000000-0000-0000-0000-00000000e0c5"
 )
 
 // fixtureReservations is every reservation the fixture sells, in checkout order.
@@ -355,6 +365,273 @@ func TestTicketDetailAnswersARealSale(t *testing.T) {
 	if len(sold[orderReservation].TicketIDs) != 2 {
 		t.Fatalf("the checkout reported %d tickets, want 2", len(sold[orderReservation].TicketIDs))
 	}
+}
+
+// TestTicketsByCustomerOnPostgres proves the read behind the account's own list against the
+// sale a real checkout writes: the list is scoped by the order's `customer_id` and by nothing
+// else, an order nobody owns belongs to nobody, an empty account is an empty list and not an
+// error, and the order is newest first with the ticket identifier breaking ties.
+func TestTicketsByCustomerOnPostgres(t *testing.T) {
+	ctx := context.Background()
+	pool, url := ticketPool(t, ctx)
+	seedTicketFixture(t, ctx, pool)
+	t.Cleanup(func() {
+		cleanupTicketFixture(pool)
+		// The accounts go after the orders that name them, so a failed run leaves nothing
+		// for the next one to trip over.
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM cinema.guest_customers WHERE id::text = ANY($1)`, []string{accountOne, accountTwo}); err != nil {
+			t.Errorf("clean up the ticket accounts: %v", err)
+		}
+		pool.Close()
+	})
+
+	store, err := tickets.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open the ticket store: %v", err)
+	}
+	defer store.Close()
+
+	sold := chargeFixtureOrders(t, ctx, url)
+	seedTicketAccount(t, ctx, pool, accountOne, "first@example.test")
+	seedTicketAccount(t, ctx, pool, accountTwo, "second@example.test")
+
+	// The two-seat order belongs to the first account and the voided one to the second. The
+	// third order keeps no account at all, which is the state a guest purchase leaves behind
+	// (and the state every order written before identity existed has).
+	for _, owner := range []struct {
+		reservation string
+		account     string
+	}{
+		{orderReservation, accountOne},
+		{voidReservation, accountTwo},
+	} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE cinema.reservations SET customer_id = $2 WHERE id = $1`, owner.reservation, owner.account); err != nil {
+			t.Fatalf("give order %s to account %s: %v", owner.reservation, owner.account, err)
+		}
+	}
+
+	t.Run("each account sees only the tickets of its own orders", func(t *testing.T) {
+		first := listAccountTickets(t, ctx, store, accountOne)
+		second := listAccountTickets(t, ctx, store, accountTwo)
+
+		// The order the first account bought, ticket for ticket: both of them, and no
+		// ticket of anybody else's order. Two tickets of one order share their issue
+		// instant, so the documented tie-break (t.id DESC) is what decides their order
+		// here; comparing against an ascending list would fail on a correct query.
+		if got, want := ticketIDsOf(first), sortedIDsDescending(sold[orderReservation].TicketIDs); !equalIDs(got, want) {
+			t.Fatalf("the first account answered %v, want the tickets of its own order %v", got, want)
+		}
+		for _, detail := range first {
+			if detail.ReservationID != orderReservation {
+				t.Fatalf("the first account answered a ticket of order %q, want only %q",
+					detail.ReservationID, orderReservation)
+			}
+		}
+
+		if got, want := ticketIDsOf(second), sold[voidReservation].TicketIDs; !equalIDs(got, want) {
+			t.Fatalf("the second account answered %v, want the ticket of its own order %v", got, want)
+		}
+		if second[0].ReservationID != voidReservation {
+			t.Fatalf("the second account answered a ticket of order %q, want only %q",
+				second[0].ReservationID, voidReservation)
+		}
+
+		// The two lists share nothing: this is the whole promise of the route.
+		for _, mine := range first {
+			for _, theirs := range second {
+				if mine.TicketID == theirs.TicketID {
+					t.Fatalf("ticket %s is in both accounts' lists", mine.TicketID)
+				}
+			}
+		}
+	})
+
+	t.Run("a ticket of an order with no customer appears for nobody", func(t *testing.T) {
+		guestTicket := sold[cancelledReservation].TicketIDs[0]
+		for _, account := range []string{accountOne, accountTwo} {
+			for _, detail := range listAccountTickets(t, ctx, store, account) {
+				if detail.TicketID == guestTicket {
+					t.Fatalf("account %s was shown %s, a ticket of an order nobody owns", account, guestTicket)
+				}
+			}
+		}
+		// And it is absent from the lists because it belongs to nobody, not because it does
+		// not exist: its own page still answers it.
+		if _, err := store.Detail(ctx, guestTicket); err != nil {
+			t.Fatalf("Detail() of the guest's own ticket = unexpected error %v", err)
+		}
+	})
+
+	t.Run("the list is newest first", func(t *testing.T) {
+		// Both tickets of one order are issued by one statement, so they carry the same
+		// instant: the tie is the realistic case, and the identifier breaks it.
+		wantTie := sortedIDsDescending(sold[orderReservation].TicketIDs)
+		if got := ticketIDsOf(listAccountTickets(t, ctx, store, accountOne)); !equalIDs(got, wantTie) {
+			t.Fatalf("tied tickets answered %v, want %v: the ticket id breaks the tie, descending", got, wantTie)
+		}
+
+		// Then one of them is moved back an hour, and it drops behind the other one.
+		older := sold[orderReservation].TicketIDs[0]
+		newer := sold[orderReservation].TicketIDs[1]
+		if _, err := pool.Exec(ctx,
+			`UPDATE cinema.tickets SET issued_at = now() - interval '1 hour' WHERE id = $1`, older); err != nil {
+			t.Fatalf("age ticket %s: %v", older, err)
+		}
+		if got, want := ticketIDsOf(listAccountTickets(t, ctx, store, accountOne)), []string{newer, older}; !equalIDs(got, want) {
+			t.Fatalf("list order %v, want %v: the newer ticket comes first", got, want)
+		}
+	})
+
+	t.Run("a voided ticket is still the account's ticket", func(t *testing.T) {
+		voidTicket := sold[voidReservation].TicketIDs[0]
+		if _, err := pool.Exec(ctx, `UPDATE cinema.tickets SET status = 'void' WHERE id = $1`, voidTicket); err != nil {
+			t.Fatalf("void the ticket: %v", err)
+		}
+
+		second := listAccountTickets(t, ctx, store, accountTwo)
+		if len(second) != 1 || second[0].TicketID != voidTicket {
+			t.Fatalf("the account answered %v, want its voided ticket %s: the list is a record, not a validity check",
+				ticketIDsOf(second), voidTicket)
+		}
+		if second[0].Status != tickets.TicketStatusVoid {
+			t.Fatalf("status = %q, want void carried unchanged", second[0].Status)
+		}
+	})
+
+	t.Run("an account that owns nothing answers an empty list", func(t *testing.T) {
+		seedTicketAccount(t, ctx, pool, "00000000-0000-0000-0000-00000000e0c6", "third@example.test")
+		t.Cleanup(func() {
+			if _, err := pool.Exec(context.Background(),
+				`DELETE FROM cinema.guest_customers WHERE id = '00000000-0000-0000-0000-00000000e0c6'`); err != nil {
+				t.Errorf("clean up the third account: %v", err)
+			}
+		})
+
+		details, err := store.TicketsByCustomer(ctx, "00000000-0000-0000-0000-00000000e0c6")
+		if err != nil {
+			t.Fatalf("TicketsByCustomer() = unexpected error %v", err)
+		}
+		if len(details) != 0 {
+			t.Fatalf("the account answered %d ticket(s), want none", len(details))
+		}
+	})
+
+	t.Run("a customer id that cannot be a uuid is refused like a ticket id", func(t *testing.T) {
+		for _, garbage := range []string{"", "not-an-account-id", "1", "' OR 1=1 --"} {
+			if _, err := store.TicketsByCustomer(ctx, garbage); !errors.Is(err, tickets.ErrNotFound) {
+				t.Fatalf("TicketsByCustomer(%q) = %v, want ErrNotFound without a query", garbage, err)
+			}
+		}
+	})
+
+	t.Run("the list and the ticket route answer one projection", func(t *testing.T) {
+		for _, detail := range listAccountTickets(t, ctx, store, accountOne) {
+			served, err := store.Detail(ctx, detail.TicketID)
+			if err != nil {
+				t.Fatalf("Detail(%s) = unexpected error %v", detail.TicketID, err)
+			}
+			if !reflect.DeepEqual(detail, served) {
+				t.Fatalf("the list entry %+v differs from the ticket route's %+v", detail, served)
+			}
+		}
+	})
+
+	// Preserve: the amount still comes from the captured payment of each order, so a list
+	// entry is as complete as the ticket page — the two-seat order charged 19,98 EUR.
+	for _, detail := range listAccountTickets(t, ctx, store, accountOne) {
+		if detail.OrderAmountCents != fixturePriceCents*2 {
+			t.Fatalf("ticket %s order amount = %d, want the captured %d",
+				detail.TicketID, detail.OrderAmountCents, fixturePriceCents*2)
+		}
+	}
+}
+
+// chargeFixtureOrders pays the three fixture orders through the real checkout, so the
+// tickets the reads answer were issued by the system and not inserted by hand.
+func chargeFixtureOrders(t *testing.T, ctx context.Context, url string) map[string]checkout.Result {
+	t.Helper()
+	checkoutStore, err := checkout.NewPostgresStore(ctx, url)
+	if err != nil {
+		t.Fatalf("open the checkout store: %v", err)
+	}
+	defer checkoutStore.Close()
+
+	service := checkout.NewService(payment.NewSimulated(), checkoutStore, noRelease{}, payment.ProviderName)
+	sold := make(map[string]checkout.Result, len(fixtureReservations))
+	for _, reservationID := range fixtureReservations {
+		result, err := service.Charge(ctx, reservationID, "key-"+reservationID)
+		if err != nil {
+			t.Fatalf("checkout of %s = unexpected error %v", reservationID, err)
+		}
+		if result.PaymentStatus != checkout.PaymentApproved {
+			t.Fatalf("checkout of %s = %+v, want an approved payment", reservationID, result)
+		}
+		sold[reservationID] = result
+	}
+	return sold
+}
+
+// seedTicketAccount creates one account, or leaves the existing one alone: the identifier and
+// the address are fixed, so a second run finds the account instead of failing on the unique
+// constraint 0010 puts on the address.
+func seedTicketAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, accountID, email string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO cinema.guest_customers (id, email, verified_at) VALUES ($1, $2, now())
+ON CONFLICT (id) DO NOTHING`, accountID, email); err != nil {
+		t.Fatalf("seed account %s: %v", email, err)
+	}
+}
+
+// listAccountTickets asks the store for one account's tickets and fails the test if the read
+// does not answer at all.
+func listAccountTickets(t *testing.T, ctx context.Context, store *tickets.PostgresStore, accountID string) []tickets.TicketDetail {
+	t.Helper()
+	details, err := store.TicketsByCustomer(ctx, accountID)
+	if err != nil {
+		t.Fatalf("TicketsByCustomer(%s) = unexpected error %v", accountID, err)
+	}
+	return details
+}
+
+// ticketIDsOf returns the identifiers a list answered, in the order it answered them.
+func ticketIDsOf(details []tickets.TicketDetail) []string {
+	ids := make([]string, 0, len(details))
+	for _, detail := range details {
+		ids = append(ids, detail.TicketID)
+	}
+	return ids
+}
+
+// sortedIDs and sortedIDsDescending are the two orders a uuid column can produce, computed
+// here rather than assumed: the test states the order it expects instead of accepting
+// whatever the read answered.
+func sortedIDs(ids []string) []string {
+	ordered := append([]string(nil), ids...)
+	sort.Strings(ordered)
+	return ordered
+}
+
+func sortedIDsDescending(ids []string) []string {
+	ordered := sortedIDs(ids)
+	for left, right := 0, len(ordered)-1; left < right; left, right = left+1, right-1 {
+		ordered[left], ordered[right] = ordered[right], ordered[left]
+	}
+	return ordered
+}
+
+func equalIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // ticketPool opens the gated isolated database and refuses to run anywhere the

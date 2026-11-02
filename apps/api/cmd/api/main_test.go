@@ -1240,6 +1240,16 @@ func identitySessionRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// myTicketsRouted reports whether the account's own list is mounted. The probe carries no
+// credential, so a mounted route answers its fixed 401 and an unmounted one answers 404 — no
+// database is touched either way, because a missing or misshapen token never reaches the
+// session store.
+func myTicketsRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/me/tickets", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // T2 (S6): without its signing key the login surface is not built at all. It answers one
 // line naming the setting that is missing and keeps serving: this is the state every gate
 // runs in, and it must be the state every deployment that predates identity keeps.
@@ -1271,6 +1281,11 @@ func TestMountReservationLeavesTheIdentityLoginOffWithoutItsKey(t *testing.T) {
 	}
 	if identityLinkRouted(srv) || identitySessionRouted(srv) {
 		t.Fatal("a deployment with no identity link key advertised the login routes")
+	}
+	// T4 (S5): and it does not advertise the account's list either. "These are your tickets"
+	// is a promise only a deployment that can sign somebody in is allowed to make.
+	if myTicketsRouted(srv) {
+		t.Fatal("a deployment with no identity link key advertised the account's ticket list")
 	}
 	if !strings.Contains(logged.String(), "identity login disabled") {
 		t.Fatalf("log = %q, want the one line saying the identity login is disabled", logged.String())
@@ -1318,6 +1333,9 @@ func TestMountReservationLeavesTheIdentityLoginOffWithoutAMailProvider(t *testin
 	}
 	if identityLinkRouted(srv) || identitySessionRouted(srv) {
 		t.Fatal("a deployment with no mail provider advertised the login routes")
+	}
+	if myTicketsRouted(srv) {
+		t.Fatal("a deployment with no mail provider advertised the account's ticket list")
 	}
 	if !strings.Contains(logged.String(), "identity login disabled") {
 		t.Fatalf("log = %q, want the one line saying the identity login is disabled", logged.String())

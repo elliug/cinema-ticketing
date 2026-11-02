@@ -264,6 +264,20 @@ segundo.
   el token de sesión aparece en una respuesta; el API no pone cookies, las pone Next. Límite de 3 por
   dirección y 15 minutos, con `EXPIRE` solo en el primer incremento y Redis caído = error, nunca
   permiso.
+- **Slice 5 — `GET /me/tickets`**: la lectura que hace que una cuenta sirva para algo. El token de
+  sesión llega en `Authorization: Bearer`; caducado, revocado, malformado e inventado responden el
+  **mismo** 401 con el **mismo cuerpo** que la ruta de entrada; una cuenta sin compras responde
+  `200 {"tickets":[]}` y no un 404, porque la cuenta existe y simplemente no ha comprado. La lista
+  reutiliza **la misma proyección** que la página de la entrada (un test compara las dos respuestas
+  byte a byte para el mismo ticket) y se ordena por instante de emisión con el identificador como
+  desempate, porque dos entradas de un pedido comparten instante.
+  La consulta se acota por `reservations.customer_id` y nada más — ni `contact_email` (dirección
+  nunca verificada en 0009, y una lista construida sobre ella filtraría pedidos ajenos por una
+  errata) ni el identificador de la entrada, que es capacidad y no propiedad. `customer_id` nulo no
+  aparece en la lista de nadie.
+  El gated contra PostgreSQL **falló la primera vez** y por una razón que importa: la aserción
+  esperaba el orden ascendente mientras la consulta desempata descendente. El fallo era del test, no
+  de la consulta, y se corrigió el test — no la consulta.
 
 ## Log
 

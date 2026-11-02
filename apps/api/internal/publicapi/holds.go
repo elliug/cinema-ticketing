@@ -15,8 +15,9 @@
 // (GET /ticket-links/{token}), which verifies the token and answers the paid order's tickets,
 // the resend route that mails that same ticket email to an address typed on a ticket page
 // (POST /tickets/{ticketId}/email), which stores nothing it is given, the sign-in link a login
-// email carries (POST /identity/links) and the route that spends one for a session token
-// (POST /identity/sessions).
+// email carries (POST /identity/links), the route that spends one for a session token
+// (POST /identity/sessions), and the account's own list (GET /me/tickets), which is the read
+// that makes signing in worth anything.
 //
 // Routes here are public application routes. They are mounted outside the
 // administrative guard, because a customer selecting seats, paying for them, showing
@@ -69,14 +70,20 @@ type Handler struct {
 	// not at all: see [Handler.WithIdentity].
 	identityLinks    IdentityLinkService
 	identitySessions IdentitySessionService
+	// sessionAuthenticator reads the session a presented token opens, and accountTickets lists
+	// the tickets the account behind it owns. Together they are GET /me/tickets, which is
+	// mounted only inside the login surface and only with both of them: see [Handler.Mux].
+	sessionAuthenticator SessionAuthenticator
+	accountTickets       AccountTicketsService
 }
 
 // New builds a Handler over the given service. The checkout, ticket detail, ticket
-// PDF, ticket admission, ticket link, ticket email, identity, catalogue and reservation read
-// routes are attached separately, by WithPayments, WithTickets, WithTicketPDFs, WithRedemption,
-// WithTicketLinks, WithTicketEmail, WithIdentity, WithCatalog, WithReservations and
-// WithCancellation, so a deployment without the checkout schema, without object storage or
-// without a mail provider mounts none of them.
+// PDF, ticket admission, ticket link, ticket email, identity, account list, catalogue and
+// reservation read routes are attached separately, by WithPayments, WithTickets, WithTicketPDFs,
+// WithRedemption, WithTicketLinks, WithTicketEmail, WithIdentity, WithIdentityTickets,
+// WithCatalog, WithReservations and WithCancellation, so a deployment without the checkout
+// schema, without object storage, without a mail provider or without identity mounts none of
+// them.
 func New(svc HoldService) *Handler { return &Handler{svc: svc} }
 
 // Mux returns the public route table. The routes are relative to the mount
@@ -160,6 +167,15 @@ func (h *Handler) Mux() *http.ServeMux {
 	if h.identityLinks != nil && h.identitySessions != nil {
 		mux.HandleFunc(identityLinkRoute, h.issueIdentityLink)
 		mux.HandleFunc(identitySessionRoute, h.redeemIdentitySession)
+		// The account's own list is mounted inside the login surface, never beside it: a
+		// deployment without identity has no signed-in account for it to answer for, so
+		// advertising "these are your tickets" there would advertise a route that could only
+		// ever refuse. It also needs both halves it is built from — the session read that
+		// proves who is asking and the list that fills the answer — so a deployment with only
+		// one of them mounts nothing rather than half a capability.
+		if h.sessionAuthenticator != nil && h.accountTickets != nil {
+			mux.HandleFunc(myTicketsRoute, h.listMyTickets)
+		}
 	}
 	return mux
 }

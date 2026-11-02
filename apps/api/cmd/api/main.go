@@ -15,7 +15,9 @@
 // of one reservation. Identity adds the login: the route that asks for a sign-in link by
 // mail and the route that spends one for a session token. It is built only where every piece
 // it needs exists — a signing key, a mail provider, the migration 0010 tables — and a
-// deployment without them keeps serving exactly as it did before identity existed.
+// deployment without them keeps serving exactly as it did before identity existed. Beside it,
+// and only where it exists, is the read that makes an account worth having: the tickets the
+// signed-in account owns (GET /me/tickets), which until now the browser remembered for itself.
 package main
 
 import (
@@ -265,11 +267,15 @@ type reservationProcess struct {
 	outboxStore   *pdf.OutboxStore
 	emailStore    *email.PostgresStore
 	identityStore *identity.PostgresStore
-	redis         *redis.Client
-	sweeper       *reservation.Sweeper
-	reconciler    *checkout.Reconciler
-	pdfWorker     *pdf.Worker
-	emailWorker   *email.Worker
+	// identitySessions is the pool the session read behind GET /me/tickets uses. It is a store
+	// of its own because the identity package keeps the sign-in link and the session apart, and
+	// one Close has to release it like every other pool the process opened.
+	identitySessions *identity.PostgresSessionStore
+	redis            *redis.Client
+	sweeper          *reservation.Sweeper
+	reconciler       *checkout.Reconciler
+	pdfWorker        *pdf.Worker
+	emailWorker      *email.Worker
 }
 
 // Close releases the pooled connections. It is nil-safe so the process wiring can
@@ -298,6 +304,9 @@ func (p *reservationProcess) Close() {
 	}
 	if p.identityStore != nil {
 		p.identityStore.Close()
+	}
+	if p.identitySessions != nil {
+		p.identitySessions.Close()
 	}
 	if p.redis != nil {
 		_ = p.redis.Close()
@@ -520,6 +529,10 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	// one and never from it: the two keys have different lifetimes, and rotating the link key
 	// of an old email must not invalidate a printed code.
 	var ticketLinks *tickets.LinkSigner
+	// ticketSigner is the signer of the code the ticket page and the PDF print. It is kept
+	// beside the service that wraps it because the account's list reads many tickets at once
+	// and signs them itself, instead of asking the service for one ticket per query.
+	var ticketSigner *tickets.Signer
 	if ticketPresent {
 		// The ticket surface signs the code the web page and the PDF both print, so it
 		// cannot be mounted without a usable key: a ticket route that could not sign
@@ -536,6 +549,7 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			store.Close()
 			return nil, fmt.Errorf("configure the ticket QR signing key (API_TICKET_QR_KEY): %w", signerErr)
 		}
+		ticketSigner = signer
 		// The service wraps the store, so the signed code belongs to the served detail:
 		// the confirmation page (T7) and the PDF (T6) read it from the projection instead
 		// of each minting a code of their own.
@@ -681,6 +695,11 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	var identityStore *identity.PostgresStore
 	var identityLinks publicapi.IdentityLinkService
 	var identitySessions publicapi.IdentitySessionService
+	// accountTickets is the read behind GET /me/tickets. It is nil unless the login is wired
+	// and this database has the tickets to list, which is exactly what keeps the route
+	// unmounted: a deployment with no identity has no account to answer for, and one with no
+	// tickets would answer 503 to every signed-in person.
+	var accountTickets publicapi.AccountTicketsService
 	login, loginErr := newIdentitySurface(cfg, mailSender, client, logger)
 	if loginErr != nil {
 		ticketStore.Close()
@@ -698,6 +717,12 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 		identityStore = login.store
 		identityLinks = login.links
 		identitySessions = login.sessions
+		if ticketPresent && ticketSigner != nil {
+			// The account's list reads what the checkout issued and signs each code with the
+			// key the ticket page already prints, so the list and the page show one code per
+			// ticket instead of two that could disagree.
+			accountTickets = accountTicketList{store: ticketStore, signer: ticketSigner}
+		}
 	}
 
 	// The catalogue, the seat page's read of one screening and the confirmation's read are
@@ -754,10 +779,17 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 			"required", "0005_checkout")
 	}
 
-	srv.WithPublic(publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
+	publicHandler := publicapi.New(svc).WithPayments(payments).WithTickets(ticketDetails).
 		WithRedemption(ticketRedemptions).WithTicketPDFs(ticketPDFs).WithTicketLinks(ticketLinks).
 		WithTicketEmail(ticketEmails).WithIdentity(identityLinks, identitySessions).
-		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc).Mux())
+		WithCatalog(catalogue).WithReservations(reservationReads).WithCancellation(svc)
+	// The account's list is attached only where the login and the tickets both exist. The
+	// builder itself refuses a nil half, so this is one decision in one place: no identity,
+	// no route.
+	if accountTickets != nil {
+		publicHandler = publicHandler.WithIdentityTickets(login.authenticator, accountTickets)
+	}
+	srv.WithPublic(publicHandler.Mux())
 	logger.Info("public reservation API mounted",
 		"prefix", "/api/v1", "hold_ttl", cfg.HoldTTL, "expiry_interval", cfg.ExpiryInterval,
 		"expiry_batch", cfg.ExpiryBatch, "checkout", checkoutPresent, "tickets", ticketPresent,
@@ -799,16 +831,31 @@ func mountReservationWithProbes(cfg config.Config, srv *httpserver.Server, logge
 	}
 	if login != nil {
 		// The lifetimes and the bound are configuration an operator needs to see; the key is a
-		// secret and is never named here.
+		// secret and is never named here. The account's list is named only when it is mounted,
+		// so the line never advertises a route this deployment does not serve.
+		routes := []string{"/api/v1/identity/links", "/api/v1/identity/sessions"}
+		if accountTickets != nil {
+			routes = append(routes, "/api/v1/me/tickets")
+		}
 		logger.Info("identity login routes mounted",
-			"routes", []string{"/api/v1/identity/links", "/api/v1/identity/sessions"},
+			"routes", routes,
 			"link_ttl", cfg.IdentityLinkTTL, "session_ttl", cfg.IdentitySessionTTL,
 			"limit", fmt.Sprintf("%d per %s per address", identity.LinkLimit, identity.LinkWindow))
 	}
 	return &reservationProcess{store: store, checkoutStore: checkoutStore, ticketStore: ticketStore,
 		catalogStore: catalogStore, outboxStore: outboxStore, emailStore: emailStore,
-		identityStore: identityStore, redis: client,
+		identityStore: identityStore, identitySessions: loginSessionStore(login), redis: client,
 		sweeper: sweeper, reconciler: reconciler, pdfWorker: pdfWorker, emailWorker: emailWorker}, nil
+}
+
+// loginSessionStore answers the session store the login was wired with, or nil when there was
+// no login. It exists so the process's Close releases that pool like every other one without a
+// second nil check on the surface at the call site.
+func loginSessionStore(surface *identitySurface) *identity.PostgresSessionStore {
+	if surface == nil {
+		return nil
+	}
+	return surface.sessionStore
 }
 
 // newTicketArchive builds the artefact archive over the S3 adapter. The adapter
@@ -886,16 +933,26 @@ func newTicketEmailWorker(cfg config.Config, sender email.Sender, link email.Lin
 	return store, worker, nil
 }
 
-// identitySurface is what the two login routes are served by: one durable store behind both
-// halves of the flow, and the two domain services over it.
+// identitySurface is what the login routes are served by: one durable store behind both
+// halves of the link flow, the two domain services over it, and the session read the account
+// route is gated by.
 //
-// The store is one value because the two halves must read and write the same rows: an issuer
-// recording nonces in one database and a redeemer spending them in another is a login nobody
-// can complete, and the mistake would look like a refused link rather than like a miswiring.
+// The link store is one value because the two halves must read and write the same rows: an
+// issuer recording nonces in one database and a redeemer spending them in another is a login
+// nobody can complete, and the mistake would look like a refused link rather than like a
+// miswiring. The session store is a second value because the identity package keeps the link
+// and the session apart (S1, S2); it reads the same table the redeemer writes its session row
+// into, so a token minted by a login is one this surface can authenticate.
 type identitySurface struct {
 	store    *identity.PostgresStore
 	links    publicapi.IdentityLinkService
 	sessions publicapi.IdentitySessionService
+	// sessionStore is the pool behind [identity.SessionService]; the process closes it with
+	// every other pool it opened.
+	sessionStore *identity.PostgresSessionStore
+	// authenticator proves the session a presented token opens. It is what GET /me/tickets
+	// asks who is calling, before it reads anything.
+	authenticator publicapi.SessionAuthenticator
 }
 
 // newIdentitySurface builds the login surface, or says in one line what it is missing and
@@ -962,7 +1019,62 @@ func newIdentitySurface(cfg config.Config, sender email.Sender, client redis.Uni
 		logger.Info("identity login disabled: the session could not be wired", "error", redeemerErr.Error())
 		return nil, nil
 	}
-	return &identitySurface{store: store, links: issuer, sessions: redeemer}, nil
+
+	// The session read that the account's own list is gated by. A store that cannot be opened
+	// closes the login rather than the process, like every other missing piece here: a login
+	// whose sessions could be minted and never read would sign people in and then answer 503
+	// for everything they signed in for.
+	sessionStore, sessionStoreErr := identity.NewSessionStore(startupCtx, cfg.DatabaseURL)
+	if sessionStoreErr != nil {
+		store.Close()
+		logger.Info("identity login disabled: the session store could not be opened",
+			"error", redactDatabaseURL(sessionStoreErr.Error(), cfg.DatabaseURL))
+		return nil, nil
+	}
+	authenticator, authenticatorErr := identity.NewSessionService(sessionStore, cfg.IdentitySessionTTL)
+	if authenticatorErr != nil {
+		sessionStore.Close()
+		store.Close()
+		logger.Info("identity login disabled: the session read could not be wired",
+			"error", authenticatorErr.Error())
+		return nil, nil
+	}
+	return &identitySurface{store: store, links: issuer, sessions: redeemer,
+		sessionStore: sessionStore, authenticator: authenticator}, nil
+}
+
+// accountTicketList is the read behind GET /api/v1/me/tickets: the account's tickets from one
+// query, each carrying the signed code its own ticket page serves.
+//
+// It signs here rather than in the store because signing is the ticket surface's job, and it
+// does not go through the ticket service because that service reads one ticket per query: a
+// list is the one place where reading one at a time would be a round trip per ticket. The
+// result is the same code either way — the same projection, the same signer — so the web page,
+// the PDF and the list show one code for one ticket.
+type accountTicketList struct {
+	store  *tickets.PostgresStore
+	signer *tickets.Signer
+}
+
+// compile-time proof that the wiring satisfies what the account route asks of it.
+var _ publicapi.AccountTicketsService = accountTicketList{}
+
+// TicketsByCustomer answers the account's tickets with their codes, or the store's error
+// unchanged: a list that could not be read is never a list with the codes missing, because a
+// ticket nobody can scan is not a ticket a list may hand out.
+func (l accountTicketList) TicketsByCustomer(ctx context.Context, customerID string) ([]tickets.TicketDetail, error) {
+	details, err := l.store.TicketsByCustomer(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range details {
+		token, err := l.signer.Sign(details[index])
+		if err != nil {
+			return nil, fmt.Errorf("%w: the ticket code could not be signed: %w", tickets.ErrUnavailable, err)
+		}
+		details[index].QRToken = token
+	}
+	return details, nil
 }
 
 // identityMailer adapts the ticket email's provider to the identity package's mail boundary.
