@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; fi)
 
-.PHONY: install check api-test web-check deps-up deps-down mail-up up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-email verify-e2e
+.PHONY: install check api-test web-check deps-up deps-down mail-up up migrate migrate-down migrate-all seed-dev ensure-bucket bootstrap verify-migrations smoke verify-m0 verify-m1 verify-m2 verify-m3 verify-m35 verify-m41 verify-email verify-identity verify-e2e
 
 # The bootstrap command that owns the readiness wait, the development seed and the
 # ticket bucket. It uses the same Docker Compose CLI detection as COMPOSE below.
@@ -144,6 +144,22 @@ verify-m41:
 # to be configured for any other target.
 verify-email:
 	./scripts/verify_email.sh
+
+# The identity exit evidence: the login, proven end to end through the public surface on its own
+# stack. A sale is paid with an address and belongs to no account; asking for a sign-in link
+# answers 202 and exactly one message to that address carries `<origin>/in/<token>`; that token
+# redeems **once** into a session whose row holds its SHA-256 — the property S1 exists for — and
+# claims the order the address was used for (D5); GET /me/tickets with the token answers exactly
+# that order's tickets, while no token, an unissued token, a spent link and a revoked session all
+# answer the login route's one opaque 401; three links per address are allowed and the next four
+# answer the same 202 while the mailbox does not grow (S6). There is no sign-out route yet, so
+# revocation is proven as the predicate the session row decides and not as a flow a person can
+# perform — the gate says so in its own summary. It creates and removes its own database, Redis
+# index (13 by default), API port and bucket; it starts Mailpit on purpose, because the login is
+# mail, and stops it again only when this run is what started it. It needs Docker Compose, Go, jq
+# and curl, each checked with a named refusal.
+verify-identity:
+	./scripts/verify_identity.sh
 
 # The Playwright suite alone, against a web server and an API that are already running
 # (`API_BASE_URL` defaults to http://127.0.0.1:8080). Useful while iterating on a scenario.
