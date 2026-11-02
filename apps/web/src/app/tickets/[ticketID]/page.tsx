@@ -24,8 +24,9 @@
 //                                 verification answer in words.
 //
 // Guest access is by the ticket id, which is a capability: a forwarded link opens the
-// ticket for whoever holds it, and no route lists tickets (milestone log, L3). The page
-// says so rather than implying that it checked who you are.
+// ticket for whoever holds it. An account lists the tickets bought with a proved address, but
+// it does not protect them — this page is as public as the link it is opened from, and it says
+// so rather than implying that it checked who you are.
 //
 // The route is server-rendered per request: validity is answered per request, so nothing
 // here may be cached or prerendered.

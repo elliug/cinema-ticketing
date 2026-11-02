@@ -4,9 +4,12 @@
 // administrative guard, and require no credential: a guest selects seats without
 // an account, pays for them and shows the ticket. This client therefore:
 //
-//   - sends no Authorization header and reads no token; the only header it adds
-//     besides the usual JSON ones is the Idempotency-Key of a hold or a payment
-//     attempt;
+//   - sends one credential, and only where an account is the subject: the session
+//     token this application keeps in its own HttpOnly cookie (lib/session.ts) is
+//     presented as a bearer by [PublicClient.myTickets], which is the only call here
+//     that carries an Authorization header. Every other call sends none and reads no
+//     token; besides the usual JSON ones, the only header those add is the
+//     Idempotency-Key of a hold or a payment attempt;
 //   - targets a configurable base URL resolved from server-side environment
 //     variables, defaulting to http://127.0.0.1:8080;
 //   - converts failures into typed results instead of throwing, so callers must
@@ -26,7 +29,9 @@
 // ticket page offers (so mailing that link to an address typed there is also a call this
 // process makes, with the address stored nowhere and the hourly bound read from the API), and
 // the two halves of signing in (so a link is asked for and spent in this process as well, and
-// the browser only ever holds the session cookie this application issues).
+// the browser only ever holds the session cookie this application issues), and the account's
+// own list of tickets (the one read that presents that session, and the reason an account is
+// worth having at all).
 // The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
@@ -216,9 +221,9 @@ export interface PublicOrderSeat {
  *   - `startsAtLocal` is the venue's own presentation of `startsAt`, computed by the
  *     API, so a reloaded page prints the cinema's clock rather than the browser's.
  *
- * The identifier is the capability (the demonstration session authenticates nobody),
- * so this read is exactly as public as the ticket route and answers no buyer identity
- * and no payment-attempt internals.
+ * The identifier is the capability (a reservation is opened by its link, and an account
+ * protects the list of them and not the links themselves), so this read is exactly as public
+ * as the ticket route and answers no buyer identity and no payment-attempt internals.
  */
 export interface PublicReservation {
   reservationId: string;
@@ -406,6 +411,20 @@ export interface RedeemTicketInput {
   label?: string;
 }
 
+/**
+ * GET /me/tickets — the account's own list, for the session presented with it (T7 · S5, D3).
+ *
+ * The entries are the ticket page's own document, field for field, because the same row is
+ * rendered on both screens: a second, thinner shape here would be a second rendering of a ticket
+ * that could disagree with the page it links to. An account that bought nothing answers an empty
+ * array, and the API orders the list itself — newest first, the identifier breaking ties — so a
+ * caller renders it as served rather than sorting a second time.
+ */
+export interface PublicAccountTickets {
+  /** The account's tickets, in the box office's order. Empty is an answer, not a failure. */
+  tickets: PublicTicket[];
+}
+
 /** One screening of the public catalogue, as `GET /events` answers it. */
 /**
  * POST /identity/links — the answer of "mail me a sign-in link".
@@ -562,6 +581,25 @@ export interface PublicClient {
   payReservation(input: PayReservationInput): Promise<PublicResult<PublicPayment>>;
   getTicket(ticketId: string): Promise<PublicResult<PublicTicket>>;
   /**
+   * The tickets this account bought, read with the session token this browser holds.
+   *
+   * This is the **first** call in this application that sends a credential to the API, and the
+   * token comes from exactly one place: [readSessionToken] in lib/session.ts, the `HttpOnly`
+   * cookie this application issued when a mailed link was spent. It is never read from a client
+   * component, never logged, never cached and never placed in a URL — it travels in the
+   * `Authorization` header of this one request and nowhere else. A caller therefore does not get
+   * to pass an arbitrary string in: it passes the cookie's own value, on the server, from the
+   * session helper that owns it.
+   *
+   * The two refusals are different facts and arrive as different problems. A `401` is the opaque
+   * refusal the sign-in route already gives — spent, expired, revoked and never issued are one
+   * answer — and it needs the `unauthorized` code so a page can say that the session ended
+   * instead of printing a broken-answer message. A `503` is our failure, retryable, and must never
+   * read as a sign-out. An unreadable body is refused rather than half-rendered: an empty account
+   * answers `{"tickets": []}`, so a missing list is a broken read and not a list of nothing.
+   */
+  myTickets(sessionToken: string): Promise<PublicResult<PublicAccountTickets>>;
+  /**
    * Asks the box office to mail a sign-in link to this address.
    *
    * The single answer covers every outcome the route is allowed to talk about: a link was
@@ -666,6 +704,11 @@ export type PaymentResponse =
 /** The serializable answer of a ticket read. */
 export type TicketResponse =
   | { ok: true; ticket: PublicTicket }
+  | { ok: false; problem: PublicProblem };
+
+/** The serializable answer of the account list read. */
+export type AccountTicketsResponse =
+  | { ok: true; tickets: PublicTicket[] }
   | { ok: false; problem: PublicProblem };
 
 /** The serializable answer of a ticket-email send. */
@@ -995,6 +1038,33 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
       return parseTicket(result.value);
     },
 
+    async myTickets(sessionToken) {
+      // The token this application's own session cookie holds. A blank one names no session, and
+      // sending it would only ask the API for the refusal this client already knows the answer to
+      // — while putting an empty credential on the wire.
+      const token = sessionToken.trim();
+      if (token === "") {
+        return { ok: false, error: invalidInput("this read needs the session this browser holds") };
+      }
+
+      // The one credential-bearing request of this client. The header is the whole of where the
+      // token goes: not the path, not a query string, not the body, and nothing here logs or
+      // caches the request (a cached list would answer a second person with the first person's
+      // tickets).
+      const result = await send<unknown>("/me/tickets", {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      });
+      if (!result.ok) {
+        return { ok: false, error: accountProblem(result.error) };
+      }
+      return parseAccountTickets(result.value);
+    },
+
     async sendTicketEmail(ticketId, email) {
       const id = ticketId.trim();
       if (id === "") {
@@ -1201,6 +1271,81 @@ function invalidInput(detail: string): PublicProblem {
     code: "invalid_input",
     detail,
   };
+}
+
+/**
+ * The account read's two refusals, in the vocabulary the screens read.
+ *
+ * A `401` is mapped by status as well as by code: the route answers the login route's own fixed
+ * body, but a refusal that arrives without one must still read as the refusal rather than as a
+ * body this client failed to parse — the difference is a page that says the session ended and a
+ * page that says the box office answered something unreadable. A `503` is mapped the same way,
+ * for the opposite reason: it must stay retryable, never a sign-out, even with no body at all.
+ */
+function accountProblem(problem: PublicProblem): PublicProblem {
+  if (problem.code === "unauthorized") {
+    return problem;
+  }
+  if (problem.status === 401) {
+    return {
+      type: "https://cinema.local/problems/unauthorized",
+      title: "Unauthorized",
+      status: 401,
+      code: "unauthorized",
+      detail: problem.detail,
+    };
+  }
+  if (problem.code === "service_unavailable") {
+    return problem;
+  }
+  if (problem.status === 503) {
+    return {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: problem.detail,
+    };
+  }
+  return problem;
+}
+
+/**
+ * Reads the account's list, refusing anything that is not the list.
+ *
+ * One unreadable entry refuses the whole read. Dropping it would hide a ticket the account owns,
+ * and printing it would render half of one; an empty array is the only shape that means "nothing
+ * was bought", and the route serves that shape rather than a missing key.
+ */
+function parseAccountTickets(value: unknown): PublicResult<PublicAccountTickets> {
+  if (!isRecord(value) || !Array.isArray(value.tickets)) {
+    return {
+      ok: false,
+      error: unexpectedResponse(
+        200,
+        "the account list carries no ticket list, so what the account bought cannot be said",
+      ),
+    };
+  }
+
+  const tickets: PublicTicket[] = [];
+  for (const item of value.tickets) {
+    const parsed = parseTicket(item);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: unexpectedResponse(
+          200,
+          `the account list contains a ticket this client cannot read: ${parsed.error.detail}`,
+        ),
+      };
+    }
+    tickets.push(parsed.value);
+  }
+
+  // Served order, untouched: the API answers newest first and breaks ties by identifier, so a
+  // client that sorted again would be a second opinion about somebody's history.
+  return { ok: true, value: { tickets } };
 }
 
 function parsePayment(value: unknown): PublicResult<PublicPayment> {

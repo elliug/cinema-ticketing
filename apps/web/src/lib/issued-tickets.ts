@@ -1,10 +1,12 @@
 // What this browser tab remembers about its tickets, and how the ticket surfaces read
 // the box office's answer (M3.5 · T7 · S3, S8).
 //
-// There is no identity in this application: the demonstration session authenticates
-// nobody and no route lists tickets (milestone log, L3 and L4). A "my tickets" screen
-// therefore **cannot** be a server-side query — it can only show what this browser
-// kept from the purchases it made in it. That is the whole of [readKeptTickets] and its
+// There is identity in this application since the magic-link work, and `/tickets` uses it when this
+// browser holds a session: the account's list is read from the box office and this module is not
+// consulted at all. What is left here is the **guest** record — the ids this tab kept from the
+// purchases it made in it — which is still the only thing a buyer without an account has, and
+// still cannot be a server-side query because there is no account to query for (D4: buying and
+// opening a ticket never require one). That is the whole of [readKeptTickets] and its
 // two neighbours, and it is why the screen says what it is instead of looking like an
 // account.
 //
