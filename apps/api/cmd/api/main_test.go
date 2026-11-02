@@ -1240,6 +1240,15 @@ func identitySessionRouted(srv *httpserver.Server) bool {
 	return w.Code != http.StatusNotFound
 }
 
+// identitySignOutRouted reports whether the sign-out route is mounted, the same way. It carries
+// no credential, so a mounted route answers its fixed 204 and an unmounted one answers 404 — no
+// database is touched either way, because a missing token never reaches the session store.
+func identitySignOutRouted(srv *httpserver.Server) bool {
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/v1/identity/sessions", nil))
+	return w.Code != http.StatusNotFound
+}
+
 // myTicketsRouted reports whether the account's own list is mounted. The probe carries no
 // credential, so a mounted route answers its fixed 401 and an unmounted one answers 404 — no
 // database is touched either way, because a missing or misshapen token never reaches the
@@ -1279,7 +1288,7 @@ func TestMountReservationLeavesTheIdentityLoginOffWithoutItsKey(t *testing.T) {
 	if proc.identityStore != nil {
 		t.Fatal("a deployment with no identity link key opened the identity store")
 	}
-	if identityLinkRouted(srv) || identitySessionRouted(srv) {
+	if identityLinkRouted(srv) || identitySessionRouted(srv) || identitySignOutRouted(srv) {
 		t.Fatal("a deployment with no identity link key advertised the login routes")
 	}
 	// T4 (S5): and it does not advertise the account's list either. "These are your tickets"
@@ -1331,7 +1340,7 @@ func TestMountReservationLeavesTheIdentityLoginOffWithoutAMailProvider(t *testin
 	if proc.identityStore != nil {
 		t.Fatal("a deployment with no mail provider opened the identity store")
 	}
-	if identityLinkRouted(srv) || identitySessionRouted(srv) {
+	if identityLinkRouted(srv) || identitySessionRouted(srv) || identitySignOutRouted(srv) {
 		t.Fatal("a deployment with no mail provider advertised the login routes")
 	}
 	if myTicketsRouted(srv) {

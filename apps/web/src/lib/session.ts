@@ -129,9 +129,11 @@ export async function readSessionToken(): Promise<string | null> {
  *
  * It expires the cookie rather than deleting it by name: a `Set-Cookie` with `Max-Age=0` and the
  * same path is the form every browser honours, and it targets exactly the cookie [setSessionCookie]
- * wrote. This closes **this browser's** copy of the session; the row behind it stays live at the
- * box office until it expires. Closing the row is `SessionService.Close`, which is the next task,
- * and the sign-out copy says so instead of pretending otherwise.
+ * wrote. This closes **this browser's** copy of the session; closing the row at the box office is
+ * `DELETE /api/v1/identity/sessions` (`SessionService.Close`), which the sign-out action calls
+ * *before* it gets here. The order matters and is the opposite of convenience: revoking first means
+ * a failure leaves the cookie in place to be retried, while clearing first would strand a live row
+ * behind a browser that no longer remembers it.
  */
 export async function clearSessionCookie(): Promise<void> {
   const { cookies, headers } = await import("next/headers");

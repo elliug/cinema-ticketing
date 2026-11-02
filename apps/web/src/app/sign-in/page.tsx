@@ -25,6 +25,12 @@
 // has no idea whether this browser holds a session, and a guess rendered on the client would
 // disagree with the server's render (S7 retires the demonstration session precisely because a
 // fake one beside a real one is a claim that the fake one is authentication).
+//
+// The sign-out button now ends the session at both ends — the cookie here (./actions.ts) and the
+// row at the box office (T3) — and the copy below says so. It also says what happens when the
+// box office cannot be reached, because the button still signs this browser out then: a session
+// that could not be closed is one that expires on its own, and holding somebody inside a session
+// they asked to leave is the one outcome worth refusing.
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components";
@@ -87,15 +93,16 @@ export default function SignInPage() {
           <CardHeader>
             <CardTitle id="sign-out">Signed in on this browser?</CardTitle>
             <CardDescription>
-              Signing out removes the session cookie from this browser. The session itself stays
-              live at the box office until it expires — closing it there is the next piece of
-              work, so this button says what it does and no more.
+              Signing out ends the session at both ends: this browser drops the cookie, and the
+              box office closes the session itself, so the credential stops working everywhere
+              rather than only here. If the box office cannot be reached, this browser is signed
+              out anyway — the session then ends on its own when it expires.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form action={signOutAction}>
               <Button type="submit" variant="outline">
-                Sign out of this browser
+                Sign out
               </Button>
             </form>
           </CardContent>

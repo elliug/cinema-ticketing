@@ -1,6 +1,6 @@
-// The two identity routes live in this file: POST /api/v1/identity/links asks for a sign-in
-// link by mail, and POST /api/v1/identity/sessions spends one and answers a session token
-// (T2, S1, S2, S3, S6).
+// The identity routes live in this file: POST /api/v1/identity/links asks for a sign-in link by
+// mail, POST /api/v1/identity/sessions spends one and answers a session token, and
+// DELETE /api/v1/identity/sessions ends the session that token opened (T2, T3, S1, S2, S3, S6).
 //
 // They are the transport half of the login the identity package already implements. That
 // package owns the signature, the nonce, the transaction and the session; what is written
@@ -47,6 +47,14 @@
 // body. Telling them apart would confirm which links this deployment once issued, and — for a
 // link somebody is watching — when its owner used it. The domain already collapses the three
 // into opaque errors; this file forwards that opacity instead of enriching it.
+//
+// # Signing out answers one thing, and it is not a question
+//
+// `DELETE /identity/sessions` presents the session token and answers `204 No Content` for a
+// live token, an expired one, a forged one and a request with no credential at all — see
+// [Handler.closeIdentitySession]. The client is told its sign-out worked, which is true in the
+// only sense it can act on: this credential no longer opens a session here. Nothing about a
+// token, a hash or a row reaches the answer or the log.
 //
 // # Our failures are 503 and our secrets stay out of the logs
 //
@@ -100,11 +108,14 @@ type IdentitySessionService interface {
 	Redeem(ctx context.Context, token string) (string, identity.Session, int, error)
 }
 
-// identityLinkRoute and identitySessionRoute are the two route patterns, relative to the
-// /api/v1 mount point.
+// identityLinkRoute, identitySessionRoute and identitySignOutRoute are the route patterns,
+// relative to the /api/v1 mount point. The last two share a path and differ by method, which is
+// the difference between spending a link for a session and ending one: one is an act that needs
+// a request body, the other is the absence of an act.
 const (
 	identityLinkRoute    = "POST /identity/links"
 	identitySessionRoute = "POST /identity/sessions"
+	identitySignOutRoute = "DELETE /identity/sessions"
 )
 
 // maxIdentityBodyBytes bounds the one field each route reads, so a client cannot make the
@@ -112,7 +123,9 @@ const (
 const maxIdentityBodyBytes = 1 << 10
 
 // WithIdentity attaches both halves of the login and returns the same handler, so the routes
-// are mounted only when the surface behind them exists.
+// are mounted only when the surface behind them exists. The sign-out is attached beside it, by
+// [Handler.WithIdentitySignOut]: it needs the session service rather than the two halves of the
+// link flow.
 //
 // The two routes are mounted as a pair and unmounted as a pair: a link that could be asked
 // for and never redeemed, or a redeem endpoint with no way to obtain a link, is worse than an
@@ -122,6 +135,29 @@ const maxIdentityBodyBytes = 1 << 10
 func (h *Handler) WithIdentity(issuer IdentityLinkService, redeemer IdentitySessionService) *Handler {
 	h.identityLinks = issuer
 	h.identitySessions = redeemer
+	return h
+}
+
+// IdentitySessionCloser ends the session a presented token opens. It is satisfied by
+// [identity.SessionService] — the same service the account list authenticates with, because a
+// session is one row and one service is what reads and closes it.
+//
+// It answers nil for every token that closes nothing — already revoked, expired, never issued,
+// or not even shaped like a token — and an error only when the store could not be reached, which
+// is the one case where the row really is still open.
+type IdentitySessionCloser interface {
+	Close(ctx context.Context, token string) error
+}
+
+// WithIdentitySignOut attaches the sign-out and returns the same handler, so the route that ends
+// a session is mounted only where the login that opens sessions is.
+//
+// It is a separate attachment rather than a third argument of [Handler.WithIdentity] because the
+// two halves are different capabilities: a deployment can serve the login and have no session
+// service to close through, and then this route is absent instead of mounted against nothing.
+// Where the login is wired — cmd/api always wires both — both are.
+func (h *Handler) WithIdentitySignOut(sessions IdentitySessionCloser) *Handler {
+	h.identitySignOut = sessions
 	return h
 }
 
@@ -213,6 +249,54 @@ func (h *Handler) redeemIdentitySession(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// The two outcomes a sign-out records.
+//
+// They are not the domain's three states, and cannot be: [identity.SessionService.Close] answers
+// "you are signed out" both for a row it just revoked and for a token there was nothing to close
+// — that identity is what keeps sign-out from being a way to ask whether a credential existed —
+// so this layer cannot tell them apart without the second lookup that would defeat the point.
+// What it *can* tell apart is a store that did not answer, and that is the one fact an operator
+// needs, because in that case the row is still live.
+const (
+	identitySessionClosed           = "closed"
+	identitySessionCloseUnavailable = "unavailable"
+)
+
+// closeIdentitySession ends the session the presented bearer token opens, and answers
+// `204 No Content` in every case it answers at all: a live token, an expired one, a revoked one,
+// a forged one, a string that is not a token, and a request with no Authorization header.
+//
+// Both halves of that are deliberate.
+//
+//   - The request is not a question. [identity.SessionService.Close] is quiet by construction: a
+//     client told its sign-out failed believes it is still signed in, and a row it could not
+//     reach is one it cannot do anything about anyway. The transport forwards that quietness
+//     rather than inventing a verdict on top of it.
+//   - An error status would be the one answer this surface never gives. A `401` here would tell
+//     a caller whether a credential ever existed, which is exactly what the account list's fixed
+//     refusal withholds: spent, expired, revoked and never issued are one answer there, and a
+//     different one here for the same token would make signing out the way to ask.
+//
+// A no-op is therefore a truthful answer for a token there is nothing to close, which is why the
+// header is read and not required: no request to this route is refused, so no request to it can
+// be probed with.
+func (h *Handler) closeIdentitySession(w http.ResponseWriter, r *http.Request) {
+	// The header is read by the same helper the account list uses: one reading of "what bearer
+	// was presented" for the two routes that take a session, so they cannot disagree about it.
+	// A header that carries no bearer is the empty string, which the domain refuses as a token
+	// shape before it costs a query.
+	outcome := identitySessionClosed
+	if err := h.identitySignOut.Close(r.Context(), bearerToken(r)); err != nil {
+		// Our store did not answer, so the row is in fact still open. The client is not told —
+		// see above — and the operator is, in the one line every sign-out writes.
+		outcome = identitySessionCloseUnavailable
+	}
+	logIdentitySessionClosed(outcome)
+	// No body and no content type: there is nothing to say about a credential that is closed,
+	// and nothing to hand back for one that was never a credential.
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // writeIdentityLinkAccepted is the one answer the link request gives for a sent link, a
 // refused allowance and an unreadable counter. It is a single function so the three paths
 // cannot drift into three spellings of "we are not telling you".
@@ -233,6 +317,15 @@ func writeIdentityUnauthorized(w http.ResponseWriter) {
 // counter's own error can name the key that carries the address — so none of them is here.
 func logIdentityLinkOutcome(outcome string) {
 	slog.Default().Info("identity link request", "outcome", outcome)
+}
+
+// logIdentitySessionClosed writes the one line a sign-out records: its outcome and nothing else.
+//
+// No token and no hash of one — the log outlives the request, and both of those are credentials
+// or the seed of one — and no session identifier either, because Close answers none and an
+// identifier printed from somewhere else would be a key nobody asked the store for.
+func logIdentitySessionClosed(outcome string) {
+	slog.Default().Info("identity session closed", "outcome", outcome)
 }
 
 // identityLinkAddress reads the address to mail from the request body.

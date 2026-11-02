@@ -2312,3 +2312,104 @@ test("a blank session is refused before anything leaves the process", async () =
   assert.equal(problem.code, "invalid_input");
   assert.equal(recorder.calls.length, 0);
 });
+
+// ── Signing out (identity-login T3 · S1) ────────────────────────────────────
+//
+// `DELETE /identity/sessions` is the other end of signing in. The session token this
+// application keeps in its own `HttpOnly` cookie is presented as a bearer, and the route answers
+// `204 No Content` in **every** case it answers at all: a live token, an expired one, a forged
+// one and a request with no credential. That is the route's contract, so this client has exactly
+// two readings for it — the no-content answer, and our own failure to ask — and never a third
+// one invented from a status the route does not send.
+//
+// The token goes in the header and nowhere else. It is a credential: never in the address, never
+// in a body, never in a problem a page could print.
+
+test("signing out presents the session as a bearer to DELETE /identity/sessions, and 204 is the answer", async () => {
+  const recorder = recordingFetch(() => new Response(null, { status: 204 }));
+
+  const answer = unwrap(await makeClient(recorder).signOut("  session-token-1  "));
+
+  assert.deepEqual(answer, { revoked: true });
+  assert.equal(recorder.calls[0].url, `${BASE_URL}/api/v1/identity/sessions`);
+  assert.equal(recorder.calls[0].init.method, "DELETE");
+  // Trimmed, because the API's own shape rule reads it: what leaves is what the cookie holds.
+  assert.equal(
+    headerValue(recorder.calls[0].init, "Authorization"),
+    "Bearer session-token-1",
+  );
+  // A `204` has no body, and this request carries none either: the credential is the entire
+  // request and the method is the entire instruction.
+  assert.equal(recorder.calls[0].init.body, undefined);
+  assert.equal(recorder.calls[0].url.includes("session-token-1"), false);
+});
+
+test("a 5xx is reported as our own failure, never as a closed session", async () => {
+  const recorder = recordingFetch(() =>
+    jsonResponse(503, {
+      type: "https://cinema.local/problems/service-unavailable",
+      title: "Service unavailable",
+      status: 503,
+      code: "service_unavailable",
+      detail: "the session cannot be closed right now; retry the request",
+    }),
+  );
+
+  const problem = unwrapError(await makeClient(recorder).signOut("session-token-1"));
+
+  // The revocation failed, and this client says so instead of reporting a success it did not
+  // observe. What the sign-out screen does with that answer is its own decision (lib/identity.ts):
+  // the row is still open, and this browser is signed out anyway.
+  assert.equal(problem.code, "service_unavailable");
+  assert.equal(problem.status, 503);
+  assert.equal(JSON.stringify(problem).includes("session-token-1"), false);
+});
+
+test("an answer that is not 204 is not a revocation", async () => {
+  // A `200`, a `202`, a `401` and a `405` are all things a proxy, an older API or a misrouted
+  // request could answer. None of them is the documented no-content answer, so none of them may
+  // be read as "the row is closed".
+  for (const status of [200, 202, 401, 405]) {
+    const recorder = recordingFetch(() => jsonResponse(status, {}));
+
+    const problem = unwrapError(await makeClient(recorder).signOut("session-token-1"));
+
+    // The body is not the problem document this client reads, so the answer is unreadable to
+    // it — reported with the status it arrived with, and never as a closed session.
+    assert.equal(
+      problem.code,
+      "unexpected_response",
+      `a ${status} must not become a confirmation`,
+    );
+    assert.equal(problem.status, status);
+    assert.equal(
+      JSON.stringify(problem).includes("session-token-1"),
+      false,
+      "a refusal must never echo the credential",
+    );
+  }
+});
+
+test("an unreachable box office is a network failure and not a signed-out session", async () => {
+  const client = createPublicClient({
+    baseUrl: BASE_URL,
+    fetch: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:8080")),
+  });
+
+  const problem = unwrapError(await client.signOut("session-token-1"));
+
+  // Nothing was closed, and nothing about the credential leaks into the failure: an outage must
+  // never arrive as a sign-out, exactly as it must not for the list this session protects.
+  assert.equal(problem.code, "network_error");
+  assert.equal(problem.status, 0);
+  assert.doesNotMatch(problem.detail, /ECONNREFUSED/);
+});
+
+test("a blank session is refused before anything leaves the process", async () => {
+  const recorder = recordingFetch(() => new Response(null, { status: 204 }));
+
+  const problem = unwrapError(await makeClient(recorder).signOut("   "));
+
+  assert.equal(problem.code, "invalid_input");
+  assert.equal(recorder.calls.length, 0);
+});

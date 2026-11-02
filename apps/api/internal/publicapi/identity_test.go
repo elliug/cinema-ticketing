@@ -690,3 +690,248 @@ func TestIdentityRoutesAreNotMountedWithoutBothCollaborators(t *testing.T) {
 		})
 	}
 }
+
+// ── Signing out (T3, S1) ────────────────────────────────────────────────────
+//
+// DELETE /api/v1/identity/sessions is the other end of the two routes above: it presents the
+// session token this browser holds to [identity.SessionService.Close], so the row behind it
+// stops working now instead of at its expiry.
+//
+// Its whole contract is one answer. `204 No Content` for a live token, an expired one, a
+// revoked one, a forged one and a request with no Authorization header at all, because Close is
+// deliberately quiet — a client told its sign-out failed believes it is still signed in — and
+// because a route that answered 401 to an unknown token would let a caller ask whether a
+// credential ever existed, which is the one question this surface refuses to answer everywhere
+// else. A no-op is a truthful answer for a token there is nothing to close.
+
+// identitySignOutToken is a string of the one shape a session token has. It is not a session
+// some login minted; it is the credential these cases present on the wire.
+var identitySignOutToken = strings.Repeat("s", 43)
+
+// The session service the process wires is what closes a session through this route: this is
+// the line that says the login's own service *is* the sign-out collaborator, rather than a
+// second one that could disagree with the store the sessions live in.
+var _ publicapi.IdentitySessionCloser = (*identity.SessionService)(nil)
+
+// identityFakeSignOut is the collaborator a wire case presents to: it records the token it was
+// given, which is what proves the header reached Close, and can refuse like a store that did
+// not answer.
+type identityFakeSignOut struct {
+	tokens []string
+	err    error
+}
+
+var _ publicapi.IdentitySessionCloser = (*identityFakeSignOut)(nil)
+
+func (c *identityFakeSignOut) Close(_ context.Context, token string) error {
+	c.tokens = append(c.tokens, token)
+	return c.err
+}
+
+// identityFakeSessionStore is the session store in memory, behind the real service. Find answers
+// ErrNoSession — every token opens nothing here, which is the one answer the real store gives for
+// an expired row, a revoked one and one that never existed alike — and Revoke records the hash it
+// was given, which is what lets a case show that a malformed credential never reached the store.
+type identityFakeSessionStore struct {
+	revoked [][]byte
+	err     error
+}
+
+var _ identity.SessionStore = (*identityFakeSessionStore)(nil)
+
+func (s *identityFakeSessionStore) Create(context.Context, identity.Session, []byte) error {
+	return nil
+}
+
+func (s *identityFakeSessionStore) Find(context.Context, []byte, time.Time) (identity.Session, error) {
+	return identity.Session{}, identity.ErrNoSession
+}
+
+func (s *identityFakeSessionStore) Touch(context.Context, []byte, time.Time) error { return nil }
+
+func (s *identityFakeSessionStore) Revoke(_ context.Context, tokenHash []byte, _ time.Time) error {
+	s.revoked = append(s.revoked, append([]byte(nil), tokenHash...))
+	return s.err
+}
+
+// identitySessionService builds the real session service over the fake store, so a route case
+// exercises Close's own contract instead of a stub of it.
+func identitySessionService(t *testing.T, store identity.SessionStore) *identity.SessionService {
+	t.Helper()
+	sessions, err := identity.NewSessionService(store, identitySessionTTL)
+	if err != nil {
+		t.Fatalf("NewSessionService() = unexpected error %v", err)
+	}
+	return sessions
+}
+
+// mountedSignOutServer wires the public subtree with the login and its sign-out, the way
+// cmd/api does. A nil closer is how "this deployment has no sign-out" is built.
+func mountedSignOutServer(t *testing.T, signOut publicapi.IdentitySessionCloser) *httptest.Server {
+	t.Helper()
+	healthSvc := health.New(health.ProcessProbe{})
+	server := httpserver.New(config.Config{}, healthSvc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ts := httptest.NewServer(server.WithPublic(publicapi.New(&fakeHoldService{}).
+		WithIdentity(&identityFakeIssuer{}, &identityFakeRedeemer{}).
+		WithIdentitySignOut(signOut).Mux()).Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// deleteIdentitySessions asks the sign-out route with whatever Authorization header the case
+// means to present, and answers the status and the raw body.
+func deleteIdentitySessions(t *testing.T, ts *httptest.Server, authorization string) (int, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodDelete, ts.URL+identitySessionPath, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", identitySessionPath, err)
+	}
+	return response.StatusCode, readBody(t, response)
+}
+
+// T3 (S1): the bearer token the header carries is what reaches Close, and the answer is
+// `204 No Content` with no body at all — there is nothing to say about a credential that was
+// just closed, and nothing about it in the response.
+func TestIdentitySignOutRouteClosesTheSessionTheHeaderCarries(t *testing.T) {
+	signOut := &identityFakeSignOut{}
+	ts := mountedSignOutServer(t, signOut)
+
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	status, raw := deleteIdentitySessions(t, ts, "Bearer "+identitySignOutToken)
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body %s)", status, raw)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("body = %s, want no body at all", raw)
+	}
+
+	// The credential reached the service, unchanged and trimmed: the transport does not
+	// re-shape a token, because the domain owns what a token is.
+	if len(signOut.tokens) != 1 || signOut.tokens[0] != identitySignOutToken {
+		t.Fatalf("Close() was presented %q, want exactly the token the header carried", signOut.tokens)
+	}
+
+	// One line, naming the outcome and nothing else: the token is a credential and its hash is
+	// the form a dump of the table would reveal.
+	lines := 0
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		if strings.Contains(line, "identity session closed") {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Fatalf("logged %d sign-out line(s), want exactly one: %q", lines, logged.String())
+	}
+	for _, leaked := range []string{identitySignOutToken, "Bearer",
+		fmt.Sprintf("%x", identity.HashSessionToken(identitySignOutToken))} {
+		if strings.Contains(logged.String(), leaked) {
+			t.Fatalf("the log leaked %q: %q", leaked, logged.String())
+		}
+	}
+}
+
+// T3 (S1): every credential that cannot be closed is answered exactly like one that was — a
+// revoked row, a forged token, a string that is not a token at all and a request that presented
+// no credential. The domain is what decides, so this case runs the real service: a malformed
+// token is refused before the store is asked, and nothing at all is refused to the client.
+func TestIdentitySignOutRouteAnswersTheSameNoContentForEveryTokenItCannotClose(t *testing.T) {
+	store := &identityFakeSessionStore{}
+	ts := mountedSignOutServer(t, identitySessionService(t, store))
+
+	referenceStatus, referenceBody := deleteIdentitySessions(t, ts, "Bearer "+identitySignOutToken)
+	if referenceStatus != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body %s)", referenceStatus, referenceBody)
+	}
+	if len(referenceBody) != 0 {
+		t.Fatalf("body = %s, want no body at all", referenceBody)
+	}
+
+	cases := map[string]struct {
+		authorization string
+		// reachesTheStore is true when this case got far enough to be hashed and looked up: a
+		// well-shaped token is, and a string that cannot be one is refused before any query.
+		reachesTheStore bool
+	}{
+		"a token the store has no live row for": {"Bearer " + strings.Repeat("A", 43), true},
+		"a string that cannot be a token":       {"Bearer not-a-token", false},
+		"a header that is not a bearer":         {"Basic " + identitySignOutToken, false},
+		"no Authorization header at all":        {"", false},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			before := len(store.revoked)
+			status, raw := deleteIdentitySessions(t, ts, testCase.authorization)
+			if status != referenceStatus {
+				t.Fatalf("status = %d, want the same %d a closed session answers (body %s)", status, referenceStatus, raw)
+			}
+			// Byte for byte: the answer is not even distinguishable by a whitespace difference.
+			if !bytes.Equal(raw, referenceBody) {
+				t.Fatalf("answer = %s, want the closed session's %s", raw, referenceBody)
+			}
+			if reached := len(store.revoked) > before; reached != testCase.reachesTheStore {
+				if testCase.reachesTheStore {
+					t.Fatal("a token of the documented shape was refused before the store was asked about it")
+				}
+				t.Fatal("a credential that cannot be a token reached the store, which would make it an oracle")
+			}
+		})
+	}
+}
+
+// T3 (S1): a store that could not answer still answers 204 — the client's sign-out is not a
+// question — and the one log line says so, because the row is in fact still open and the
+// operator is the only one who can be told.
+func TestIdentitySignOutRouteAnswersNoContentWhenTheStoreCannotAnswer(t *testing.T) {
+	store := &identityFakeSessionStore{err: errors.New("connection refused")}
+	ts := mountedSignOutServer(t, identitySessionService(t, store))
+
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	status, raw := deleteIdentitySessions(t, ts, "Bearer "+identitySignOutToken)
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 even when the store did not answer (body %s)", status, raw)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("body = %s, want no body at all", raw)
+	}
+	if len(store.revoked) != 1 {
+		t.Fatalf("the store was asked %d time(s), want exactly one", len(store.revoked))
+	}
+	if !strings.Contains(logged.String(), "identity session closed") {
+		t.Fatalf("log = %q, want the one sign-out line", logged.String())
+	}
+	// The outcome is the only thing this line can say: Close refuses to distinguish a token it
+	// just closed from one there was nothing to close, so the route says the one thing it can —
+	// that the row was *not* closed, which is the fact an operator needs.
+	if !strings.Contains(logged.String(), "outcome=unavailable") {
+		t.Fatalf("log = %q, want the outcome of a store that did not answer", logged.String())
+	}
+	if strings.Contains(logged.String(), identitySignOutToken) {
+		t.Fatalf("the log leaked the token: %q", logged.String())
+	}
+}
+
+// T3 (S1): the route is part of the login surface, so a deployment without identity never
+// advertises it — a sign-out that could close nothing would be a button that lies.
+func TestIdentitySignOutRouteIsNotMountedWithoutTheLoginSurface(t *testing.T) {
+	ts := mountedIdentityServer(t, nil, nil)
+
+	status, raw := deleteIdentitySessions(t, ts, "Bearer "+identitySignOutToken)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 like a route this deployment does not serve (body %s)", status, raw)
+	}
+}

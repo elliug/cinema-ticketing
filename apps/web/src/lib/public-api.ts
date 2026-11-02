@@ -6,9 +6,10 @@
 //
 //   - sends one credential, and only where an account is the subject: the session
 //     token this application keeps in its own HttpOnly cookie (lib/session.ts) is
-//     presented as a bearer by [PublicClient.myTickets], which is the only call here
-//     that carries an Authorization header. Every other call sends none and reads no
-//     token; besides the usual JSON ones, the only header those add is the
+//     presented as a bearer by [PublicClient.myTickets], which reads the account's list,
+//     and by [PublicClient.signOut], which ends the session that list is read with. Those
+//     are the only two calls here that carry an Authorization header. Every other call sends
+//     none and reads no token; besides the usual JSON ones, the only header those add is the
 //     Idempotency-Key of a hold or a payment attempt;
 //   - targets a configurable base URL resolved from server-side environment
 //     variables, defaulting to http://127.0.0.1:8080;
@@ -29,9 +30,9 @@
 // ticket page offers (so mailing that link to an address typed there is also a call this
 // process makes, with the address stored nowhere and the hourly bound read from the API), and
 // the two halves of signing in (so a link is asked for and spent in this process as well, and
-// the browser only ever holds the session cookie this application issues), and the account's
+// the browser only ever holds the session cookie this application issues), the account's
 // own list of tickets (the one read that presents that session, and the reason an account is
-// worth having at all).
+// worth having at all), and the sign-out that ends the session that list is read with.
 // The two ticket *downloads* are not reads this
 // client makes: the page points its link and its image at this application's own
 // same-origin ticket routes (lib/ticket-media.ts), which forward the request to
@@ -453,6 +454,19 @@ export interface PublicSignInSession {
   expiresAt: string;
 }
 
+/**
+ * DELETE /identity/sessions — the answer of "end this session".
+ *
+ * The route answers `204 No Content` in every case it answers at all: a live token, an expired
+ * one, a revoked one, a forged one and a request with no credential. There is therefore no body
+ * to read and no field to interpret, and this is what the status means here: whatever that token
+ * was, it opens no session now. Nothing about the token comes back, in an answer or in a header.
+ */
+export interface PublicSignOutRevoked {
+  /** Always `true`: the one answer the route gives is the one that closes what it was given. */
+  revoked: true;
+}
+
 export interface PublicScreening {
   /** Event id; the seat page is reached at `/events/{id}/seats`. */
   id: string;
@@ -587,9 +601,9 @@ export interface PublicClient {
    * token comes from exactly one place: [readSessionToken] in lib/session.ts, the `HttpOnly`
    * cookie this application issued when a mailed link was spent. It is never read from a client
    * component, never logged, never cached and never placed in a URL — it travels in the
-   * `Authorization` header of this one request and nowhere else. A caller therefore does not get
-   * to pass an arbitrary string in: it passes the cookie's own value, on the server, from the
-   * session helper that owns it.
+   * `Authorization` header of this request and of [PublicClient.signOut], and nowhere else. A
+   * caller therefore does not get to pass an arbitrary string in: it passes the cookie's own
+   * value, on the server, from the session helper that owns it.
    *
    * The two refusals are different facts and arrive as different problems. A `401` is the opaque
    * refusal the sign-in route already gives — spent, expired, revoked and never issued are one
@@ -632,6 +646,23 @@ export interface PublicClient {
    * spend its life in access logs and `Referer` headers.
    */
   redeemSignInLink(token: string): Promise<PublicResult<PublicSignInSession>>;
+  /**
+   * Ends the session this browser holds: `DELETE /identity/sessions`.
+   *
+   * The token is the one in this application's session cookie (lib/session.ts), and it travels in
+   * the `Authorization` header and nowhere else: not in the path, not in a query string, not in a
+   * body.
+   *
+   * The route is built so that a sign-out is never a question. It answers `204` for a live token,
+   * an expired one, a revoked one, a forged one and a request with no credential at all, because
+   * a client told its sign-out failed believes it is still signed in, and because a `401` here
+   * would let a caller ask whether a credential ever existed. So this call has two readings and
+   * no third one: the no-content answer, and a failure to ask — a `5xx`, an unreachable API, an
+   * answer that is not the documented one — which is reported as the problem it is. A caller must
+   * not let that failure keep somebody signed in **in their own browser**: that decision, and
+   * why, is in lib/identity.ts.
+   */
+  signOut(sessionToken: string): Promise<PublicResult<PublicSignOutRevoked>>;
   /**
    * Redeems the signed link a purchase email carries: the order it opens, and when it
    * stops opening.
@@ -836,16 +867,7 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
     } catch {
       // The underlying error is discarded: it can echo request material, and the
       // UI only needs to know that the service is temporarily unreachable.
-      return {
-        ok: false,
-        error: {
-          type: "https://cinema.local/problems/network",
-          title: "Network error",
-          status: 0,
-          code: "network_error",
-          detail: "the reservation service could not be reached",
-        },
-      };
+      return { ok: false, error: unreachable() };
     }
 
     const parsed = await readJson(response);
@@ -1148,6 +1170,53 @@ export function createPublicClient(config: PublicClientConfig): PublicClient {
       return parseSignInSession(result.value);
     },
 
+    async signOut(sessionToken) {
+      // The token this application's own session cookie holds. A blank one names no session, and
+      // sending it would put an empty credential on the wire to ask for an answer already known.
+      const token = sessionToken.trim();
+      if (token === "") {
+        return {
+          ok: false,
+          error: invalidInput("signing out needs the session this browser holds"),
+        };
+      }
+
+      // This one request is made here instead of through `send` because its answer has no body
+      // to read and `send` reads one: an empty body would arrive as an unreadable answer, which
+      // is the opposite of what a `204` says.
+      let response: Response;
+      try {
+        response = await doFetch(`${baseUrl}${PUBLIC_PATH_PREFIX}/identity/sessions`, {
+          method: "DELETE",
+          headers: {
+            Accept: "application/json",
+            // The credential, in the header and nowhere else: not in the path, not in a query
+            // string, not in a body, and never logged here.
+            Authorization: `Bearer ${token}`,
+          },
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, error: unreachable() };
+      }
+
+      if (response.status === 204) {
+        // The only answer the route gives, and the whole of what it means: the row is closed, or
+        // there was nothing to close — a distinction the box office withholds on purpose.
+        return { ok: true, value: { revoked: true } };
+      }
+
+      // Anything else is not the documented answer — a proxy's `502`, an older API's `404`, a
+      // `405` from a deployment that does not serve this method — and none of them may be read
+      // as a revocation. A problem body is read as the problem it is; a body that is not one is
+      // refused rather than guessed at.
+      const parsed = await readJson(response);
+      return {
+        ok: false,
+        error: withRetryAfter(toProblem(response.status, parsed), response),
+      };
+    },
+
     async redeemTicketLink(token) {
       const presented = token.trim();
       if (presented === "") {
@@ -1270,6 +1339,25 @@ function invalidInput(detail: string): PublicProblem {
     status: 0,
     code: "invalid_input",
     detail,
+  };
+}
+
+/**
+ * The failure of a request that never reached the API at all.
+ *
+ * It is one function because two calls now build it — the shared `send` and the sign-out, which
+ * cannot go through `send` — and two spellings of "the service could not be reached" would be
+ * two different answers to the same situation. Nothing of the underlying error survives into it:
+ * that error can echo request material, and the UI only needs to know that a retry is the way
+ * forward.
+ */
+function unreachable(): PublicProblem {
+  return {
+    type: "https://cinema.local/problems/network",
+    title: "Network error",
+    status: 0,
+    code: "network_error",
+    detail: "the reservation service could not be reached",
   };
 }
 

@@ -18,10 +18,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PublicProblem } from "./public-api.ts";
 import {
+  SIGNED_OUT_PATH,
   SIGN_IN_CONFIRMATION,
   SIGN_IN_PATH,
   SIGN_IN_PROMISES,
   TICKETS_PATH,
+  decideSignOut,
   describeSignInLink,
   describeSignInRequest,
 } from "./identity.ts";
@@ -230,4 +232,67 @@ test("no sentence claims an address was verified or that a message was sent", ()
       );
     }
   }
+});
+
+// ── Signing out ─────────────────────────────────────────────────────────────
+//
+// There is no runner for a server action: `signOutAction` imports `next/navigation` and
+// `next/headers`, which this plain-Node suite cannot resolve, and the only test that could reach
+// it would be a browser one — which cannot see whether a cookie was cleared or a row was closed.
+// So the decision the action makes is here, as a pure function with its own test, and the action
+// is the thin shell that performs it.
+//
+// The rule it keeps is the design and not laziness: **a failed revocation must not leave
+// somebody signed in in their own browser**. If the box office cannot be reached, this browser is
+// signed out anyway — the cookie goes and the visitor lands on the front page — because the row
+// expires on its own and holding a person inside a session they asked to leave, pending an API
+// call that may never succeed, is the one outcome worth refusing.
+
+test("a confirmed revocation signs this browser out, and says so", () => {
+  const decision = decideSignOut({ ok: true, value: { revoked: true } });
+
+  assert.equal(decision.kind, "closed");
+  assert.equal(decision.clearCookie, true);
+  assert.equal(decision.redirectTo, SIGNED_OUT_PATH);
+});
+
+test("a failed revocation is reported and still signs this browser out", () => {
+  const decision = decideSignOut({ ok: false, error: problem() });
+
+  // Reported: the caller learns that the row is still open, so nothing downstream can present
+  // this as a revocation that happened.
+  assert.equal(decision.kind, "unavailable");
+  if (decision.kind !== "unavailable") {
+    return;
+  }
+  assert.equal(decision.problem.code, "service_unavailable");
+  // And not used to keep anybody signed in here: the same cookie goes and the same page is
+  // reached as for a confirmed one. The row expires on its own; this browser does not wait.
+  assert.equal(decision.clearCookie, true);
+  assert.equal(decision.redirectTo, SIGNED_OUT_PATH);
+});
+
+test("a browser holding no session has nothing to revoke and is not told otherwise", () => {
+  const decision = decideSignOut(null);
+
+  // No cookie means no credential was presented, so no answer exists to report: the browser is
+  // signed out already, which is the state the visitor asked for.
+  assert.equal(decision.kind, "no-session");
+  assert.equal(decision.clearCookie, true);
+  assert.equal(decision.redirectTo, SIGNED_OUT_PATH);
+});
+
+test("every sign-out answer lands on the same page, because the answer changes nothing here", () => {
+  const decisions = [
+    decideSignOut(null),
+    decideSignOut({ ok: true, value: { revoked: true } }),
+    decideSignOut({ ok: false, error: problem({ status: 401, code: "unauthorized" }) }),
+    decideSignOut({ ok: false, error: problem({ status: 0, code: "network_error" }) }),
+  ];
+
+  for (const decision of decisions) {
+    assert.equal(decision.clearCookie, true);
+    assert.equal(decision.redirectTo, SIGNED_OUT_PATH);
+  }
+  assert.deepEqual(new Set(decisions.map((decision) => decision.redirectTo)), new Set([SIGNED_OUT_PATH]));
 });

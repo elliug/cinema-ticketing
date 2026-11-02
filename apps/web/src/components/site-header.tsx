@@ -66,10 +66,11 @@ export interface SiteNavItem {
 export const SITE_NAV: readonly SiteNavItem[] = [
   { label: "Now showing", href: "/events" },
   { label: "My tickets", href: "/tickets" },
+  // The door used to sit here, beside the section, because a cashier works there all evening
+  // and should not have to cross the venue editor to reach it. It is inside the administration
+  // now: the primary navigation is for the buyer, and a screen only an operator uses belongs
+  // where the operator already is, described with the other three screens and their order.
   { label: "Administration", href: "/admin/venues", prefix: "/admin" },
-  // The door is its own screen rather than a child of the venue screen: a cashier works there
-  // all evening and should not have to type an address or cross the venue editor to reach it.
-  { label: "Door", href: "/admin/door" },
 ];
 
 /** What a navigation entry that has no screen yet says instead of linking. */
@@ -108,11 +109,11 @@ export function isCurrentEntry(pathname: string, item: SiteNavItem): boolean {
 /**
  * The one entry the navigation marks as the current page.
  *
- * A section entry (`Administration`, with its `/admin` prefix) claims every page below it,
- * including the screens that have an entry of their own — so on `/admin/door` both entries
- * would claim the page, and two `aria-current` links at once is worse than none. The screen
- * wins: an entry whose own href is this path beats an entry that only owns the section around
- * it.
+ * A section entry (`Administration`, with its `/admin` prefix) claims every page below it, and
+ * some of those pages have a screen of their own in the administration's index. Where two
+ * entries could claim one page, two `aria-current` links at once is worse than none, so the
+ * more specific one wins: an entry whose own href is this path beats an entry that only owns
+ * the section around it.
  */
 export function currentEntry(pathname: string): SiteNavItem | null {
   const claiming = SITE_NAV.filter((item) => isCurrentEntry(pathname, item));
