@@ -170,6 +170,46 @@ jobs:
       - name: Verify ticket email delivery through Mailpit
         run: make verify-email
 
+  # The identity gate is its own job for the same reason the four above are: it starts the three
+  # compose services, bootstraps the stack, and then proves the login end to end — a sale paid with
+  # an address, a sign-in link mailed to it and spent once, the session row that holds the token's
+  # SHA-256, the order that address claims, the account's own list, the bound of three links per
+  # address and the opaque 401 every unusable session shares. `make verify-identity` starts Mailpit
+  # itself (`docker compose --profile mail up -d --wait mailpit`) because the login is mail, and it
+  # stops it again only when this job is what started it. It creates and removes its own database,
+  # Redis logical database (13, so it never shares an index with the other gates), API port and
+  # bucket. It needs Docker Compose, Go, jq and curl, all of which the runner image carries; they
+  # are checked here so a missing tool is a clear failure rather than a confusing one later.
+  # Nothing in the existing gates is changed by this job: verify-m3, verify-m35, verify-m41 and
+  # verify-email keep running exactly as they are.
+  identity-login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check the tools the gate needs
+        run: |
+          docker compose version
+          docker-compose version 2>/dev/null || true
+          jq --version
+          curl --version | head -n 1
+
+      # The project's own bootstrap: compose services, every migration, the development
+      # seed and the ticket bucket. The gate below creates and removes its own on top.
+      - name: Bootstrap the stack
+        env:
+          API_ENV: development
+        run: make bootstrap
+
+      - name: "Verify the guest login: the mailed link, the session, the list and the bound"
+        run: make verify-identity
+
   # The M3.5 gate is its own job for the same reason m3-checkout is: it starts the three
   # compose services, bootstraps the stack, and then adds a real browser. It installs two
   # engines — Chromium and Firefox, with the system libraries they need — because a single
