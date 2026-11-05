@@ -493,7 +493,7 @@ export async function purchaseTwoSeats(
     "the first seat is selected by the keyboard",
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^Fila A, butaca 1,/ }),
+    page.getByRole("button", { name: /^Fila A, butaca 1\b/ }),
     "the seat the keyboard is on reports itself as pressed",
   ).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("ArrowRight");
@@ -507,7 +507,7 @@ export async function purchaseTwoSeats(
     "the second seat is selected by the keyboard",
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^Fila A, butaca 2,/ }),
+    page.getByRole("button", { name: /^Fila A, butaca 2\b/ }),
     "the second seat reports itself as pressed",
   ).toHaveAttribute("aria-pressed", "true");
 
