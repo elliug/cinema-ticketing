@@ -57,7 +57,7 @@ export const dynamic = "force-dynamic";
  * is neither an entry nor a path through the site for a search engine.
  */
 export const metadata: Metadata = {
-  title: "Your tickets",
+  title: "Tus entradas",
   robots: { index: false, follow: false },
 };
 
@@ -111,9 +111,9 @@ function OpenedLink({ view }: { view: OpenedTicketLink }) {
   return (
     <>
       <PageHeader
-        eyebrow="Tickets · M3.5"
-        title="Your tickets"
-        description="This page redeemed the link you followed and read the order it names from the box office. Nothing here checks who you are: the link is what opened it, and whoever holds it opens the same tickets."
+        eyebrow="Entradas"
+        title="Tus entradas"
+        description="Esta página ha canjeado el enlace que has seguido y ha leído de la taquilla el pedido que nombra. Nada aquí comprueba quién eres: el enlace es lo que la ha abierto, y quien lo tenga abre las mismas entradas."
       />
       <OpenedTickets view={view} />
     </>
@@ -131,9 +131,9 @@ function ClosedLink({ view }: { view: Extract<TicketLinkView, { kind: "closed" }
   return (
     <>
       <PageHeader
-        eyebrow="Tickets · M3.5"
-        title="Your tickets"
-        description="The link you followed was checked, and it did not open an order."
+        eyebrow="Entradas"
+        title="Tus entradas"
+        description="El enlace que has seguido se comprobó, y no abrió ningún pedido."
       />
       <Alert
         variant="warning"
@@ -149,10 +149,10 @@ function ClosedLink({ view }: { view: Extract<TicketLinkView, { kind: "closed" }
           <p className="m-0">{view.nextStep}</p>
           <div className="flex flex-wrap gap-2 pt-1">
             <Button asChild size="sm">
-              <Link href="/tickets">My tickets</Link>
+              <Link href="/tickets">Mis entradas</Link>
             </Button>
             <Button asChild variant="outline" size="sm">
-              <Link href="/events">See what is on sale</Link>
+              <Link href="/events">Ver qué hay a la venta</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -178,9 +178,9 @@ function LinkFailure({
   return (
     <>
       <PageHeader
-        eyebrow="Tickets · M3.5"
-        title="Your tickets"
-        description="The box office was asked what this link opens, and the answer did not arrive."
+        eyebrow="Entradas"
+        title="Tus entradas"
+        description="Se preguntó a la taquilla qué abre este enlace, y la respuesta no llegó."
       />
       <Alert
         variant="destructive"
@@ -200,11 +200,11 @@ function LinkFailure({
           <div className="flex flex-wrap gap-2 pt-1">
             {view.retryable ? (
               <Button asChild size="sm">
-                <Link href={retryHref}>Ask again</Link>
+                <Link href={retryHref}>Preguntar otra vez</Link>
               </Button>
             ) : null}
             <Button asChild variant="outline" size="sm">
-              <Link href="/tickets">My tickets</Link>
+              <Link href="/tickets">Mis entradas</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -218,9 +218,9 @@ function MissingToken() {
   return (
     <>
       <PageHeader
-        eyebrow="Tickets · M3.5"
-        title="Your tickets"
-        description="This address carries no link, so there is nothing to open."
+        eyebrow="Entradas"
+        title="Tus entradas"
+        description="Esta dirección no lleva ningún enlace, así que no hay nada que abrir."
       />
       <Alert
         variant="destructive"
@@ -229,19 +229,19 @@ function MissingToken() {
         className="flex flex-col gap-2"
       >
         <h2 id="link-missing" className="m-0 text-lg leading-tight font-semibold">
-          This address carries no link
+          Esta dirección no lleva ningún enlace
         </h2>
         <AlertDescription className="flex flex-col gap-2">
           <p className="m-0">
-            A link from a purchase email carries its own token in the address. Open the
-            address exactly as it arrived, or use one of these instead.
+            Un enlace de un correo de compra lleva su propio token en la dirección. Abre la
+            dirección tal y como llegó, o usa una de estas opciones.
           </p>
           <div className="flex flex-wrap gap-2 pt-1">
             <Button asChild size="sm">
-              <Link href="/tickets">My tickets</Link>
+              <Link href="/tickets">Mis entradas</Link>
             </Button>
             <Button asChild variant="outline" size="sm">
-              <Link href="/events">See what is on sale</Link>
+              <Link href="/events">Ver qué hay a la venta</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -255,14 +255,14 @@ function LinkLoading() {
   return (
     <>
       <PageHeader
-        eyebrow="Tickets · M3.5"
-        title="Your tickets"
-        description="Redeeming the link and reading the tickets it opens from the box office."
+        eyebrow="Entradas"
+        title="Tus entradas"
+        description="Canjeando el enlace y leyendo de la taquilla las entradas que abre."
       />
       <section aria-labelledby="link-loading" className="flex flex-col gap-3">
-        <h2 id="link-loading">What this link opened</h2>
+        <h2 id="link-loading">Qué ha abierto este enlace</h2>
         <p role="status" className="m-0 max-w-prose">
-          <span className="text-muted-foreground">Opening the link…</span>
+          <span className="text-muted-foreground">Abriendo el enlace…</span>
         </p>
         <Card aria-hidden="true" className="flex flex-col gap-3 p-5">
           {[0, 1, 2, 3].map((row) => (

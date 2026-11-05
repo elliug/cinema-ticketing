@@ -50,10 +50,10 @@ import { describeTicketEmail } from "@/lib/ticket-email";
  */
 const UNREACHED_PROBLEM: PublicProblem = {
   type: "https://cinema.local/problems/network",
-  title: "Network error",
+  title: "Error de red",
   status: 0,
   code: "network_error",
-  detail: "the request to the box office did not complete",
+  detail: "la petición a la taquilla no llegó a completarse",
 };
 
 export interface TicketEmailPanelProps {
@@ -124,28 +124,29 @@ export function TicketEmailPanel({ ticketId, sendTicketEmail }: TicketEmailPanel
 
   const announcement =
     state.kind === "sending"
-      ? "Asking the box office to mail the link…"
+      ? "Pidiendo a la taquilla que envíe el enlace…"
       : answer === null
-        ? "Nothing has been sent from this page yet."
+        ? "Todavía no se ha enviado nada desde esta página."
         : `${answer.headline}. ${answer.message}`;
 
   return (
     <Card aria-labelledby="ticket-email">
       <CardHeader>
         <h2 id="ticket-email" className="m-0 text-lg leading-tight font-semibold">
-          Send the link to another address
+          Enviar el enlace a otra dirección
         </h2>
         <CardDescription>
-          This mails the message a purchase email carries — the same subject, the same words
-          and the same signed link to this order&apos;s tickets. The address below is used for
-          this send only: nothing stores it on the order, and this browser does not keep it.
+          Esto envía el mensaje que lleva un correo de compra: el mismo asunto, las mismas
+          palabras y el mismo enlace firmado a las entradas de este pedido. La dirección de
+          abajo se usa solo para este envío: nada la guarda en el pedido, y este navegador no
+          la conserva.
         </CardDescription>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="ticket-email-address">
-            Email <span className="text-muted-foreground">(one address, this once)</span>
+            Correo <span className="text-muted-foreground">(una dirección, esta vez)</span>
           </Label>
           <Input
             id="ticket-email-address"
@@ -168,25 +169,25 @@ export function TicketEmailPanel({ ticketId, sendTicketEmail }: TicketEmailPanel
             className="m-0 flex max-w-prose list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground"
           >
             <li>
-              The message carries the same signed link the purchase email does, and it opens
-              this order&apos;s tickets.
+              El mensaje lleva el mismo enlace firmado que un correo de compra, y abre las
+              entradas de este pedido.
             </li>
-            <li>The link expires, so open it while the mail is still around.</li>
+            <li>El enlace caduca, así que ábrelo mientras el correo siga ahí.</li>
             <li>
-              Anyone with that link can open the tickets: it is not tied to you, to this
-              browser or to this page.
-            </li>
-            <li>
-              The address is not verified — nothing here checks that it belongs to whoever
-              typed it — and it is not stored on the order.
+              Cualquiera que tenga ese enlace puede abrir las entradas: no está atado a ti, a
+              este navegador ni a esta página.
             </li>
             <li>
-              Sending is limited to three times per order per hour, because a button that
-              emails any address on request is a spam relay.
+              La dirección no se verifica — nada aquí comprueba que sea de quien la escribió — y
+              no se guarda en el pedido.
             </li>
             <li>
-              A deployment with no mail provider answers that it cannot send, and this page
-              says so instead of claiming a message left.
+              El envío está limitado a tres veces por pedido y por hora, porque un botón que
+              manda correos a cualquier dirección es un relé de spam.
+            </li>
+            <li>
+              Un despliegue sin proveedor de correo responde que no puede enviar, y esta página
+              lo dice en lugar de afirmar que salió un mensaje.
             </li>
           </ul>
         </div>
@@ -205,7 +206,7 @@ export function TicketEmailPanel({ ticketId, sendTicketEmail }: TicketEmailPanel
             disabled={sending || address.trim() === ""}
             aria-busy={sending}
           >
-            {sending ? "Sending…" : "Send the link"}
+            {sending ? "Enviando…" : "Enviar el enlace"}
           </Button>
         </div>
 

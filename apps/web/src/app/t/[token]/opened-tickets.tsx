@@ -48,12 +48,12 @@ export function OpenedTickets({ view }: OpenedTicketsProps) {
       <Card aria-labelledby="link-opened">
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 id="link-opened" className="m-0 text-lg leading-tight font-semibold">
+            <h2 id="link-opened" className="m-0 text-xl leading-tight font-semibold">
               {view.headline}
             </h2>
             {/* The count as a word, so colour and shape carry nothing on their own. */}
             <Badge variant="success">
-              {count === 1 ? "1 ticket" : `${count} tickets`}
+              {count === 1 ? "1 entrada" : `${count} entradas`}
             </Badge>
           </div>
           <CardDescription>{view.message}</CardDescription>
@@ -61,25 +61,27 @@ export function OpenedTickets({ view }: OpenedTicketsProps) {
 
         <CardContent className="flex flex-col gap-3">
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This link stops opening at{" "}
-            <time dateTime={view.expiresAt} className="font-medium">
+            Este enlace deja de abrir el{" "}
+            <time dateTime={view.expiresAt} className="font-mono font-medium">
               {view.expiresAt}
             </time>
-            . The ticket links below are not the same thing: they do not expire, and they are
-            what opens a ticket at the door.
+            . Los enlaces de abajo no son lo mismo: no caducan, y son los que abren una entrada
+            en el acceso.
           </p>
 
           {/* The checkout's own link shape, imported rather than copied: one ticket is
               printed the same way wherever it is offered, and a second copy of that markup
               would let two screens disagree about what a ticket link is. */}
-          <IssuedTickets ticketIds={view.ticketIds} />
+          <div className="rounded-lg border border-dashed border-border bg-muted p-4">
+            <IssuedTickets ticketIds={view.ticketIds} />
+          </div>
 
           <p className="m-0 max-w-prose text-sm text-muted-foreground">{view.nextStep}</p>
 
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            The order this link names: <code className="break-all">{view.reservationId}</code>
-            . The box office answers it by that identifier, and no page here checks who is
-            asking.
+            El pedido que nombra este enlace: <code className="break-all">{view.reservationId}</code>
+            . La taquilla lo responde por ese identificador, y ninguna página de aquí comprueba
+            quién lo pregunta.
           </p>
         </CardContent>
       </Card>

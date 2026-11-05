@@ -1,7 +1,7 @@
 "use client";
 
-// The presentation of the two ticket surfaces (M3 · T7, M3.5 · T7 · S1, S3, S8):
-// one ticket, and the guest list of the tickets this browser tab kept.
+// The presentation of the two ticket surfaces (M3 · T7, M3.5 · T7 · S1, S3, S8;
+// Marquesina · T6): one ticket, and the guest list of the tickets this browser tab kept.
 //
 // Both live in one module because they print the same things — a screening, a seat, an
 // order total, the entry code and the PDF — and because a second copy of that shape is
@@ -11,7 +11,7 @@
 //   - the screening time is the served `startsAtLocal` string, printed verbatim inside a
 //     `<time>` whose machine value is the UTC instant. Re-formatting it here would print
 //     the viewer's zone on a page whose point is the venue's;
-//   - the amount is labelled **order total**: it is the money taken for the whole
+//   - the amount is labelled **total del pedido**: it is the money taken for the whole
 //     reservation, not this seat's price (which is why the API names its keys
 //     `orderAmount*`);
 //   - validity is the answer to `POST /api/v1/tickets/verify`, in words, from
@@ -21,7 +21,14 @@
 //     cannot contain a later void or a cancelled screening, so no page may present it as
 //     proof that a ticket is good;
 //   - the QR image is what a door checks, and its `alt` names the ticket rather than the
-//     object, because "QR code" repeated on every ticket names nothing.
+//     object, because "código QR" repeated on every ticket names nothing. It is served by
+//     the API through `lib/ticket-media.ts`, never drawn: a drawn square would look the
+//     same and scan as nothing.
+//
+// The ticket itself is the one [TicketStub] every surface prints (components/ticket-stub.tsx),
+// so the paper a buyer shows at the door and the paper a list offers are the same component
+// with the same facts. What a surface owns — the links, the retry, the buttons — is handed
+// to the stub as its children.
 //
 // Why a client module at all: the *guest* list is browser state. A browser with no session has no
 // account to ask, so the "my tickets" screen can only show what this tab kept, which means reading
@@ -49,6 +56,7 @@ import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TicketStub } from "@/components/ticket-stub";
 import type { KeptTicketRow, KeptTickets, TicketCheck, ValidityView } from "@/lib/issued-tickets";
 import {
   TICKET_PDF_LINK_LABEL,
@@ -60,7 +68,9 @@ import {
   rememberIssuedTicket,
   ticketSeatLabel,
 } from "@/lib/issued-tickets";
+import { presentAmount } from "@/lib/receipt";
 import type { PublicTicket, TicketEmailResponse, TicketResponse } from "@/lib/public-api";
+import { ticketQRImageUrl } from "@/lib/ticket-media";
 import { TicketEmailPanel } from "./ticket-email-panel";
 
 export interface TicketViewProps {
@@ -92,31 +102,111 @@ export function TicketView({
   const retention = useKeptInThisTab(ticket.ticketId);
   const seats = ticket.seats.map(ticketSeatLabel);
   const startsAt = ticket.event.startsAt === "" ? undefined : ticket.event.startsAt;
+  const title = ticket.event.filmTitle.trim() === "" ? "Una sesión" : ticket.event.filmTitle;
+  const seatLabel = seats.length === 0 ? "no servida" : seats.join(", ");
+  // The API's own rendering of the money, re-punctuated for this page: a read that served no
+  // amount says so instead of printing a zero the API never said.
+  const orderTotal =
+    ticket.orderAmountDisplay === "" ? "no servido" : presentAmount(ticket.orderAmountDisplay);
 
   return (
     <>
-      <Card aria-labelledby="ticket-detail">
+      {/* The paper itself. The PDF is the one action this stub owns: the route is a plain
+          link the browser follows, so the page never handles the bytes. */}
+      <TicketStub
+        filmTitle={title}
+        cinemaName={ticket.event.cinemaName}
+        roomName={ticket.event.roomName}
+        startsAtLocal={ticket.event.startsAtLocal}
+        startsAt={startsAt}
+        seatLabel={seatLabel}
+        orderTotal={orderTotal}
+        statusWord={ticket.status.trim() === "" ? "estado no servido" : ticket.status.trim()}
+        ticketId={ticket.ticketId}
+        qrImageUrl={qrImageUrl}
+      >
+        {/* A plain anchor, not a JS download: the browser follows the API's
+            short-lived redirect, and the URL it lands on declares
+            `Content-Disposition: attachment`, so the file is saved rather than
+            rendered. The words are the exported sentence both surfaces print. */}
+        <Button asChild variant="outline" size="sm">
+          <a href={pdfUrl} rel="noreferrer">
+            {TICKET_PDF_LINK_LABEL}
+          </a>
+        </Button>
+      </TicketStub>
+
+      <ValidityCard validity={validity} checked={checked} ticketId={ticket.ticketId} />
+
+      <Card aria-labelledby="ticket-entry">
         <CardHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 id="ticket-detail" className="m-0 text-lg leading-tight font-semibold">
-              Your seat and your order
-            </h2>
-            {/* The served status is a stored fact, and it is printed as one. It is not
-                the door's answer: the card below is. */}
-            <Badge variant="outline">
-              {ticket.status.trim() === "" ? "status not served" : ticket.status.trim()}
-            </Badge>
-          </div>
+          <h2 id="ticket-entry" className="m-0 text-lg leading-tight font-semibold">
+            En el acceso
+          </h2>
           <CardDescription>
-            Read from the box office when this page loaded, so reloading it can only
-            answer the same thing. The status beside this heading is the one the ticket is
-            stored with, not a verdict about whether it admits you.
+            El cuadrado de arriba es lo que mira el acceso. Es la imagen que sirve la propia
+            taquilla, firmada con la entrada, la sesión y sus butacas, y un escaneo del
+            personal decide si admite a alguien.
           </CardDescription>
         </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <ol className="m-0 flex max-w-prose list-decimal flex-col gap-2 pl-5 text-sm text-muted-foreground">
+            <li>Enseña el código en el acceso. El personal lo escanea y la butaca se admite una sola vez.</li>
+            <li>
+              La respuesta de la taquilla es la de arriba: si la entrada se anuló, si la sesión
+              se canceló o si no se pudo comprobar, lo dice con esas palabras.
+            </li>
+            <li>
+              Una foto del código es el mismo código, así que una captura de pantalla se trata
+              como la entrada misma.
+            </li>
+            <li>
+              El enlace de la entrada funciona sin cuenta: quien lo tenga abre las mismas
+              entradas, y una entrada usada o anulada se rechaza igualmente en el acceso.
+            </li>
+          </ol>
+        </CardContent>
+      </Card>
 
+      {/* The caveat about the PDF lives beside the order, not beside the link: the link is on
+          the paper above, and what a person needs to know about it is what it cannot show. */}
+      <Card aria-labelledby="ticket-pdf">
+        <CardHeader>
+          <h2 id="ticket-pdf" className="m-0 text-lg leading-tight font-semibold">
+            Lo que el PDF no prueba
+          </h2>
+          <CardDescription>
+            Se descarga desde la entrada de arriba y es un registro de la venta, impreso cuando
+            se cobró el pago, no una prueba de que la entrada valga: no puede mostrar una
+            anulación posterior ni una sesión cancelada después. Por eso quien dice si esta
+            entrada admite a alguien es la comprobación de arriba, no el documento.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+
+      <Card aria-labelledby="ticket-order">
+        <CardHeader>
+          <h2 id="ticket-order" className="m-0 text-lg leading-tight font-semibold">
+            Este pedido
+          </h2>
+          <CardDescription>
+            Leído de la taquilla al cargar esta página, así que recargarla solo puede responder
+            lo mismo.
+          </CardDescription>
+        </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-muted-foreground">Starts</dt>
+            <dt className="text-muted-foreground">Pedido</dt>
+            <dd className="m-0 font-medium break-all">
+              <code>{ticket.reservationId}</code>
+            </dd>
+
+            <dt className="text-muted-foreground">Entrada</dt>
+            <dd className="m-0 font-medium break-all">
+              <code>{ticket.ticketId}</code>
+            </dd>
+
+            <dt className="text-muted-foreground">La hora</dt>
             <dd className="m-0 font-medium break-words">
               <time dateTime={startsAt}>{ticket.event.startsAtLocal}</time>
               {ticket.event.timezone === "" ? null : (
@@ -124,101 +214,28 @@ export function TicketView({
               )}
             </dd>
 
-            <dt className="text-muted-foreground">Seat</dt>
-            <dd className="m-0 font-medium break-words">
-              {seats.length === 0 ? "not served" : seats.join(", ")}
-            </dd>
+            <dt className="text-muted-foreground">Total del pedido</dt>
+            <dd className="m-0 font-mono font-medium">{orderTotal}</dd>
 
-            <dt className="text-muted-foreground">Order total</dt>
-            <dd className="m-0 font-medium">
-              {ticket.orderAmountDisplay === ""
-                ? "not served"
-                : ticket.orderAmountDisplay}
-            </dd>
-
-            <dt className="text-muted-foreground">Order</dt>
-            <dd className="m-0 font-medium break-all">
-              <code>{ticket.reservationId}</code>
-            </dd>
-
-            <dt className="text-muted-foreground">Ticket</dt>
-            <dd className="m-0 font-medium break-all">
-              <code>{ticket.ticketId}</code>
-            </dd>
-
-            <dt className="text-muted-foreground">Issued</dt>
+            <dt className="text-muted-foreground">Emitida</dt>
             <dd className="m-0 font-medium">
               <time dateTime={ticket.issuedAt === "" ? undefined : ticket.issuedAt}>
-                {ticket.issuedAt === "" ? "not served" : ticket.issuedAt}
+                {ticket.issuedAt === "" ? "no servida" : ticket.issuedAt}
               </time>
+            </dd>
+
+            {/* The served status is a stored fact, and it is printed as one. It is not
+                the door's answer: the card above is. */}
+            <dt className="text-muted-foreground">Estado guardado</dt>
+            <dd className="m-0 font-medium">
+              {ticket.status.trim() === "" ? "no servido" : ticket.status.trim()}
             </dd>
           </dl>
 
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            The order total is what the whole reservation cost, not this seat&apos;s price:
-            one order sells every seat of the reservation and is charged once.
-          </p>
-        </CardContent>
-      </Card>
-
-      <ValidityCard validity={validity} checked={checked} ticketId={ticket.ticketId} />
-
-      <Card aria-labelledby="ticket-qr">
-        <CardHeader>
-          <h2 id="ticket-qr" className="m-0 text-lg leading-tight font-semibold">
-            Entry code
-          </h2>
-          <CardDescription>
-            This is what a door checks. Staff scan it, and the box office answers whether
-            it admits you — the same answer printed above.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* A server-rendered image from the API's own route: no QR dependency, no
-              client-side encoding, and the same code the PDF prints. The quiet zone
-              stays white in both colour schemes, because a dark code is one a scanner
-              may refuse. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={qrImageUrl}
-            alt={`Entry code for ticket ${ticket.ticketId}`}
-            width={240}
-            height={240}
-            className="max-w-full rounded-md border border-border bg-white p-3 [image-rendering:pixelated]"
-          />
-          <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            The code carries the ticket, the screening and its seats, signed by the box
-            office. A photograph of it is the same code, so treat a screenshot like the
-            ticket itself.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card aria-labelledby="ticket-pdf">
-        <CardHeader>
-          <h2 id="ticket-pdf" className="m-0 text-lg leading-tight font-semibold">
-            Print or keep a copy
-          </h2>
-          <CardDescription>
-            The PDF is a record of the sale, printed when the payment was captured — not
-            proof that the ticket is valid.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* A plain anchor, not a JS download: the browser follows the API's
-              short-lived redirect, and the URL it lands on declares
-              `Content-Disposition: attachment`, so the file is saved rather than
-              rendered. The words are the exported sentence both surfaces print. */}
-          <Button asChild variant="outline" className="self-start">
-            <a href={pdfUrl} rel="noreferrer">
-              {TICKET_PDF_LINK_LABEL}
-            </a>
-          </Button>
-          <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            It shows the same detail and the same code as this page. It also cannot show a
-            later withdrawal or a cancelled screening, because it was printed before them
-            — which is why the check above, not the document, says whether this ticket
-            admits anyone.
+            El total es lo que costó toda la reserva, no el precio de esta butaca: un pedido
+            vende todas las butacas de la reserva y se cobra una sola vez. El estado guardado
+            es con el que se emitió la entrada, no un veredicto sobre si admite a alguien.
           </p>
         </CardContent>
       </Card>
@@ -242,10 +259,10 @@ export function TicketView({
 type Retention = "reading" | "kept" | "refused";
 
 const retentionNotices: Record<Retention, string> = {
-  reading: "Keeping this ticket in this tab's list…",
-  kept: "This tab now lists this ticket on My tickets. That list is this browser's own note of what it opened here — an account's list is a different one, which the box office answers when you sign in.",
+  reading: "Guardando esta entrada en la lista de esta pestaña…",
+  kept: "Esta pestaña ya lista esta entrada en Mis entradas. Esa lista es la nota de este navegador sobre lo que abrió aquí: la de una cuenta es otra, y la responde la taquilla al abrir sesión.",
   refused:
-    "This tab refused to keep a record of this ticket, so it will not appear on My tickets. The ticket itself is unaffected: this link opens it again at any time.",
+    "Esta pestaña se negó a guardar un registro de esta entrada, así que no aparecerá en Mis entradas. La entrada no se ve afectada: este enlace la abre otra vez cuando quieras.",
 };
 
 /**
@@ -315,7 +332,7 @@ function ValidityCard({
         ) : null}
         {validity.reason === null ? null : (
           <p className="m-0">
-            Reason reported by the box office: <code>{validity.reason}</code>
+            Motivo informado por la taquilla: <code>{validity.reason}</code>
           </p>
         )}
         <p className="m-0">{validity.nextStep}</p>
@@ -323,7 +340,7 @@ function ValidityCard({
           <div className="flex flex-wrap gap-2 pt-1">
             <Button asChild size="sm">
               <Link href={`/tickets/${encodeURIComponent(ticketId)}`}>
-                Check the code again
+                Comprobar el código otra vez
               </Link>
             </Button>
           </div>
@@ -366,26 +383,25 @@ function badgeVariant(validity: ValidityView): BadgeProps["variant"] {
 function badgeWord(validity: ValidityView): string {
   switch (validity.kind) {
     case "valid":
-      return "Admits its holder";
+      return "Admite a su titular";
     case "voided":
-      return "Voided";
+      return "Anulada";
     case "event_cancelled":
-      return "Screening cancelled";
+      return "Sesión cancelada";
     case "reason_unrecognised":
-      return "Not valid";
+      return "No válida";
     case "invalid_token":
-      return "Not a ticket";
+      return "No es una entrada";
     case "unavailable":
-      return "Not checked";
+      return "Sin comprobar";
     default:
-      return "Check refused";
+      return "Comprobación rechazada";
   }
 }
 
 // ── The list of tickets this tab kept ───────────────────────────────────────
 
 export interface KeptTicketListProps {
-  /** Normalized public API base URL, resolved on the server; used for the PDF links. */
   /**
    * Reads one ticket: `GET /api/v1/tickets/{id}`, through the page's server action.
    *
@@ -397,7 +413,7 @@ export interface KeptTicketListProps {
 }
 
 /**
- * "My tickets" for a browser with no session: the ticket ids this tab kept, each one re-read.
+ * "Mis entradas" for a browser with no session: the ticket ids this tab kept, each one re-read.
  *
  * This is the guest half of the screen, and it admits what it is in its own words: it is a note
  * this tab keeps, not an account's list, and every id on it is read from the box office again
@@ -493,8 +509,8 @@ export function KeptTicketList({ readTicket }: KeptTicketListProps) {
       });
       setAnnouncement(
         next.kind === "unavailable"
-          ? "This tab could not forget the ticket, so the list is unchanged."
-          : `Forgotten on this tab: ticket ${ticketId}. The ticket itself is untouched.`,
+          ? "Esta pestaña no pudo olvidar la entrada, así que la lista no ha cambiado."
+          : `Olvidada en esta pestaña: la entrada ${ticketId}. La entrada misma no se ha tocado.`,
       );
     },
     [],
@@ -516,14 +532,15 @@ export function KeptTicketList({ readTicket }: KeptTicketListProps) {
       {kept?.kind === "unavailable" ? (
         <Alert variant="warning" aria-labelledby="kept-unavailable" className="flex flex-col gap-2">
           <h2 id="kept-unavailable" className="m-0 text-lg leading-tight font-semibold">
-            This browser will not show what it kept
+            Este navegador no muestra lo que guarda
           </h2>
           <AlertDescription className="flex flex-col gap-2">
             <p className="m-0">{kept.detail}</p>
             <p className="m-0">
-              This is not the same as having no ticket: the page could not read this tab&apos;s
-              own record at all, so it says nothing about what was bought. A ticket stays
-              reachable from the link the payment returned, and from the box office.
+              No es lo mismo que no tener ninguna entrada: la página no ha podido leer el
+              registro de esta pestaña, así que no dice nada sobre lo que se compró. Una
+              entrada sigue siendo alcanzable desde el enlace que devolvió el pago y desde la
+              taquilla.
             </p>
           </AlertDescription>
         </Alert>
@@ -533,22 +550,20 @@ export function KeptTicketList({ readTicket }: KeptTicketListProps) {
 
       {ids.length > 0 ? (
         <section aria-labelledby="kept-tickets" className="flex flex-col gap-3">
-          <h2 id="kept-tickets">Tickets this tab kept</h2>
+          <h2 id="kept-tickets">Las entradas que guarda esta pestaña</h2>
           <p className="m-0 max-w-prose">
-            {ids.length === 1
-              ? "1 ticket."
-              : `${ids.length} tickets.`}{" "}
+            {ids.length === 1 ? "1 entrada." : `${ids.length} entradas.`}{" "}
             <span className="text-muted-foreground">
-              Each one was read from the box office when this page loaded, so nothing here
-              is remembered detail. A record this tab can no longer use is one row, never
-              the whole list.
+              Cada una se leyó de la taquilla al cargar esta página, así que nada de aquí es un
+              dato recordado. Un registro que esta pestaña ya no pueda usar es una fila, nunca
+              la lista entera.
             </span>
           </p>
           {kept?.kind === "kept" && kept.unreadable > 0 ? (
             <p className="m-0 max-w-prose text-sm text-muted-foreground">
               {kept.unreadable === 1
-                ? "1 record this tab kept could not be read as a ticket id, so it is not listed."
-                : `${kept.unreadable} records this tab kept could not be read as ticket ids, so they are not listed.`}
+                ? "1 registro que guardó esta pestaña no se pudo leer como identificador de entrada, así que no aparece en la lista."
+                : `${kept.unreadable} registros que guardó esta pestaña no se pudieron leer como identificadores de entrada, así que no aparecen en la lista.`}
             </p>
           ) : null}
 
@@ -566,9 +581,9 @@ export function KeptTicketList({ readTicket }: KeptTicketListProps) {
           </ul>
 
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This list is what this browser tab kept, not an account&apos;s list: no session is
-            signed in on this browser, so nothing here is read by name — and a forwarded ticket
-            link opens the same ticket for whoever holds it.
+            Esta lista es lo que guardó esta pestaña, no la lista de una cuenta: no hay ninguna
+            sesión abierta en este navegador, así que nada de aquí se lee por nombre — y un
+            enlace reenviado abre la misma entrada a quien lo tenga.
           </p>
         </section>
       ) : null}
@@ -583,21 +598,21 @@ function announceKept(
   ids: readonly string[],
 ): string {
   if (kept === null) {
-    return "Reading the tickets this tab kept…";
+    return "Leyendo las entradas que guarda esta pestaña…";
   }
   if (kept.kind === "unavailable") {
-    return "This browser would not say what it kept.";
+    return "Este navegador no ha querido decir qué guarda.";
   }
   if (kept.kind === "empty") {
-    return "This tab has kept no ticket.";
+    return "Esta pestaña no guarda ninguna entrada.";
   }
   const reading = ids.filter((id) => rows[id]?.kind === "reading").length;
   if (reading > 0) {
-    return `Reading ${reading === 1 ? "1 ticket" : `${reading} tickets`} this tab kept…`;
+    return `Leyendo ${reading === 1 ? "1 entrada" : `${reading} entradas`} que guarda esta pestaña…`;
   }
   return ids.length === 1
-    ? "1 ticket this tab kept, read from the box office."
-    : `${ids.length} tickets this tab kept, read from the box office.`;
+    ? "1 entrada que guarda esta pestaña, leída de la taquilla."
+    : `${ids.length} entradas que guarda esta pestaña, leídas de la taquilla.`;
 }
 
 /**
@@ -614,49 +629,34 @@ export function TicketSummary({ ticket }: { ticket: PublicTicket }) {
   // `aria-labelledby` target is always a valid id and always unique per row.
   const headingId = `kept-ticket-${ticket.ticketId.replace(/\s+/g, "-")}`;
   const title =
-    ticket.event.filmTitle.trim() === "" ? "A screening" : ticket.event.filmTitle;
-  const venue = [ticket.event.cinemaName, ticket.event.roomName]
-    .map((part) => part.trim())
-    .filter((part) => part !== "")
-    .join(" · ");
+    ticket.event.filmTitle.trim() === "" ? "Una sesión" : ticket.event.filmTitle;
   const startsAt = ticket.event.startsAt === "" ? undefined : ticket.event.startsAt;
 
   return (
-    <Card aria-labelledby={headingId} className="flex flex-col gap-3 p-5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <h3 id={headingId} className="m-0 text-base font-semibold break-words">
-          {title}
-        </h3>
-        <Badge variant="outline">
-          {ticket.status.trim() === "" ? "status not served" : ticket.status.trim()}
-        </Badge>
-      </div>
-      <p className="m-0 break-words text-sm">
-        <span className="text-muted-foreground">{venue === "" ? "Venue not served" : venue}</span>
-        {venue === "" ? null : <span className="text-muted-foreground"> · </span>}
-        <time dateTime={startsAt} className="font-medium">
-          {ticket.event.startsAtLocal}
-        </time>
-        <span className="text-muted-foreground">
-          {ticket.event.timezone === "" ? "" : ` (${ticket.event.timezone})`}
-        </span>
-      </p>
-      <p className="m-0 break-words text-sm">
-        <span className="text-muted-foreground">Seat </span>
-        <span className="font-medium">
-          {ticket.seats.length === 0
-            ? "not served"
-            : ticket.seats.map(ticketSeatLabel).join(", ")}
-        </span>
-      </p>
+    <TicketStub
+      headingId={headingId}
+      filmTitle={title}
+      cinemaName={ticket.event.cinemaName}
+      roomName={ticket.event.roomName}
+      startsAtLocal={ticket.event.startsAtLocal}
+      startsAt={startsAt}
+      seatLabel={ticket.seats.length === 0 ? "no servida" : ticket.seats.map(ticketSeatLabel).join(", ")}
+      orderTotal={
+        ticket.orderAmountDisplay === ""
+          ? "no servido"
+          : presentAmount(ticket.orderAmountDisplay)
+      }
+      statusWord={ticket.status.trim() === "" ? "estado no servido" : ticket.status.trim()}
+      ticketId={ticket.ticketId}
+      qrImageUrl={ticketQRImageUrl(ticket.ticketId)}
+      note={`Si esta entrada sigue admitiendo a alguien lo responde la taquilla cuando se escanea, no esta lista: ábrela para ver la respuesta de este momento.${
+        ticket.event.timezone === "" ? "" : ` La hora es la del propio local (${ticket.event.timezone}).`
+      }`}
+    >
       {/* The checkout's own link shape: the ticket page and the PDF, printed the same
           way on the confirmation and here. */}
       <IssuedTickets ticketIds={[ticket.ticketId]} />
-      <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        Whether this ticket still admits you is answered by the box office when it is
-        scanned, not by this list. Open it to see the answer for this moment.
-      </p>
-    </Card>
+    </TicketStub>
   );
 }
 
@@ -676,7 +676,7 @@ function KeptTicketCard({
     return (
       <Card className="flex flex-col gap-3 p-5">
         <p className="m-0 font-medium break-all">
-          Reading ticket <code>{ticketId}</code>…
+          Leyendo la entrada <code>{ticketId}</code>…
         </p>
         <Skeleton className="h-4 w-2/3" />
         <Skeleton className="h-4 w-1/2" />
@@ -702,12 +702,12 @@ function KeptTicketCard({
           {row.headline}
         </h3>
         <Badge variant={row.kind === "unknown" ? "warning" : "danger"}>
-          {row.kind === "unknown" ? "Not known" : "Not read"}
+          {row.kind === "unknown" ? "No conocida" : "Sin leer"}
         </Badge>
       </div>
       <AlertDescription className="flex flex-col gap-2">
         <p className="m-0">
-          Ticket <code>{ticketId}</code>
+          Entrada <code>{ticketId}</code>
         </p>
         <p className="m-0">
           <code>{row.problem.code}</code> · HTTP {row.problem.status}
@@ -717,11 +717,11 @@ function KeptTicketCard({
         <div className="flex flex-wrap gap-2 pt-1">
           {row.kind === "unavailable" ? (
             <Button type="button" size="sm" onClick={onRetry}>
-              Ask the box office again
+              Preguntar a la taquilla otra vez
             </Button>
           ) : null}
           <Button type="button" size="sm" variant="outline" onClick={onForget}>
-            Forget this record on this device
+            Olvidar este registro en este dispositivo
           </Button>
         </div>
       </AlertDescription>
@@ -739,29 +739,30 @@ function KeptTicketCard({
 function NothingKept({ unreadable }: { unreadable: number }) {
   return (
     <Card aria-labelledby="kept-empty" className="flex flex-col gap-2 p-5">
-      <h2 id="kept-empty">This tab has kept no ticket</h2>
+      <h2 id="kept-empty">Esta pestaña no guarda ninguna entrada</h2>
       <p className="m-0 max-w-prose">
-        This screen shows the tickets this browser kept from the purchases it made in it,
-        so it is empty until one is opened here. It is not an account&apos;s list — no session
-        is signed in on this browser, so the box office has no list to answer for it.
+        Esta pantalla enseña las entradas que este navegador guardó de las compras que hizo en
+        él, así que está vacía hasta que se abra una aquí. No es la lista de una cuenta: no hay
+        ninguna sesión abierta en este navegador, así que la taquilla no tiene ninguna lista que
+        responderle.
       </p>
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        A ticket is opened by its own link: the one your payment returned, or the PDF you
-        kept. Opening it here adds it to this list.
+        Una entrada se abre por su propio enlace: el que devolvió tu pago, o el PDF que
+        guardaste. Abrirla aquí la añade a esta lista.
       </p>
       {unreadable > 0 ? (
         <p className="m-0 max-w-prose text-sm">
           {unreadable === 1
-            ? "1 record the tab kept could not be read as a ticket id."
-            : `${unreadable} records the tab kept could not be read as ticket ids.`}{" "}
+            ? "1 registro que guardó la pestaña no se pudo leer como identificador de entrada."
+            : `${unreadable} registros que guardó la pestaña no se pudieron leer como identificadores de entrada.`}{" "}
           <span className="text-muted-foreground">
-            Nothing was deleted: a record this page cannot read is left where it is.
+            No se ha borrado nada: un registro que esta página no puede leer se queda donde está.
           </span>
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2 pt-1">
         <Button asChild size="sm">
-          <Link href="/events">See what is on sale</Link>
+          <Link href="/events">Ver qué hay a la venta</Link>
         </Button>
       </div>
     </Card>
@@ -772,7 +773,7 @@ function NothingKept({ unreadable }: { unreadable: number }) {
 function ListLoading() {
   return (
     <section aria-labelledby="kept-loading" className="flex flex-col gap-3">
-      <h2 id="kept-loading">Tickets this tab kept</h2>
+      <h2 id="kept-loading">Las entradas que guarda esta pestaña</h2>
       <Card aria-hidden="true" className="flex flex-col gap-3 p-5">
         <Skeleton className="h-5 w-1/2" />
         <Skeleton className="h-4 w-2/3" />
