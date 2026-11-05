@@ -51,7 +51,7 @@ export const ISSUED_TICKETS_KEY = "cinema.issued-tickets";
 export const SEEDED = {
   cinema: "Cine Prueba",
   room: "Sala 1",
-  layoutLabel: "v1 · published",
+  layoutLabel: "v1 · publicada",
 } as const;
 
 /**
@@ -266,18 +266,19 @@ export async function selectByLabelPrefix(
 /**
  * The form that schedules a screening.
  *
- * Both this form and the one that edits an existing screening ask for a "Price per seat"
- * and a "Status", because they are the same two questions about the same columns. Scoping
+ * Both this form and the one that edits an existing screening ask for a "Precio por butaca"
+ * and an "Estado", because they are the same two questions about the same columns. Scoping
  * by the form's own accessible name is how the gate — and a screen reader user, whose
- * focus enters a form with a name — says which of the two it means.
+ * focus enters a form with a name — says which of the two it means. The names are Castilian
+ * since the Marquesina redesign, like everything these screens print.
  */
 export function createScreeningForm(page: Page): Locator {
-  return page.getByRole("form", { name: "Schedule a screening" });
+  return page.getByRole("form", { name: "Programar una sesión" });
 }
 
 /** The form that edits one existing screening's price and status, whichever is open. */
 export function saleStateForm(page: Page): Locator {
-  return page.getByRole("form", { name: /^Price and status for / });
+  return page.getByRole("form", { name: /^Precio y estado de / });
 }
 
 /**
@@ -321,27 +322,27 @@ export async function createAndPublishScreening(
   await visit(page, "/admin/schedule");
 
   // 1. The film: created once, then chosen from the repertoire below.
-  await page.getByLabel("Title").fill(filmTitle);
-  await page.getByLabel("Runtime (minutes)").fill(fixture.runtimeMinutes);
-  await page.getByLabel("Rating").fill(fixture.rating);
-  await page.getByRole("button", { name: "Create film" }).click();
+  await page.getByLabel("Título").fill(filmTitle);
+  await page.getByLabel("Duración (minutos)").fill(fixture.runtimeMinutes);
+  await page.getByLabel("Calificación").fill(fixture.rating);
+  await page.getByRole("button", { name: "Crear película" }).click();
   await expect(
-    page.getByRole("status").filter({ hasText: "Created " }),
+    page.getByRole("status").filter({ hasText: "Creada " }),
     "the film's confirmation",
-  ).toContainText(`Created ${filmTitle}`);
+  ).toContainText(`Creada ${filmTitle}`);
 
   // 2. The room and its published layout version: two reads, neither of them a guess.
   await selectByLabelPrefix(
-    page.getByLabel("Cinema", { exact: true }),
+    page.getByLabel("Cine", { exact: true }),
     SEEDED.cinema,
   );
-  await page.getByRole("button", { name: "Show this cinema's rooms" }).click();
-  await page.getByLabel("Room", { exact: true }).selectOption({ label: SEEDED.room });
-  await page.getByRole("button", { name: "Show this room's layout versions" }).click();
+  await page.getByRole("button", { name: "Ver las salas de este cine" }).click();
+  await page.getByLabel("Sala", { exact: true }).selectOption({ label: SEEDED.room });
+  await page.getByRole("button", { name: "Ver las versiones del plano" }).click();
 
   // 3. The screening itself: film and layout version chosen from the selects.
   await page
-    .getByRole("combobox", { name: "Film" })
+    .getByRole("combobox", { name: "Película" })
     .click();
   // `.first()`: the title carries this test's own suffix, so this row is the one the test
   // just created; the `.first()` is belt and braces for a reused database, not a guess.
@@ -352,22 +353,22 @@ export async function createAndPublishScreening(
     .first()
     .click();
   await page
-    .getByRole("combobox", { name: "Published layout version" })
+    .getByRole("combobox", { name: "Versión publicada del plano" })
     .click();
   await page.getByRole("option", { name: SEEDED.layoutLabel }).click();
-  await page.getByLabel("Start time (UTC)").fill(STARTS_AT.utcInput);
+  await page.getByLabel("Hora de inicio (UTC)").fill(STARTS_AT.utcInput);
 
   // 4. The price and the status travel in that same create: this one submit is what puts
   //    the screening on sale, and the confirmation has to say so.
   const create = createScreeningForm(page);
-  await create.getByLabel("Price per seat").fill(fixture.price);
-  await create.getByRole("combobox", { name: "Status" }).click();
+  await create.getByLabel("Precio por butaca").fill(fixture.price);
+  await create.getByRole("combobox", { name: "Estado" }).click();
   await page.getByRole("option", { name: fixture.statusLabel }).click();
-  await create.getByRole("button", { name: "Schedule screening" }).click();
+  await create.getByRole("button", { name: "Programar la sesión" }).click();
   await expect(
-    page.getByRole("status").filter({ hasText: "Created a screening" }),
+    page.getByRole("status").filter({ hasText: "Creada la sesión" }),
     "the screening's confirmation says it is already on sale",
-  ).toContainText(`with price ${fixture.price}, on sale`);
+  ).toContainText(`con precio ${fixture.price}, en venta`);
 
   // The screen opens the new screening's own form, and its address is where the identifier
   // comes from: this helper never builds one.
@@ -379,15 +380,15 @@ export async function createAndPublishScreening(
   //    administration spec exercises next, and it opens on the served values — which is why
   //    "a submit that changes nothing" is a state this screen can actually be in.
   await expect(
-    page.getByRole("heading", { name: "Price and status" }),
+    page.getByRole("heading", { name: "Precio y estado" }),
   ).toBeVisible();
   const edit = saleStateForm(page);
   await expect(
-    edit.getByLabel("Price per seat"),
+    edit.getByLabel("Precio por butaca"),
     "the edit form opens on the price the create stored",
   ).toHaveValue(fixture.price);
   await expect(
-    edit.getByRole("combobox", { name: "Status" }),
+    edit.getByRole("combobox", { name: "Estado" }),
     "the edit form opens on the status the create stored",
   ).toContainText(fixture.statusLabel);
 

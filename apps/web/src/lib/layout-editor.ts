@@ -60,6 +60,27 @@ export function layoutIssueDetail(issue: LayoutIssue): string {
   return `${issue.field}: ${issue.message}`;
 }
 
+/**
+ * The word the editor prints for one stored seat kind.
+ *
+ * The value is the column's (`standard`, `accessible`, `companion`) and it is what the write
+ * sends; this is what a person reads in the select. A kind this build does not know is printed
+ * as served rather than blanked, for the same reason an unknown state is: a seat nobody can
+ * name is a seat nobody dares edit.
+ */
+export function seatKindLabel(kind: SeatKind): string {
+  switch (kind) {
+    case "standard":
+      return "estándar";
+    case "accessible":
+      return "accesible";
+    case "companion":
+      return "acompañante";
+    default:
+      return kind;
+  }
+}
+
 /** Converts an API layout into editor state, preserving row seat counts. */
 export function fromLayout(layout: AdminLayout): EditorLayout {
   const rows = Array.isArray(layout.rows) ? layout.rows : [];

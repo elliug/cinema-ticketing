@@ -38,7 +38,7 @@ test.describe("purchase", () => {
       runtimeMinutes: "104",
       rating: "PG",
       price: "12.50",
-      statusLabel: "On sale",
+      statusLabel: "En venta",
     });
 
     const purchase = await purchaseTwoSeats(page, screening);

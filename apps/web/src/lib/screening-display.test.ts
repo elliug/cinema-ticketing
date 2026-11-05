@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FEW_SEATS, describeAvailability, localHour } from "./screening-display.ts";
+import { FEW_SEATS, describeAvailability, describeSaleStatus, localHour } from "./screening-display.ts";
 
 test("a session with seats left prints how many", () => {
   assert.deepEqual(describeAvailability(34), { state: "on-sale", left: "quedan 34" });
@@ -46,4 +46,34 @@ test("a value that is not a full timestamp is never turned into an invented hour
   assert.equal(localHour("19:00"), "19:00");
   assert.equal(localHour(""), "");
   assert.equal(localHour("mañana"), "mañana");
+});
+
+// ── The box office's status word (Marquesina) ───────────────────────────────
+//
+// The ledger and the seat plan print the state of a session as a word, and the word has to
+// be the same one the board prints: the box office may not invent a second vocabulary for a
+// number the board already decided. `describeSaleStatus` is that one wording, built on
+// `describeAvailability`, so the two can never disagree about the threshold or the count.
+
+test("the sale status is the board's own two words, plus its plain on-sale case", () => {
+  assert.deepEqual(describeSaleStatus(FEW_SEATS + 24), {
+    state: "on-sale",
+    word: "En venta",
+  });
+  assert.deepEqual(describeSaleStatus(FEW_SEATS), { state: "few", word: "Quedan 10" });
+  assert.deepEqual(describeSaleStatus(4), { state: "few", word: "Quedan 4" });
+  assert.deepEqual(describeSaleStatus(0), { state: "sold-out", word: "Agotada" });
+});
+
+test("the sale status keeps the board's boundary and its reading of a negative count", () => {
+  assert.equal(describeSaleStatus(FEW_SEATS + 1).word, "En venta");
+  assert.equal(describeSaleStatus(FEW_SEATS).word, "Quedan 10");
+  // Nothing can be sold below zero, and "Quedan -3" is not a sentence this screen prints.
+  assert.deepEqual(describeSaleStatus(-3), { state: "sold-out", word: "Agotada" });
+});
+
+test("the sale status says the same state as the board, never a second opinion", () => {
+  for (const seats of [-1, 0, 1, FEW_SEATS, FEW_SEATS + 1, 40]) {
+    assert.equal(describeSaleStatus(seats).state, describeAvailability(seats).state);
+  }
 });

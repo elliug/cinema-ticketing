@@ -45,7 +45,7 @@ test.describe("administration", () => {
       runtimeMinutes: "104",
       rating: "PG",
       price: "12.50",
-      statusLabel: "On sale",
+      statusLabel: "En venta",
     });
 
     // ── A submit that changed nothing ─────────────────────────────────────────
@@ -53,7 +53,7 @@ test.describe("administration", () => {
     // just stored — so pressing Save again is a request that would change nothing. It is
     // refused here, in the API's words, and it never reaches the network.
     const edit = saleStateForm(page);
-    const save = edit.getByRole("button", { name: "Save price and status" });
+    const save = edit.getByRole("button", { name: "Guardar precio y estado" });
     await save.click();
     const noChange = edit
       .getByRole("alert")
@@ -62,7 +62,7 @@ test.describe("administration", () => {
       "nothing to change: provide priceCents or status",
     );
     await expect(
-      edit.getByLabel("Price per seat"),
+      edit.getByLabel("Precio por butaca"),
       "a refusal that named no field marks no input",
     ).not.toHaveAttribute("aria-invalid", "true");
 
@@ -70,7 +70,7 @@ test.describe("administration", () => {
     // Money has two decimal places, and rounding what the operator typed would store a
     // price they did not enter — so 12.505 is refused and the price input is the one
     // marked invalid.
-    const price = edit.getByLabel("Price per seat");
+    const price = edit.getByLabel("Precio por butaca");
     await price.fill("12.505");
     await save.click();
     const badPrice = edit
@@ -105,10 +105,10 @@ test.describe("administration", () => {
     await price.fill(editedPrice);
     await save.click();
     await expect(
-      edit.getByRole("status").filter({ hasText: "Saved." }),
+      edit.getByRole("status").filter({ hasText: "Guardado." }),
       "the edited price and status",
     ).toContainText(
-      `The screening now holds ${editedPrice} per seat and its stored status is on_sale.`,
+      `La sesión tiene ahora ${editedPrice} por butaca y su estado guardado es on_sale.`,
     );
     const edited = await readServedScreening(page, screening.eventId);
     expect(edited.priceDisplay, "the stored price after the edit").toBe(editedPrice);
@@ -172,12 +172,14 @@ test.describe("administration", () => {
     await visit(page, "/admin");
     await expectActiveNav(page, "Administración");
 
-    const sections = page.getByRole("navigation", { name: "Administration sections" });
+    const sections = page.getByRole("navigation", {
+      name: "Secciones de administración",
+    });
     for (const label of [
-      "Cinemas, rooms and layouts",
-      "Layout editor",
-      "Films and screenings",
-      "Door",
+      "Cines, salas y planos",
+      "Editor de planos",
+      "Películas y sesiones",
+      "Acceso",
     ]) {
       await expect(sections.getByRole("link", { name: label })).toBeVisible();
     }
@@ -185,9 +187,9 @@ test.describe("administration", () => {
     // Walking it is the claim: the index reaches a screen, and that screen reaches another,
     // without anyone typing an address. The URL assertions wait for the navigation the click
     // causes, which is the discipline this gate has had to learn twice.
-    await sections.getByRole("link", { name: "Layout editor" }).click();
+    await sections.getByRole("link", { name: "Editor de planos" }).click();
     await expect(page).toHaveURL(/\/admin\/layouts$/);
-    await sections.getByRole("link", { name: "Films and screenings" }).click();
+    await sections.getByRole("link", { name: "Películas y sesiones" }).click();
     await expect(page).toHaveURL(/\/admin\/schedule$/);
     await expectActiveNav(page, "Administración");
 

@@ -82,42 +82,45 @@ export interface EventStatusOption {
  *
  * The notes are the honest part: `published` is a recording state the catalogue does not
  * act on, so the screen says so instead of implying that publishing sells a screening.
+ *
+ * The words are Castilian since the Marquesina redesign, because they are what the box
+ * office's screen prints. The stored spelling in `value` is the column's and never moves.
  */
 export const EVENT_STATUS_OPTIONS: readonly EventStatusOption[] = [
   {
     value: "draft",
-    label: "Draft",
-    note: "Not for sale: the catalogue ignores a draft.",
+    label: "Borrador",
+    note: "No está a la venta: la cartelera ignora un borrador.",
     tone: "neutral",
   },
   {
     value: "published",
-    label: "Published",
-    note: "A recording state. It is not for sale — the catalogue lists only on_sale.",
+    label: "Publicada",
+    note: "Un estado de registro. No está a la venta: la cartelera sólo lista las sesiones en venta.",
     tone: "info",
   },
   {
     value: "on_sale",
-    label: "On sale",
-    note: "What the catalogue shows, while the start is still ahead of it.",
+    label: "En venta",
+    note: "Lo que muestra la cartelera, mientras su hora de inicio aún no ha pasado.",
     tone: "success",
   },
   {
     value: "started",
-    label: "Started",
-    note: "A recording state. Once the start has passed the catalogue drops the screening anyway.",
+    label: "Empezada",
+    note: "Un estado de registro. Cuando la hora de inicio pasa, la cartelera quita la sesión de todos modos.",
     tone: "warning",
   },
   {
     value: "completed",
-    label: "Completed",
-    note: "A recording state. Nothing can buy it.",
+    label: "Completada",
+    note: "Un estado de registro. Nada puede comprarla.",
     tone: "neutral",
   },
   {
     value: "cancelled",
-    label: "Cancelled",
-    note: "Not for sale. A ticket already sold for it stops admitting its holder.",
+    label: "Cancelada",
+    note: "No está a la venta. Una entrada ya vendida para ella deja de admitir a su titular.",
     tone: "danger",
   },
 ];
@@ -203,22 +206,22 @@ export function describeScreeningStatus(
   if (option === undefined) {
     return {
       status,
-      label: status === "" ? "No status" : status,
+      label: status === "" ? "Sin estado" : status,
       tone: "neutral",
       startPassed,
       catalogueNote:
-        "This build does not interpret this status, and the catalogue lists only on_sale screenings, so nothing here says it is for sale.",
+        "Esta versión no interpreta este estado, y la cartelera sólo lista sesiones en venta, así que nada aquí dice que esté a la venta.",
     };
   }
 
   if (option.value === "on_sale" && startPassed) {
     return {
       status,
-      label: "Start passed",
+      label: "Hora pasada",
       tone: "warning",
       startPassed,
       catalogueNote:
-        "Its stored status is on_sale, but its start time has passed, so the catalogue no longer lists it and its seats cannot be bought.",
+        "Su estado guardado es en venta, pero su hora de inicio ya pasó, así que la cartelera ya no la lista y sus butacas no se pueden comprar.",
     };
   }
 

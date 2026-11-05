@@ -268,18 +268,39 @@ export function summarizeRooms(value: AdminRoomList): RoomRow[] {
 }
 
 /**
+ * The word this screen prints for a layout version's status.
+ *
+ * The stored value is the column's (`draft`, `published`) and it never reaches a reader
+ * untranslated on this screen: the badge and the select option print a word, so a version is
+ * `borrador` or `publicada`. A value the union did not anticipate is printed verbatim rather
+ * than mapped to a silence.
+ */
+export function layoutStatusWord(status: LayoutStatus): string {
+  if (status === "published") {
+    return "publicada";
+  }
+  if (status === "draft") {
+    return "borrador";
+  }
+  return status;
+}
+
+/**
  * Prepares the listed layout versions for rendering with their status, in the
  * version order the API returned.
  */
 export function summarizeLayouts(value: AdminLayoutVersionList): LayoutVersionRow[] {
   const layouts = Array.isArray(value.layouts) ? value.layouts : [];
-  return layouts.map((layout: AdminLayoutVersion) => ({
-    id: layout.id,
-    version: layout.version,
-    status: layout.status,
-    statusLabel: layout.status,
-    label: `v${layout.version} · ${layout.status}`,
-  }));
+  return layouts.map((layout: AdminLayoutVersion) => {
+    const statusLabel = layoutStatusWord(layout.status);
+    return {
+      id: layout.id,
+      version: layout.version,
+      status: layout.status,
+      statusLabel,
+      label: `v${layout.version} · ${statusLabel}`,
+    };
+  });
 }
 
 /**
