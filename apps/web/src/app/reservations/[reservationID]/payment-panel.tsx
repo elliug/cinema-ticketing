@@ -33,10 +33,16 @@
 //     explicit expired state with the Pay control gone — never a button that quietly
 //     stops working, and never a silent re-hold.
 //
-// Accessibility: every action is a shadcn `Button` (focus ring included) or a link with
-// the shell's visible `:focus-visible` outline, and the surface has exactly **one** polite
-// live region, which announces the result once. The clock is deliberately outside it: a
-// region that announced every second would make the page unusable.
+// Since the Marquesina redesign (visual-redesign · T5) the order's facts are the shared
+// receipt: `SummaryPanel` prints the seats, the money and the deadline as rows, with the Pay
+// control as its action, exactly as the seat plan prints its running summary. What stays
+// around it is what is this panel's own business: the address field, the one announcement,
+// the window's own notice and every outcome.
+//
+// Accessibility: every action is a `Button` (focus ring included) or a link with the shell's
+// visible `:focus-visible` outline, and the surface has exactly **one** polite live region,
+// which announces the result once. The clock is deliberately outside it: a region that
+// announced every second would make the page unusable.
 //
 // The one field this panel owns is the address the tickets are to be mailed to (T5 · S1,
 // S2, D1). It is asked for **before** the charge, because the API stores it in the same
@@ -51,10 +57,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { SummaryPanel } from "@/components/summary-panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type {
@@ -77,6 +84,11 @@ import {
   discardPaymentKey,
   ensurePaymentKey,
 } from "@/lib/payment-key";
+import {
+  describeHoldDeadline,
+  presentAmount,
+  seatReceipt,
+} from "@/lib/receipt";
 import { COUNTDOWN_TICK_MS, formatCountdown } from "@/lib/seat-selection";
 
 export interface PaymentPanelProps {
@@ -242,16 +254,16 @@ export function PaymentPanel({
   // did. It is polite, and it changes once per event instead of once per second.
   const announcement =
     view.kind === "pending"
-      ? "Contacting the payment provider…"
+      ? "Contactando con el proveedor de pago…"
       : view.kind === "address_problem"
-        ? `Nothing has been charged. ${view.problem}`
+        ? `No se ha cobrado nada. ${view.problem}`
         : view.kind === "settled"
-          ? `${view.outcome.headline}. The order carries the tickets below.`
+          ? `${view.outcome.headline}. El pedido trae las entradas de aquí abajo.`
           : view.kind === "answer" || view.kind === "problem"
             ? `${view.outcome.headline}. ${view.outcome.message}`
             : windowNotice !== null
               ? windowNotice
-              : "Nothing has been charged for this order yet.";
+              : "Todavía no se ha cobrado nada por este pedido.";
 
   const seatsHref =
     order.eventId === ""
@@ -272,172 +284,188 @@ export function PaymentPanel({
   const pending = view.kind === "pending";
   const addressProblem = view.kind === "address_problem" ? view.problem : null;
 
+  // The order's own facts, as the receipt prints them: the seats, what paying costs right
+  // now (the API's quote, presented — never a price multiplied here) and the deadline the
+  // server granted. The lines and the total agree because the fee this version charges is
+  // zero, which `seatReceipt` states out loud.
+  const receipt = seatReceipt({
+    seatLabels: order.seats.map(seatLine),
+    count: order.seats.length,
+    amountCents: order.amountDueCents ?? order.amountCents,
+    amountDisplay: order.amountDueDisplay ?? order.amountDisplay,
+  });
+  const deadline =
+    window.kind === "counting"
+      ? describeHoldDeadline({
+          displayLabel: formatCountdown(window.remainingMs),
+          expired: false,
+        })
+      : window.kind === "expired"
+        ? describeHoldDeadline({
+            displayLabel: window.endLabel ?? "0:00",
+            expired: true,
+          })
+        : null;
+  const payLabel =
+    order.amountDueDisplay === null
+      ? "Pagar"
+      : `Pagar ${presentAmount(order.amountDueDisplay)}`;
+
   return (
-    <Card aria-labelledby="pay-order">
-      <CardHeader>
-        <h2 id="pay-order" className="m-0 text-lg leading-tight font-semibold">
-          Pay for this order
-        </h2>
-        <CardDescription>
-          One attempt is one charge. The box office charges this order — the amount is its
-          number, not one this page computes — and the key kept in this tab is what makes a
-          retry a replay of the same attempt rather than a second payment.
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="flex flex-col gap-3">
-        <p className="m-0 text-sm text-muted-foreground">
-          {order.seats.length === 0
-            ? "This order holds no seat."
-            : `${order.seats.length} seat${order.seats.length === 1 ? "" : "s"}: ${order.seats
-                .map(seatLine)
-                .join(", ")}`}
-        </p>
-
-        <p className="m-0 text-sm">
-          {amount.known ? (
-            <>
-              <strong>{amount.amountLabel}</strong> taken.{" "}
-            </>
-          ) : null}
-          <span className="text-muted-foreground">{amount.note}</span>
-        </p>
-
-        {window.kind === "counting" ? (
-          <div className="flex flex-col gap-1">
-            <p className="m-0 text-sm text-muted-foreground">Hold window</p>
-            {/* Deliberately not a live region: it changes every second, and a screen
-                reader announcing a clock would make the page unusable. Only the end of
-                the window is announced, once, through the region below. */}
-            <p className="m-0">
-              <strong>{formatCountdown(window.remainingMs)}</strong> left of your hold
-            </p>
-            <p className="m-0 max-w-prose text-sm text-muted-foreground">
-              The window comes from the server, and the seats are released when it ends.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <p className="m-0 text-sm text-muted-foreground">Hold window</p>
-            <p className="m-0">
-              <strong>{window.endLabel ?? "Not running"}</strong>
-            </p>
-          </div>
-        )}
-
-        {/* The one polite live region of this surface. Everything visual below is
-            rendered outside it, so an announcement is one sentence and not a page. */}
-        <p role="status" className="m-0 max-w-prose text-sm font-medium">
-          {announcement}
-        </p>
-
-        {windowNotice === null ? null : (
-          <Alert variant="warning" className="flex flex-col gap-2">
-            <AlertDescription className="flex flex-col gap-2">
-              <p className="m-0">{windowNotice}</p>
-              {seatsHref === null ? null : (
-                <div className="flex flex-wrap gap-2">
-                  <Button asChild size="sm">
-                    <Link href={seatsHref}>Choose the seats again</Link>
-                  </Button>
-                </div>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* The field belongs to the order, not to one attempt: it is shown for as long as a
-            payment can still be made, so an address a buyer wants to correct after a decline
-            is corrected here rather than being resent out of reach. */}
-        {payable ? (
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="payment-contact-email">
-              Email for your tickets <span className="text-muted-foreground">(optional)</span>
-            </Label>
-            <Input
-              id="payment-contact-email"
-              type="email"
-              autoComplete="email"
-              value={contactEmail}
-              onChange={(event) => setContactEmail(event.target.value)}
-              aria-invalid={addressProblem === null ? undefined : true}
-              aria-describedby={
-                addressProblem === null
-                  ? "payment-contact-email-help"
-                  : "payment-contact-email-help payment-contact-email-problem"
-              }
-              className="max-w-md"
-            />
-            {/* The conditions, in the order they matter: where the link goes, that it
-                expires, that it is not tied to the buyer, that the field is optional, and
-                that nothing checked the address. Every sentence is something the API and
-                the email worker actually do — none of them promises a message already sent,
-                because nothing here has been sent: the worker mails after the sale. */}
-            <ul
-              id="payment-contact-email-help"
-              className="m-0 flex max-w-prose list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground"
-            >
-              <li>
-                After the payment is approved, the box office mails a link to this address
-                that opens your tickets.
-              </li>
-              <li>The link expires, so open it while you still have the email.</li>
-              <li>
-                Anyone with that link can open the tickets: it is not tied to you, to this
-                browser or to this page.
-              </li>
-              <li>
-                Leave the field empty and nothing is mailed. The PDF still downloads from
-                this page, exactly as it does today.
-              </li>
-              <li>
-                The address is not verified: nothing here checks that it belongs to whoever
-                typed it.
-              </li>
-            </ul>
-            {addressProblem === null ? null : (
-              <p
-                id="payment-contact-email-problem"
-                className="m-0 max-w-prose text-sm font-medium text-destructive"
-              >
-                {addressProblem}
-              </p>
-            )}
-          </div>
-        ) : null}
-
-        {showPay ? (
-          <div className="flex flex-wrap gap-2">
+    // The boards' checkout grid: what this order is and what paying costs on the right, the
+    // rest of the payment on the left. The two columns are placed explicitly, so the receipt
+    // can stay first in the source (a narrow screen reads what it is buying before it reads
+    // the form) without becoming the first column on a wide one.
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+      <div className="flex min-w-0 flex-col lg:col-start-1 lg:row-start-1">
+        <SummaryPanel
+          title="Tu pedido"
+          lines={receipt.lines}
+          total={receipt.total}
+          {...(deadline === null ? {} : { deadline })}
+          note={amount.note}
+        >
+          {showPay ? (
             <Button
               type="button"
               onClick={handlePay}
               disabled={pending}
               aria-busy={pending}
             >
-              {pending ? "Paying…" : "Pay"}
+              {pending ? "Pagando…" : payLabel}
             </Button>
-          </div>
-        ) : null}
+          ) : null}
 
-        {view.kind === "answer" || view.kind === "problem" || view.kind === "settled" ? (
-          <Outcome
-            outcome={view.outcome}
-            amount={amount}
-            tickets={
-              view.kind === "settled"
-                ? view.reservation.ticketIds
-                : view.kind === "answer" &&
-                    view.outcome.kind === "approved"
-                  ? view.payment.ticketIds
-                  : []
-            }
-            seatsHref={seatsHref}
-            canRetry={view.outcome.retryable && payable}
-            onRetry={handlePay}
-          />
-        ) : null}
-      </CardContent>
-    </Card>
+          {/* The way back to the plan, as the boards print it under the amount. It is a link
+              and nothing else: this page never re-holds a seat on its own. */}
+          {seatsHref === null ? null : (
+            <Link
+              href={seatsHref}
+              className="rounded-sm text-center text-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+            >
+              Cambiar butacas
+            </Link>
+          )}
+        </SummaryPanel>
+      </div>
+
+      <div className="flex min-w-0 flex-col lg:col-start-2 lg:row-start-1 lg:sticky lg:top-4">
+        <Card>
+          <CardHeader>
+            <h2 id="pay-order" className="m-0 text-base font-semibold leading-tight">
+              Pagar este pedido
+            </h2>
+            <p className="m-0 max-w-prose text-sm text-muted-foreground">
+              Un intento es un cobro. La taquilla cobra este pedido —la cantidad es suya, no
+              la calcula esta página— y la clave que se guarda en esta pestaña hace que un
+              reintento repita el mismo intento en lugar de ser un segundo pago.
+            </p>
+          </CardHeader>
+
+          <CardContent className="flex flex-col gap-3">
+            {/* The one polite live region of this surface. Everything visual below is
+                rendered outside it, so an announcement is one sentence and not a page. */}
+            <p role="status" className="m-0 max-w-prose text-sm font-medium">
+              {announcement}
+            </p>
+
+            {windowNotice === null ? null : (
+              <Alert variant="warning" className="flex flex-col gap-2">
+                <AlertDescription className="flex flex-col gap-2">
+                  <p className="m-0">{windowNotice}</p>
+                  {seatsHref === null ? null : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button asChild size="sm">
+                        <Link href={seatsHref}>Elegir las butacas otra vez</Link>
+                      </Button>
+                    </div>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* The field belongs to the order, not to one attempt: it is shown for as long as a
+                payment can still be made, so an address a buyer wants to correct after a decline
+                is corrected here rather than being resent out of reach. */}
+            {payable ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="payment-contact-email">
+                  Correo para tus entradas{" "}
+                  <span className="text-muted-foreground">(opcional)</span>
+                </Label>
+                <Input
+                  id="payment-contact-email"
+                  type="email"
+                  autoComplete="email"
+                  value={contactEmail}
+                  onChange={(event) => setContactEmail(event.target.value)}
+                  aria-invalid={addressProblem === null ? undefined : true}
+                  aria-describedby={
+                    addressProblem === null
+                      ? "payment-contact-email-help"
+                      : "payment-contact-email-help payment-contact-email-problem"
+                  }
+                  className="max-w-md"
+                />
+                {/* The conditions, in the order they matter: where the link goes, that it
+                    expires, that it is not tied to the buyer, that the field is optional, and
+                    that nothing checked the address. Every sentence is something the API and
+                    the email worker actually do — none of them promises a message already sent,
+                    because nothing here has been sent: the worker mails after the sale. */}
+                <ul
+                  id="payment-contact-email-help"
+                  className="m-0 flex max-w-prose list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground"
+                >
+                  <li>
+                    Cuando el pago se apruebe, la taquilla enviará a esta dirección un enlace
+                    que abre tus entradas.
+                  </li>
+                  <li>El enlace caduca, así que ábrelo mientras tengas el correo.</li>
+                  <li>
+                    Cualquiera con ese enlace puede abrir las entradas: no está atado a ti, ni a
+                    este navegador, ni a esta página.
+                  </li>
+                  <li>
+                    Si dejas el campo vacío no se envía nada. El PDF se sigue descargando desde
+                    esta página, igual que ahora.
+                  </li>
+                  <li>
+                    La dirección no se verifica: aquí nada comprueba que sea de quien la ha
+                    escrito.
+                  </li>
+                </ul>
+                {addressProblem === null ? null : (
+                  <p
+                    id="payment-contact-email-problem"
+                    className="m-0 max-w-prose text-sm font-medium text-destructive"
+                  >
+                    {addressProblem}
+                  </p>
+                )}
+              </div>
+            ) : null}
+
+            {view.kind === "answer" || view.kind === "problem" || view.kind === "settled" ? (
+              <Outcome
+                outcome={view.outcome}
+                amount={amount}
+                tickets={
+                  view.kind === "settled"
+                    ? view.reservation.ticketIds
+                    : view.kind === "answer" &&
+                        view.outcome.kind === "approved"
+                      ? view.payment.ticketIds
+                      : []
+                }
+                seatsHref={seatsHref}
+                canRetry={view.outcome.retryable && payable}
+                onRetry={handlePay}
+              />
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
   );
 }
 
@@ -473,14 +501,14 @@ function Outcome({
         <h3 id="payment-outcome" className="m-0 text-base font-semibold">
           {outcome.headline}
         </h3>
-        {outcome.kind === "approved" ? <Badge variant="success">Approved</Badge> : null}
-        {outcome.kind === "declined" ? <Badge variant="warning">Declined</Badge> : null}
+        {outcome.kind === "approved" ? <Badge variant="success">Aprobado</Badge> : null}
+        {outcome.kind === "declined" ? <Badge variant="warning">Rechazado</Badge> : null}
       </div>
       <AlertDescription className="flex flex-col gap-2">
         <p className="m-0">{outcome.message}</p>
         {outcome.kind === "approved" && amount.known ? (
           <p className="m-0">
-            <strong>{amount.amountLabel}</strong> was taken for this order.
+            Se han cobrado <strong>{amount.amountLabel}</strong> por este pedido.
           </p>
         ) : null}
         {tickets.length > 0 ? (
@@ -488,9 +516,9 @@ function Outcome({
         ) : null}
         {outcome.kind === "approved" && tickets.length === 0 ? (
           <p className="m-0">
-            The payment was approved but the answer carried no ticket. Do not pay again:
-            reload this page, which reads the order and shows the tickets it holds, and
-            contact the box office if it stays empty.
+            El pago se aprobó pero la respuesta no traía ninguna entrada. No vuelvas a pagar:
+            recarga esta página, que lee el pedido y muestra las entradas que tiene, y
+            contacta con la taquilla si sigue vacía.
           </p>
         ) : null}
         <p className="m-0">{outcome.nextStep}</p>
@@ -503,12 +531,12 @@ function Outcome({
           ) : null}
           {seatsHref !== null && outcome.offersSeatMap ? (
             <Button asChild variant="outline" size="sm">
-              <Link href={seatsHref}>Choose the seats again</Link>
+              <Link href={seatsHref}>Elegir las butacas otra vez</Link>
             </Button>
           ) : null}
           {!canRetry && !outcome.offersSeatMap ? (
             <Button asChild variant="outline" size="sm">
-              <Link href="/events">Back to the catalogue</Link>
+              <Link href="/events">Volver a la cartelera</Link>
             </Button>
           ) : null}
         </div>
@@ -536,7 +564,7 @@ export function IssuedTickets({ ticketIds }: { ticketIds: readonly string[] }) {
             href={`/tickets/${encodeURIComponent(ticketId)}`}
             className="rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
           >
-            Open ticket <code>{ticketId}</code>
+            Abrir la entrada <code>{ticketId}</code>
           </Link>
           <a
             href={ticketPDFUrl(ticketId)}
@@ -574,22 +602,22 @@ function alertVariant(outcome: PaymentOutcomeView) {
 function retryLabel(kind: PaymentOutcomeView["kind"]): string {
   switch (kind) {
     case "declined":
-      return "Try the payment again";
+      return "Intentar el pago otra vez";
     case "payment_in_flight":
-      return "Continue the same payment";
+      return "Continuar el mismo pago";
     case "temporary":
-      return "Retry the payment";
+      return "Reintentar el pago";
     default:
-      return "Try again";
+      return "Volver a intentarlo";
   }
 }
 
-/** `Row A seat 3`; the values painted at the door, never a reconstructed label. */
+/** `Fila A, butaca 3`; the values painted at the door, never a reconstructed label. */
 function seatLine(seat: PublicReservation["seats"][number]): string {
   const row = seat.rowLabel.trim();
   const number = seat.seatNumber.trim();
   if (row !== "" && number !== "") {
-    return `Row ${row} seat ${number}`;
+    return `Fila ${row}, butaca ${number}`;
   }
-  return `Seat ${seat.eventSeatId}`;
+  return `Butaca ${seat.eventSeatId}`;
 }
