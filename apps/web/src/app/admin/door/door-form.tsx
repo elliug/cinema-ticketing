@@ -119,7 +119,7 @@ export function DoorForm({ redeem }: DoorFormProps) {
             placeholder="Pega el código de la entrada del comprador"
             // Tall, mono and spaced: a code is read character by character, and `uppercase`
             // only changes how it looks — the value travels exactly as it was typed.
-            className="h-14 font-mono text-2xl tracking-[0.18em] uppercase"
+            className="h-14 font-mono text-xl tracking-[0.1em] uppercase"
           />
         </div>
         <Button type="submit" disabled={blank || asking}>
