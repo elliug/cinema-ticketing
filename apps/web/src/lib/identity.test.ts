@@ -63,7 +63,7 @@ test("the accepted answer is one confirmation, in one sentence, for every outcom
   assert.equal(view.headline, SIGN_IN_CONFIRMATION);
   assert.equal(
     SIGN_IN_CONFIRMATION,
-    "If that address can receive mail, a link is on its way.",
+    "Si esa dirección puede recibir correo, el enlace ya va de camino.",
   );
   assert.equal(JSON.stringify(view).includes("@"), false, "no confirmation may name an address");
 });
@@ -96,7 +96,7 @@ test("a service that cannot answer is ours, retryable, and never a verdict on th
       continue;
     }
     assert.equal(view.retryable, true);
-    assert.match(view.message, /our failure/i);
+    assert.match(view.message, /fallo nuestro/i);
     // The failure itself travels with the state, so a surface can print a code an operator can
     // act on instead of a generic apology.
     assert.equal(view.problem.code, failure.code);
@@ -199,10 +199,10 @@ test("the screen's standing copy says minutes, one use, one mailbox and one answ
   const copy = SIGN_IN_PROMISES.join(" ");
   const lowercase = copy.toLowerCase();
 
-  assert.match(lowercase, /minutes/);
-  assert.match(lowercase, /works once|once/);
-  assert.match(lowercase, /mailbox/);
-  assert.match(lowercase, /nothing is revealed|same answer/);
+  assert.match(lowercase, /minutos/);
+  assert.match(lowercase, /una sola vez/);
+  assert.match(lowercase, /buzón/);
+  assert.match(lowercase, /no se revela|la misma respuesta/);
 });
 
 test("no sentence claims an address was verified or that a message was sent", () => {
