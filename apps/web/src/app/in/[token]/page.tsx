@@ -37,7 +37,7 @@ export const dynamic = "force-dynamic";
  * about a ticket link.
  */
 export const metadata: Metadata = {
-  title: "Signing in",
+  title: "Dando acceso",
   robots: { index: false, follow: false },
 };
 
@@ -58,9 +58,9 @@ export default async function SignInLinkPage({ params }: SignInLinkPageProps) {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Identity · T6"
-        title="Signing you in"
-        description="This page spends the link from your message, once, and then writes a session into this browser and takes you to your tickets. The link expires in minutes, and nobody here learns anything about the address it was sent to beyond the fact that it was spent."
+        eyebrow="Identidad"
+        title="Te estamos dando acceso"
+        description="Esta página gasta una sola vez el enlace de tu mensaje, escribe una sesión en este navegador y te lleva a tus entradas. El enlace caduca en minutos, y aquí nadie aprende nada sobre la dirección a la que se envió: solo que se ha gastado."
       />
       <SignInLinkSurface
         redeem={redeemSignInLinkAction.bind(null, presented)}

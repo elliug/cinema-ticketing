@@ -159,7 +159,7 @@ test("the opaque refusal is one page, verbatim, whatever the box office thought 
   if (spent.kind !== "unusable") {
     return;
   }
-  assert.match(spent.nextStep, /new link/i);
+  assert.match(spent.nextStep, /enlace nuevo/i);
   assert.equal(JSON.stringify(spent).includes("401"), false, "the page does not print a status it cannot interpret");
 });
 
@@ -177,7 +177,7 @@ test("an outage is the retryable surface, never a claim about the link", () => {
       continue;
     }
     assert.equal(view.retryable, true);
-    assert.match(view.message, /nothing about it is known/i);
+    assert.match(view.message, /no se sabe nada/i);
     // It prints which failure it was, so an operator reading the page can act on it.
     assert.equal(view.problem.code, failure.code);
   }

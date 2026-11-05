@@ -255,23 +255,23 @@ export function describeSignInLink(
   if (problem.code === "unauthorized" || problem.status === 401) {
     return {
       kind: "unusable",
-      headline: "This link cannot be used",
+      headline: "Este enlace no se puede usar",
       message:
-        "A sign-in link expires in minutes and works once. The box office gives one answer for a link that was already used, one that aged out, and one that was never real — so this page cannot tell you which of those this is, and it will not guess. That is deliberate: the answer to \"did this link ever exist\" is not one this system gives out.",
+        "Un enlace de acceso caduca en minutos y sirve una sola vez. La taquilla da la misma respuesta para un enlace ya usado, para uno que se pasó de tiempo y para uno que nunca existió, así que esta página no puede decirte cuál de los tres es, y no lo adivina. Es a propósito: la respuesta a \"¿existió este enlace?\" no es una que este sistema dé.",
       nextStep:
-        "Ask for a new link at Sign in. If you signed in a moment ago, your list is under My tickets — and if you reloaded this page after signing in, this is the spent link answering, not a problem with your account.",
+        "Pide un enlace nuevo en Iniciar sesión. Si acabas de entrar, tu lista está en Mis entradas; y si recargaste esta página después de entrar, lo que responde es el enlace ya gastado, no un problema con tu cuenta.",
     };
   }
 
   return {
     kind: "unavailable",
-    headline: "This link could not be checked",
+    headline: "No se pudo comprobar este enlace",
     // Nothing about the link is known, and the page says exactly that instead of borrowing a
     // verdict: an outage must never look like an expired mail.
     message:
-      "The box office could not spend this link, so nothing about it is known — not whether it is spent, not whether it expired. This is our failure and not a verdict on the link.",
+      "La taquilla no pudo gastar este enlace, así que no se sabe nada de él: ni si está gastado, ni si caducó. Es un fallo nuestro, no un veredicto sobre el enlace.",
     nextStep:
-      "Open the link from your message again in a moment. If it keeps failing, this deployment is having a bad minute; ask for a new link once it is back.",
+      "Abre otra vez el enlace de tu mensaje dentro de un momento. Si sigue fallando, este despliegue está teniendo un mal minuto; pide un enlace nuevo cuando vuelva.",
     retryable: true,
     problem,
   };
