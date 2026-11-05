@@ -162,7 +162,7 @@ function ScreeningContext({
         roomName={screening.roomName}
         startsAtLocal={screening.startsAtLocal}
         startsAt={startsAt}
-        priceDisplay={screening.priceDisplay}
+        priceCents={screening.priceCents}
         statusWord={sale.badge}
         statusTone={badgeVariant(sale)}
       />

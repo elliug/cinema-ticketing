@@ -11,8 +11,8 @@
 //     own zone. Re-formatting `startsAt` here would print the server's or the
 //     browser's zone on a page whose whole purpose is to print the venue's, so the
 //     parser refuses a response without it rather than guessing;
-//   - the price is `priceDisplay`, the one formatter the catalogue and the ticket
-//     share. No currency symbol is added and no amount is computed;
+//   - the price is the API's `priceCents`, formatted by the one money formatter the
+//     catalogue, the receipt and the ticket share. No amount is computed;
 //   - availability is the read model's pair of numbers, printed as words as well as
 //     digits ("12 of 40 seats available"), with "Sold out" spelled out when it is
 //     zero. Colour reinforces that sentence and never carries it (S8);
@@ -123,7 +123,7 @@ function CatalogueList({
   return (
     <section aria-labelledby="screenings-title" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 id="screenings-title">Sesiones en venta</h2>
+        <h2 id="screenings-title">Programación</h2>
         {/* The count is a page count, not a programme count: with more pages behind this
             one, "12 sesiones están en venta" would be a number the screen cannot know.
             `hasMore` is the only thing this page may say about the rest. */}
@@ -149,7 +149,7 @@ function CatalogueList({
             roomName={screening.roomName}
             startsAtLocal={screening.startsAtLocal}
             startsAt={screening.startsAt === "" ? undefined : screening.startsAt}
-            priceDisplay={screening.priceDisplay}
+            priceCents={screening.priceCents}
             availableSeats={screening.availableSeats}
             seatCount={screening.seatCount}
             href={`/events/${encodeURIComponent(screening.id)}/seats`}
@@ -178,7 +178,7 @@ function CatalogueList({
 function CatalogueLoading() {
   return (
     <section aria-labelledby="catalogue-loading" className="flex flex-col gap-3">
-      <h2 id="catalogue-loading">Sesiones en venta</h2>
+      <h2 id="catalogue-loading">Programación</h2>
       <p role="status" className="m-0 max-w-prose">
         <span className="text-muted-foreground">Cargando la cartelera…</span>
       </p>

@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FEW_SEATS, describeAvailability } from "./screening-display.ts";
+import { FEW_SEATS, describeAvailability, localHour } from "./screening-display.ts";
 
 test("a session with seats left prints how many", () => {
   assert.deepEqual(describeAvailability(34), { state: "on-sale", left: "quedan 34" });
@@ -35,4 +35,15 @@ test("a sold-out session says so in words, never as a zero", () => {
 
 test("a negative count is read as sold out, because nothing can be sold below zero", () => {
   assert.deepEqual(describeAvailability(-3), { state: "sold-out", left: "agotada" });
+});
+
+test("the hour a board prints is read out of the venue's own timestamp", () => {
+  assert.equal(localHour("2030-01-15T19:00:00+01:00"), "19:00");
+  assert.equal(localHour("2030-01-15T21:30:00+01:00"), "21:30");
+});
+
+test("a value that is not a full timestamp is never turned into an invented hour", () => {
+  assert.equal(localHour("19:00"), "19:00");
+  assert.equal(localHour(""), "");
+  assert.equal(localHour("mañana"), "mañana");
 });

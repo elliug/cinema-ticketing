@@ -15,6 +15,8 @@
 // No `"use client"`: no behaviour. The poster is decoration (`aria-hidden` in its own
 // component), the state of a sale is a word next to the title, and a session is a link only
 // when the caller says where it leads, so nothing invites a click it cannot answer.
+import { formatAmount } from "@/lib/receipt";
+import { localHour } from "@/lib/screening-display";
 import { PosterArt } from "./poster-art";
 import { TimeChip, type TimeChipState } from "./time-chip";
 import { Badge, type BadgeProps } from "./ui/badge";
@@ -41,8 +43,8 @@ export interface ScreeningBannerProps {
   startsAtLocal: string;
   /** The machine-readable instant, when the caller has one, for `<time dateTime>`. */
   startsAt?: string;
-  /** The price of one seat, as the API renders it. Omitted when the read carries none. */
-  priceDisplay?: string;
+  /** The price of one seat, in cents as the API serves it. Omitted when the read carries none. */
+  priceCents?: number;
   /** What the price is for: "por butaca" unless a screen says otherwise. */
   priceLabel?: string;
   /** A word about the sale ("A la venta", "Cancelada"); the tone only reinforces it. */
@@ -58,13 +60,13 @@ export function ScreeningBanner({
   roomName,
   startsAtLocal,
   startsAt,
-  priceDisplay,
+  priceCents,
   priceLabel = "por butaca",
   statusWord,
   statusTone = "success",
   sessions,
 }: ScreeningBannerProps) {
-  const price = (priceDisplay ?? "").trim();
+  const price = priceCents === undefined ? "" : formatAmount(priceCents);
   const sessionsOffered = sessions ?? [];
 
   return (
@@ -89,7 +91,7 @@ export function ScreeningBanner({
           <span aria-hidden="true">·</span>
           <span className="break-words">{roomName}</span>
           <span aria-hidden="true">·</span>
-          <time dateTime={startsAt}>{startsAtLocal}</time>
+          <time dateTime={startsAt}>{localHour(startsAtLocal)}</time>
           {price === "" ? null : (
             <>
               <span aria-hidden="true">·</span>

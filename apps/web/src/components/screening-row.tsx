@@ -7,7 +7,8 @@
 // screening it was handed.
 import Link from "next/link";
 
-import { describeAvailability } from "@/lib/screening-display";
+import { formatAmount } from "@/lib/receipt";
+import { describeAvailability, localHour } from "@/lib/screening-display";
 import { PosterArt } from "./poster-art";
 import { TimeChip } from "./time-chip";
 
@@ -19,7 +20,8 @@ export interface ScreeningRowProps {
   startsAtLocal: string;
   /** The machine-readable instant, when the caller has one. */
   startsAt?: string;
-  priceDisplay: string;
+  /** The price of one seat, in cents as the API serves it; the app formats it once. */
+  priceCents: number;
   availableSeats: number;
   seatCount: number;
   href: string;
@@ -33,7 +35,7 @@ export function ScreeningRow({
   roomName,
   startsAtLocal,
   startsAt,
-  priceDisplay,
+  priceCents,
   availableSeats,
   seatCount,
   href,
@@ -55,7 +57,7 @@ export function ScreeningRow({
           </span>
           <span aria-hidden="true">·</span>
           <span>
-            {priceLabel} {priceDisplay}
+            {priceLabel} {formatAmount(priceCents)}
           </span>
           <span aria-hidden="true">·</span>
           <span>
@@ -71,11 +73,11 @@ export function ScreeningRow({
             so the two links are not "the same link" twice to a screen reader. */}
         <TimeChip
           href={href}
-          time={startsAtLocal}
+          time={localHour(startsAtLocal)}
           dateTime={startsAt}
           state={state}
           meta={left}
-          label={`${startsAtLocal}, ${filmTitle}: ${left}`}
+          label={`${localHour(startsAtLocal)}, ${filmTitle}: ${left}`}
         />
       </div>
     </li>

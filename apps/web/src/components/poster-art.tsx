@@ -20,13 +20,23 @@ const SHAPES = ["sun", "letter", "cone", "bars"] as const;
 
 type Shape = (typeof SHAPES)[number];
 
-/** A small, stable fingerprint of the title: same film, same poster, on every render. */
+/**
+ * A small, stable fingerprint of the title: same film, same poster, on every render.
+ *
+ * FNV-1a with a final avalanche, because a plain polynomial hash sends similar titles to
+ * neighbouring values: the two films of the development seed shared a plate *and* a shape
+ * until the mixing was added.
+ */
 function fingerprint(title: string): number {
-  let hash = 0;
+  let hash = 0x811c9dc5;
   for (let index = 0; index < title.length; index += 1) {
-    hash = (hash * 31 + title.charCodeAt(index)) | 0;
+    hash ^= title.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return Math.abs(hash);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0x5bd1e995) >>> 0;
+  hash ^= hash >>> 15;
+  return hash >>> 0;
 }
 
 function Drawing({ shape, ink }: { shape: Shape; ink: string }) {
@@ -79,9 +89,12 @@ export interface PosterArtProps {
 }
 
 export function PosterArt({ title, className }: PosterArtProps) {
+  // Three independent slices of the same fingerprint, so two films can share a drawing and
+  // still not look like the same poster: the plate, the shape, and a few degrees of tilt.
   const print = fingerprint(title);
   const tone = TONES[print % TONES.length];
-  const shape = SHAPES[Math.floor(print / 4) % SHAPES.length];
+  const shape = SHAPES[(print >>> 6) % SHAPES.length];
+  const tilt = ((print >>> 20) % 3) - 1;
 
   return (
     <svg
@@ -91,7 +104,9 @@ export function PosterArt({ title, className }: PosterArtProps) {
       focusable="false"
     >
       <rect width="100" height="150" fill={tone.plate} />
-      <Drawing shape={shape} ink={tone.ink} />
+      <g transform={`rotate(${tilt * 5} 50 66)`}>
+        <Drawing shape={shape} ink={tone.ink} />
+      </g>
       <line x1="14" y1="132" x2="86" y2="132" stroke={tone.ink} strokeOpacity="0.35" />
     </svg>
   );

@@ -38,3 +38,16 @@ export function describeAvailability(availableSeats: number): Availability {
     left: `quedan ${availableSeats}`,
   };
 }
+
+/**
+ * The hour a session starts, taken from the venue's own presentation.
+ *
+ * The API serves `startsAtLocal` as a complete local timestamp ("2030-01-15T19:00:00+01:00")
+ * because that is the value a machine can trust. A board prints an hour, so this reads the
+ * `HH:MM` out of the string instead of parsing a date: no `Date`, no zone arithmetic, and a
+ * value that is not that shape is handed back untouched rather than turned into midnight.
+ */
+export function localHour(startsAtLocal: string): string {
+  const match = /T(\d{2}:\d{2})/.exec(startsAtLocal);
+  return match === null ? startsAtLocal : match[1];
+}
