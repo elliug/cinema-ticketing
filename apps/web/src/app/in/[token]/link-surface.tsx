@@ -81,7 +81,7 @@ export function SignInLinkSurface({ redeem, hasToken }: SignInLinkSurfaceProps) 
       return (
         <Card>
           <CardHeader>
-            <CardTitle>Checking this link</CardTitle>
+            <CardTitle>Comprobando este enlace</CardTitle>
             <CardDescription>
               The link is being spent at the box office. It expires in minutes and works once, so
               this takes one request.
@@ -90,7 +90,7 @@ export function SignInLinkSurface({ redeem, hasToken }: SignInLinkSurfaceProps) 
           <CardContent>
             <form ref={form} action={submit} className="flex flex-col gap-3">
               <p role="status" className="m-0 text-sm text-muted-foreground">
-                {pending ? "Signing you in…" : "Checking the link with the box office…"}
+                {pending ? "Te estamos dando acceso…" : "Comprobando el enlace con la taquilla…"}
               </p>
               <div>
                 <Button type="submit" disabled={pending}>
@@ -116,7 +116,7 @@ export function SignInLinkSurface({ redeem, hasToken }: SignInLinkSurfaceProps) 
             </p>
             <div className="flex flex-wrap gap-2 pt-1">
               <Button asChild size="sm">
-                <Link href={TICKETS_PATH}>My tickets</Link>
+                <Link href={TICKETS_PATH}>Mis entradas</Link>
               </Button>
             </div>
           </AlertDescription>
@@ -133,10 +133,10 @@ export function SignInLinkSurface({ redeem, hasToken }: SignInLinkSurfaceProps) 
             <p className="m-0">{view.nextStep}</p>
             <div className="flex flex-wrap gap-2 pt-1">
               <Button asChild size="sm">
-                <Link href={SIGN_IN_PATH}>Ask for a new link</Link>
+                <Link href={SIGN_IN_PATH}>Pedir un enlace nuevo</Link>
               </Button>
               <Button asChild variant="outline" size="sm">
-                <Link href={TICKETS_PATH}>My tickets</Link>
+                <Link href={TICKETS_PATH}>Mis entradas</Link>
               </Button>
             </div>
           </AlertDescription>
@@ -161,7 +161,7 @@ export function SignInLinkSurface({ redeem, hasToken }: SignInLinkSurfaceProps) 
                 </Button>
               </form>
               <Button asChild variant="outline" size="sm">
-                <Link href={SIGN_IN_PATH}>Ask for a new link</Link>
+                <Link href={SIGN_IN_PATH}>Pedir un enlace nuevo</Link>
               </Button>
             </div>
           </AlertDescription>
@@ -184,7 +184,7 @@ function MissingToken() {
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
           <Button asChild size="sm">
-            <Link href={SIGN_IN_PATH}>Ask for a new link</Link>
+            <Link href={SIGN_IN_PATH}>Pedir un enlace nuevo</Link>
           </Button>
         </div>
       </AlertDescription>

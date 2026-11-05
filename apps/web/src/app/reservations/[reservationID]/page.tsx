@@ -13,9 +13,11 @@
 //      and the read answers `null` while nothing has been captured; after a payment it is
 //      the number the payment answer reported. Nothing here multiplies a price by a seat
 //      count (`describeOrderAmount`, lib/payment-key.ts);
-//   3. it is off the legacy stylesheet: shadcn primitives and utilities, the `h1` is the
-//      screening (or the order, when there is no screening to name), the page has one
-//      polite live region (inside the panel) and every action keeps a visible focus ring.
+//   3. the review of it is visual: the `h1` is what the buyer is doing ("Tu compra"), the
+//      order's identifier leads the eyebrow, the screening is the shared `ScreeningBanner`,
+//      and the receipt is the shared `SummaryPanel` — the same two components the seat plan
+//      prints (visual-redesign · T5). The page has one polite live region (inside the
+//      panel) and every action keeps a visible focus ring.
 //
 // The states this page can render, each one a different answer:
 //
@@ -35,19 +37,19 @@ import Link from "next/link";
 import { Suspense } from "react";
 
 import { PageHeader } from "@/components";
+import { ScreeningBanner } from "@/components/screening-banner";
+import { SummaryPanel } from "@/components/summary-panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PublicProblem, PublicReservation } from "@/lib/public-api";
 import type { HoldWindowView } from "@/lib/payment-key";
-import { describeHoldWindow, describeOrderAmount } from "@/lib/payment-key";
+import {
+  describeHoldWindow,
+  describeOrderAmount,
+} from "@/lib/payment-key";
+import { seatReceipt } from "@/lib/receipt";
 import { loadReservation, payReservationAction } from "./actions";
 import { IssuedTickets, PaymentPanel } from "./payment-panel";
 
@@ -94,12 +96,22 @@ async function Order({ reservationId }: { reservationId: string }) {
   return (
     <>
       <PageHeader
-        eyebrow="Checkout · M3.5"
-        title={order.filmTitle}
-        description={`${order.cinemaName} · ${order.roomName}. Times are the venue's own clock. This is a guest checkout: nothing here checks who you are, and the order's identifier is what opens it.`}
+        eyebrow={`Pago · pedido ${order.reservationId}`}
+        title="Tu compra"
+        description="La hora es la del propio local. Este pago es de invitado: nada aquí comprueba quién eres, y el identificador del pedido es lo que lo abre."
       />
 
-      <OrderSummary order={order} window={window} />
+      {/* The same strip the seat plan prints: which session, where and when. The price of a
+          seat is not part of it because a reservation read does not carry one. */}
+      <ScreeningBanner
+        filmTitle={order.filmTitle}
+        cinemaName={order.cinemaName}
+        roomName={order.roomName}
+        startsAtLocal={order.startsAtLocal}
+        startsAt={order.startsAt === "" ? undefined : order.startsAt}
+      />
+
+      <OrderState order={order} window={window} />
 
       {window.kind === "paid" ? (
         <PaidOrder order={order} />
@@ -116,81 +128,36 @@ async function Order({ reservationId }: { reservationId: string }) {
 }
 
 /**
- * What the order is: the screening it is for, its seats, its deadline and the money
- * actually taken.
+ * Where the order stands, in one word plus a tone and the read it came from.
  *
- * The amount row is the S8 rule in one line: a number appears only when the API states
- * one, and the sentence beside it says which number it is. While nothing has been taken
- * the row says exactly that instead of a figure the page would have had to invent.
+ * This is what the old order card said above its table, minus the table: the seats, the
+ * money and the deadline are the receipt's business now, and the screening's hour is the
+ * strip's. What is left here is the one thing neither of them answers — the state — and the
+ * sentence about reloading, which is the whole reason this page reads the order at all.
  */
-function OrderSummary({
+function OrderState({
   order,
   window,
 }: {
   order: PublicReservation;
   window: HoldWindowView;
 }) {
-  const amount = describeOrderAmount(order, null);
   const status = statusBadge(window, order);
-  const startsAt = order.startsAt === "" ? undefined : order.startsAt;
 
   return (
-    <Card aria-labelledby="order-summary">
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* An `h2`, not the card primitive's `h3`: the outline is the screening (h1),
-              then the order and the payment, as the page reads. */}
-          <h2 id="order-summary" className="m-0 text-lg leading-tight font-semibold">
-            Your order
-          </h2>
-          {/* The word is the state; the tone only reinforces it. */}
-          <Badge variant={status.variant}>{status.word}</Badge>
-        </div>
-        <CardDescription>
-          Read from the box office when this page loaded, so reloading it loses nothing:
-          the same order answers with the same screening, seats and deadline.
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="flex flex-col gap-3">
-        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-          <dt className="text-muted-foreground">Order</dt>
-          <dd className="m-0 font-medium break-all">
-            <code>{order.reservationId}</code>
-          </dd>
-
-          <dt className="text-muted-foreground">Seats</dt>
-          <dd className="m-0 font-medium break-words">
-            {order.seats.length === 0
-              ? "No seat: this order holds none."
-              : order.seats.map(seatLabel).join(", ")}
-          </dd>
-
-          <dt className="text-muted-foreground">Starts</dt>
-          <dd className="m-0 font-medium break-words">
-            <time dateTime={startsAt}>{order.startsAtLocal}</time>
-          </dd>
-
-          <dt className="text-muted-foreground">Amount</dt>
-          <dd className="m-0 font-medium">
-            {amount.known
-              ? `${amount.amountLabel} taken`
-              : order.amountDueDisplay
-                ? `${order.amountDueDisplay} at the current price`
-                : "Not charged yet"}
-          </dd>
-        </dl>
-
-        <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          {amount.note}
-        </p>
-      </CardContent>
-    </Card>
+    <div className="flex flex-wrap items-center gap-3">
+      {/* The word is the state; the tone only reinforces it. */}
+      <Badge variant={status.variant}>{status.word}</Badge>
+      <p className="m-0 max-w-prose text-sm text-muted-foreground">
+        Leído de la taquilla al cargar esta página, así que recargarla no pierde nada: el
+        mismo pedido responde con la misma sesión, las mismas butacas y el mismo plazo.
+      </p>
+    </div>
   );
 }
 
 /**
- * The order is paid: the tickets, and how to open them again.
+ * The order is paid: the receipt of what was taken, and the tickets.
  *
  * This is what makes a reload of a paid order honest. The payment answer is gone and the
  * read is the only thing left, so the tickets come from the order itself — and nothing
@@ -202,43 +169,58 @@ function PaidOrder({
 }: {
   order: PublicReservation;
 }) {
-  return (
-    <Card aria-labelledby="paid-order">
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 id="paid-order" className="m-0 text-lg leading-tight font-semibold">
-            Your tickets
-          </h2>
-          <Badge variant="success">Paid</Badge>
-        </div>
-        <CardDescription>
-          The order carries a captured payment, so there is nothing left to charge. These
-          are the tickets the box office issued for it.
-        </CardDescription>
-      </CardHeader>
+  const amount = describeOrderAmount(order, null);
+  const receipt = seatReceipt({
+    seatLabels: order.seats.map(seatLabel),
+    count: order.seats.length,
+    amountCents: order.amountCents,
+    amountDisplay: order.amountDisplay,
+  });
 
-      <CardContent className="flex flex-col gap-3">
+  return (
+    <>
+      <SummaryPanel
+        title="Tu pedido"
+        lines={receipt.lines}
+        total={receipt.total}
+        note={amount.note}
+      >
+        <Button asChild variant="outline" size="sm">
+          <Link href="/events">Volver a la cartelera</Link>
+        </Button>
+      </SummaryPanel>
+
+      <section
+        aria-labelledby="paid-order"
+        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id="paid-order" className="m-0 text-base font-semibold leading-tight">
+            Tus entradas
+          </h2>
+          <Badge variant="success">Pagada</Badge>
+        </div>
+
+        <p className="m-0 max-w-prose text-sm text-muted-foreground">
+          El pedido lleva un pago capturado, así que no queda nada por cobrar. Estas son las
+          entradas que emitió la taquilla por él.
+        </p>
+
         {order.ticketIds.length === 0 ? (
           <p className="m-0 max-w-prose">
-            The order is paid but its read carries no ticket. Do not pay again: reload
-            this page once, and contact the box office if it stays empty.
+            El pedido está pagado pero su lectura no trae ninguna entrada. No vuelvas a pagar:
+            recarga esta página una vez, y contacta con la taquilla si sigue vacía.
           </p>
         ) : (
           <IssuedTickets ticketIds={order.ticketIds} />
         )}
 
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          A ticket is the record of a sale. Whether it still admits you is answered by the
-          box office when it is scanned — this page cannot and does not promise it.
+          Una entrada es el registro de una venta. Que todavía te deje pasar lo responde la
+          taquilla al escanearla: esta página no puede prometerlo y no lo promete.
         </p>
-
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/events">Back to the catalogue</Link>
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      </section>
+    </>
   );
 }
 
@@ -247,22 +229,22 @@ function MissingOrder() {
   return (
     <>
       <PageHeader
-        eyebrow="Checkout · M3.5"
-        title="Your order"
-        description="This address does not name an order, so there is nothing to read and nothing to pay."
+        eyebrow="Pago"
+        title="Tu compra"
+        description="Esta dirección no nombra ningún pedido, así que no hay nada que leer ni nada que pagar."
       />
       <Alert variant="destructive" role="alert" aria-labelledby="missing-order">
         <h2 id="missing-order" className="m-0 text-base font-semibold">
-          This address names no reservation
+          Esta dirección no nombra ninguna reserva
         </h2>
         <AlertDescription className="flex flex-col gap-2">
           <p className="m-0">
-            Open this page from the seat map after holding seats: the hold creates the
-            order and its identifier is what this page is addressed by.
+            Abre esta página desde el plano de butacas, después de reservar: la reserva crea
+            el pedido, y su identificador es lo que esta página necesita.
           </p>
           <div className="flex flex-wrap gap-2 pt-1">
             <Button asChild size="sm">
-              <Link href="/events">See what is on sale</Link>
+              <Link href="/events">Ver qué está a la venta</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -296,9 +278,9 @@ function ReadProblem({
   return (
     <>
       <PageHeader
-        eyebrow="Checkout · M3.5"
-        title="Your order"
-        description="The box office was asked for this order, and the answer did not describe one."
+        eyebrow="Pago"
+        title="Tu compra"
+        description="Se le ha pedido este pedido a la taquilla, y la respuesta no describía ninguno."
       />
       <Alert
         variant="destructive"
@@ -307,7 +289,7 @@ function ReadProblem({
         className="flex flex-col gap-2"
       >
         <h2 id="order-problem" className="m-0 text-base font-semibold">
-          {missing ? "This order does not exist" : "The order could not be loaded"}
+          {missing ? "Este pedido no existe" : "No se pudo cargar el pedido"}
         </h2>
         <AlertDescription className="flex flex-col gap-2">
           <p className="m-0">
@@ -316,10 +298,10 @@ function ReadProblem({
           <p className="m-0">{problem.detail}</p>
           <p className="m-0">
             {missing
-              ? "No order answers to this address, so there is nothing to pay and nothing to show. Check the link you followed: the seat map creates the order and hands out its address."
+              ? "Ningún pedido responde a esta dirección, así que no hay nada que pagar ni nada que mostrar. Revisa el enlace que has seguido: el plano de butacas crea el pedido y reparte su dirección."
               : temporary
-                ? "The box office is temporarily unavailable. Nothing is lost by asking again — this page only reads, so a retry cannot charge, hold or release anything."
-                : "The API refused this read. Asking again is worth one try; if it persists, the order needs the box office."}
+                ? "La taquilla no está disponible temporalmente. Volver a preguntar no pierde nada: esta página solo lee, así que un reintento no puede cobrar, reservar ni liberar nada."
+                : "La API rechazó esta lectura. Volver a preguntar merece un intento; si sigue así, el pedido necesita a la taquilla."}
           </p>
           <div className="flex flex-wrap gap-2 pt-1">
             {temporary ? (
@@ -327,12 +309,12 @@ function ReadProblem({
                 <Link
                   href={`/reservations/${encodeURIComponent(reservationId)}`}
                 >
-                  Ask again
+                  Volver a preguntar
                 </Link>
               </Button>
             ) : null}
             <Button asChild variant="outline" size="sm">
-              <Link href="/events">Back to the catalogue</Link>
+              <Link href="/events">Volver a la cartelera</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -352,33 +334,41 @@ function OrderLoading() {
   return (
     <>
       <PageHeader
-        eyebrow="Checkout · M3.5"
-        title="Your order"
-        description="Loading the order, its screening, its seats and its deadline."
+        eyebrow="Pago"
+        title="Tu compra"
+        description="Cargando el pedido, su sesión, sus butacas y su plazo."
       />
       <section aria-labelledby="order-loading" className="flex flex-col gap-3">
-        <h2 id="order-loading">Your order</h2>
+        <h2 id="order-loading">Tu pedido</h2>
         <p role="status" className="m-0 max-w-prose">
-          <span className="text-muted-foreground">Loading your order…</span>
+          <span className="text-muted-foreground">Cargando tu pedido…</span>
         </p>
-        <Card aria-hidden="true" className="flex flex-col gap-3 p-5">
+        <div
+          aria-hidden="true"
+          className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5"
+        >
           {[0, 1, 2, 3].map((row) => (
             <Skeleton key={row} className="h-4 w-2/3" />
           ))}
-        </Card>
+        </div>
       </section>
     </>
   );
 }
 
-/** `Row A seat 3`, from the values painted at the door; never a reconstructed label. */
+/**
+ * One seat as the door paints it: "Fila A, butaca 3", from the values the API served.
+ *
+ * Never a reconstructed label: a seat without a row or a number keeps the event seat id it
+ * does have, and the union of the two shapes is what the receipt prints.
+ */
 function seatLabel(seat: PublicReservation["seats"][number]): string {
   const row = seat.rowLabel.trim();
   const number = seat.seatNumber.trim();
   if (row !== "" && number !== "") {
-    return `Row ${row} seat ${number}`;
+    return `Fila ${row}, butaca ${number}`;
   }
-  return `Seat ${seat.eventSeatId}`;
+  return `Butaca ${seat.eventSeatId}`;
 }
 
 /**
@@ -395,16 +385,16 @@ function statusBadge(
 ): { word: string; variant: BadgeProps["variant"] } {
   switch (window.kind) {
     case "paid":
-      return { word: "Paid", variant: "success" };
+      return { word: "Pagada", variant: "success" };
     case "cancelled":
-      return { word: "Cancelled", variant: "danger" };
+      return { word: "Cancelada", variant: "danger" };
     case "expired":
-      return { word: "Hold expired", variant: "warning" };
+      return { word: "Reserva caducada", variant: "warning" };
     case "counting":
-      return { word: "Held", variant: "info" };
+      return { word: "Reservada", variant: "info" };
     default:
       return {
-        word: order.status.trim() === "" ? "Unknown" : order.status.trim(),
+        word: order.status.trim() === "" ? "Desconocido" : order.status.trim(),
         variant: "outline",
       };
   }

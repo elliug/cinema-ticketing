@@ -46,7 +46,7 @@ test.describe("tickets", () => {
       runtimeMinutes: "97",
       rating: "12",
       price: "12.50",
-      statusLabel: "On sale",
+      statusLabel: "En venta",
     });
     const purchase = await purchaseTwoSeats(page, screening);
     const ticketId = purchase.ticketIds[0] ?? "";
@@ -56,15 +56,15 @@ test.describe("tickets", () => {
     await openTicket(page, ticketId);
 
     await visit(page, "/tickets");
-    const primary = page.getByRole("navigation", { name: "Primary" });
-    await expect(primary.getByRole("link", { name: "My tickets" })).toHaveAttribute(
+    const primary = page.getByRole("navigation", { name: "Principal" });
+    await expect(primary.getByRole("link", { name: "Mis entradas" })).toHaveAttribute(
       "aria-current",
       "page",
     );
     await expect(primary.locator('[aria-current="page"]')).toHaveCount(1);
 
     // What the list holds: the ticket this tab opened, re-read from the box office.
-    const kept = page.getByRole("heading", { name: "Tickets this tab kept" });
+    const kept = page.getByRole("heading", { name: "Las entradas que guarda esta pestaña" });
     await expect(kept).toBeVisible();
     await expect(
       page.getByRole("heading", { name: screening.filmTitle }),
@@ -72,20 +72,20 @@ test.describe("tickets", () => {
     ).toBeVisible();
     // The seat is the one the keyboard chose, printed the way a ticket prints it (the
     // row and the number as painted at the door).
-    await expect(page.getByText("Seat A1")).toBeVisible();
+    await expect(page.getByText("Butaca A1")).toBeVisible();
     await expect(
-      page.getByRole("link", { name: `Open ticket ${ticketId}` }),
+      page.getByRole("link", { name: `Abrir la entrada ${ticketId}` }),
     ).toBeVisible();
 
     // A reload reads the same tab's storage and asks the box office again.
     await page.reload();
     await expectOneH1(page);
     await expect(
-      page.getByRole("heading", { name: "Tickets this tab kept" }),
+      page.getByRole("heading", { name: "Las entradas que guarda esta pestaña" }),
       "the list survived the reload",
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: `Open ticket ${ticketId}` }),
+      page.getByRole("link", { name: `Abrir la entrada ${ticketId}` }),
       "the same ticket is still listed, exactly once",
     ).toHaveCount(1);
 
@@ -99,7 +99,7 @@ test.describe("tickets", () => {
 
     // A fresh tab kept nothing, and says so before anything is written.
     await visit(page, "/tickets");
-    await expect(page.getByRole("heading", { name: "This tab has kept no ticket" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Esta pestaña no guarda ninguna entrada" })).toBeVisible();
 
     // The tab keeps one record — the state a stale purchase leaves behind, and the only
     // record this screen may delete. It is written into the same `sessionStorage` key the
@@ -115,26 +115,26 @@ test.describe("tickets", () => {
     await expectOneH1(page);
 
     const staleRow = page.getByRole("heading", {
-      name: "The box office does not know this ticket",
+      name: "La taquilla no conoce esta entrada",
     });
     await expect(staleRow, "the stale record is one row, not a lost list").toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "This tab has kept no ticket" }),
+      page.getByRole("heading", { name: "Esta pestaña no guarda ninguna entrada" }),
       "a record the tab kept and the list it is not",
     ).toHaveCount(0);
 
     await page
-      .getByRole("button", { name: "Forget this record on this device" })
+      .getByRole("button", { name: "Olvidar este registro en este dispositivo" })
       .click();
 
     // Forgetting the last record is what empties the list, and the empty state is what
     // the screen shows — never a list with nothing in it.
     await expect(
-      page.getByRole("heading", { name: "This tab has kept no ticket" }),
+      page.getByRole("heading", { name: "Esta pestaña no guarda ninguna entrada" }),
       "the list is empty after the last record was forgotten",
     ).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "Tickets this tab kept" }),
+      page.getByRole("heading", { name: "Las entradas que guarda esta pestaña" }),
       "no list is shown once it holds nothing",
     ).toHaveCount(0);
     expect(
@@ -154,15 +154,15 @@ test.describe("tickets", () => {
 
     await visit(page, "/tickets");
     await expect(
-      page.getByRole("heading", { name: "This tab has kept no ticket" }),
+      page.getByRole("heading", { name: "Esta pestaña no guarda ninguna entrada" }),
       "a tab that kept nothing says so",
     ).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "Tickets this tab kept" }),
+      page.getByRole("heading", { name: "Las entradas que guarda esta pestaña" }),
       "and shows no list",
     ).toHaveCount(0);
     await expect(
-      page.getByRole("heading", { name: "This browser will not show what it kept" }),
+      page.getByRole("heading", { name: "Este navegador no muestra lo que guarda" }),
       "an empty list is not an unreadable one",
     ).toHaveCount(0);
 
@@ -190,14 +190,14 @@ test.describe("tickets", () => {
 
     await visit(page, "/tickets");
     await expect(
-      page.getByRole("heading", { name: "This browser will not show what it kept" }),
+      page.getByRole("heading", { name: "Este navegador no muestra lo que guarda" }),
       "the screen says the browser would not answer",
     ).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "This tab has kept no ticket" }),
+      page.getByRole("heading", { name: "Esta pestaña no guarda ninguna entrada" }),
       "an unreadable list is never drawn as an empty one",
     ).toHaveCount(0);
-    await expect(page.getByText("This is not the same as having no ticket")).toBeVisible();
+    await expect(page.getByText("No es lo mismo que no tener ninguna entrada")).toBeVisible();
 
     expectNoProblems(problems);
     await context.close();
@@ -211,14 +211,14 @@ test.describe("tickets", () => {
 
     await visit(page, `/tickets/${unknown}`);
     await expect(
-      page.getByRole("heading", { name: "The box office does not know this ticket" }),
+      page.getByRole("heading", { name: "La taquilla no conoce esta entrada" }),
       "the box office's answer is printed as unknown",
     ).toBeVisible();
     // The refusal is printed as the API answered it: the code and the status, unchanged.
     await expect(page.locator("main")).toContainText("not_found");
     await expect(page.locator("main")).toContainText("HTTP 404");
     await expect(
-      page.getByRole("heading", { name: "This ticket is valid" }),
+      page.getByRole("heading", { name: "Esta entrada es válida" }),
       "an unknown identifier is never drawn as a valid ticket",
     ).toHaveCount(0);
 

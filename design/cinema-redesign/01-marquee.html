@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dirección A · Marquesina — cinema-ticketing</title>
+<style>
+/* DIRECTION A — "Marquee".
+   Strategy: a real cinema listings board. Deep ink, warm amber bulbs, dense time grid.
+   Deviations from design/system.md: dark-first palette (no light scheme), one display
+   treatment for the brand (letter-spaced caps), state colours re-tuned for dark. Spacing,
+   radii and the three weight levels come from the shipped tokens. */
+:root {
+  --bg: #0a0b0f; --surface: #12141a; --surface-2: #191c24; --line: #272b34; --line-2: #3b4250;
+  --text: #f4f5f7; --muted: #a8afbb; --amber: #f6b73c; --amber-ink: #171100;
+  --ok: #5fd39a; --bad: #f0736a; --ok-dim: #1b2a24; --bad-dim: #2a1a1a;
+  --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem; --s5: 1.5rem; --s6: 2rem; --s7: 3rem; --s8: 4rem;
+  --r-sm: .375rem; --r-md: .5rem; --r-lg: .75rem; --r-pill: 999px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --w: 1200px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 16px; line-height: 1.5; }
+h1, h2, h3, h4 { margin: 0; line-height: 1.15; font-weight: 600; }
+p { margin: 0; }
+a { color: var(--amber); text-underline-offset: .2em; }
+button { font: inherit; }
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 3px; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+
+/* Board chrome: the label above each screen, so the canvas reads as a set of screens. */
+.board { padding: var(--s5) 0 var(--s8); }
+.board__head { max-width: var(--w); margin: 0 auto var(--s6); padding: 0 var(--s5); }
+.board__tag { font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+.board__title { font-size: 34px; margin: var(--s2) 0 var(--s2); letter-spacing: -.01em; }
+.board__note { color: var(--muted); max-width: 68ch; }
+.frame { max-width: var(--w); margin: 0 auto var(--s7); padding: 0 var(--s5); }
+.frame__label { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3); color: var(--muted);
+  font-size: 12px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.frame__label::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.screen { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+
+/* Shell */
+.site-head { background: var(--surface); border-bottom: 1px solid var(--line); }
+.site-head__inner { max-width: var(--w); margin: 0 auto; padding: var(--s4) var(--s5);
+  display: flex; align-items: center; gap: var(--s6); }
+.brand { display: flex; flex-direction: column; gap: 2px; }
+.brand__name { font-size: 20px; font-weight: 600; letter-spacing: .26em; text-transform: uppercase; }
+.brand__meta { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+.bulbs { height: 3px; background: repeating-linear-gradient(90deg, var(--amber) 0 3px, transparent 3px 13px);
+  opacity: .55; }
+.nav { display: flex; gap: var(--s5); margin-left: auto; }
+.nav a { color: var(--text); text-decoration: none; font-size: 14px; font-weight: 500; padding: 6px 0;
+  border-bottom: 2px solid transparent; }
+.nav a[aria-current="page"] { color: var(--amber); border-bottom-color: var(--amber); }
+.nav a:hover { color: var(--amber); border-bottom-color: var(--line-2); }
+.head-cta { border: 1px solid var(--line-2); background: transparent; color: var(--text);
+  padding: 8px 14px; border-radius: var(--r-sm); font-size: 13px; font-weight: 600; cursor: pointer; }
+.head-cta:hover { border-color: var(--amber); color: var(--amber); }
+.main { padding: var(--s6) var(--s5) var(--s7); max-width: var(--w); margin: 0 auto; }
+
+/* Type helpers */
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--amber); }
+.h1 { font-size: 40px; letter-spacing: -.015em; }
+.h2 { font-size: 22px; }
+.h3 { font-size: 17px; }
+.lead { color: var(--muted); max-width: 62ch; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 12px 20px;
+  border-radius: var(--r-sm); border: 1px solid transparent; font-weight: 600; font-size: 15px;
+  cursor: pointer; text-decoration: none; }
+.btn--primary { background: var(--amber); color: var(--amber-ink); border-color: var(--amber); }
+.btn--primary:hover { background: #ffc95c; }
+.btn--ghost { background: transparent; color: var(--text); border-color: var(--line-2); }
+.btn--ghost:hover { border-color: var(--amber); color: var(--amber); }
+.btn--block { width: 100%; }
+.btn[disabled] { background: var(--surface-2); color: #6d7482; border-color: var(--line); cursor: not-allowed; }
+
+/* Hero of the catalogue */
+.hero { display: grid; grid-template-columns: 1.15fr .85fr; gap: var(--s6); align-items: center;
+  padding-bottom: var(--s6); border-bottom: 1px solid var(--line); }
+.hero__times { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s4); }
+.hero__poster { justify-self: end; width: 264px; filter: drop-shadow(0 18px 40px rgb(0 0 0 / 60%)); }
+.poster { display: block; width: 100%; border-radius: var(--r-sm); }
+.poster-caption { display: flex; gap: var(--s2); margin-top: var(--s3); font-size: 12px; color: var(--muted); }
+
+/* Date strip */
+.datestrip { display: flex; gap: var(--s2); padding: var(--s4) 0; overflow-x: auto; }
+.day { flex: 1 0 auto; min-width: 64px; padding: 10px 8px; text-align: center; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.day span { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.day b { font-size: 18px; font-weight: 600; }
+.day[aria-pressed="true"] { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+.day[aria-pressed="true"] span { color: var(--amber-ink); opacity: .8; }
+
+/* Listings */
+.film { display: grid; grid-template-columns: 92px 1fr 320px; gap: var(--s5); align-items: start;
+  padding: var(--s5) 0; border-bottom: 1px solid var(--line); }
+.film:last-of-type { border-bottom: 0; }
+.film__poster { width: 92px; border-radius: var(--r-sm); }
+.film__meta { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin-top: 6px;
+  font-size: 13px; color: var(--muted); }
+.dot { color: var(--line-2); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px; border-radius: var(--r-sm);
+  border: 1px solid currentColor; font-size: 11px; font-weight: 600; }
+.pill--rating { color: var(--muted); }
+.pill--ok { color: var(--ok); background: var(--ok-dim); }
+.pill--few { color: var(--amber); background: #241d0c; }
+.pill--out { color: var(--bad); background: var(--bad-dim); }
+.times { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.time { display: flex; flex-direction: column; align-items: center; padding: 8px 14px; border-radius: var(--r-sm);
+  border: 1px solid var(--line-2); background: transparent; color: var(--text); cursor: pointer; min-width: 84px; }
+.time b { font-size: 17px; font-family: var(--mono); font-weight: 600; }
+.time span { font-size: 11px; color: var(--muted); }
+.time:hover { border-color: var(--amber); }
+.time:hover b { color: var(--amber); }
+.time[disabled] { opacity: .45; cursor: not-allowed; border-style: dashed; }
+.time[disabled] b { text-decoration: line-through; }
+
+/* Selección de butacas */
+.showbar { display: flex; flex-wrap: wrap; gap: var(--s4); align-items: center; padding: var(--s4);
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.showbar__times { display: flex; gap: var(--s2); margin-left: auto; }
+.seatwrap { display: grid; grid-template-columns: 1fr 320px; gap: var(--s6); margin-top: var(--s5); }
+.auditorium { padding: var(--s5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.screen-arc { position: relative; height: 52px; margin-bottom: var(--s5); }
+.screen-arc svg { width: 100%; height: 100%; }
+.screen-arc span { position: absolute; inset: auto 0 -20px; text-align: center; font-size: 10px; letter-spacing: .3em;
+  text-transform: uppercase; color: var(--muted); }
+.rows { display: flex; flex-direction: column; gap: 7px; }
+.row { display: flex; align-items: center; gap: 7px; justify-content: center; }
+.row__label { width: 18px; font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: center; }
+.aisle { width: 22px; }
+.seat { width: 26px; height: 26px; border-radius: 7px 7px 4px 4px; border: 1px solid var(--line-2);
+  background: #1e222a; color: var(--muted); font-size: 10px; cursor: pointer; display: grid; place-items: center; }
+.seat:hover { border-color: var(--amber); }
+.seat[data-state="taken"] { background: #0f1116; border-color: #22262e; color: #3a404b; cursor: not-allowed; }
+.seat[data-state="selected"] { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); font-weight: 700; }
+.seat[data-state="accessible"] { border-color: var(--ok); color: var(--ok); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s5); font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 13px; height: 13px; border-radius: 4px; margin-right: 6px;
+  border: 1px solid var(--line-2); vertical-align: -2px; }
+.summary { position: sticky; top: 0; align-self: start; padding: var(--s5); border: 1px solid var(--line);
+  border-radius: var(--r-lg); background: var(--surface); display: flex; flex-direction: column; gap: var(--s4); }
+.summary__row { display: flex; justify-content: space-between; gap: var(--s3); font-size: 14px; }
+.summary__row b { font-family: var(--mono); }
+.total { display: flex; justify-content: space-between; align-items: baseline; padding-top: var(--s3);
+  border-top: 1px solid var(--line); font-size: 15px; }
+.total strong { font-size: 26px; }
+.holdbar { display: flex; align-items: center; gap: var(--s2); font-size: 13px; color: var(--muted); }
+.holdbar b { font-family: var(--mono); color: var(--amber); font-size: 15px; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chip { padding: 3px 9px; border-radius: var(--r-sm); background: #241d0c; border: 1px solid var(--amber);
+  color: var(--amber); font-family: var(--mono); font-size: 12px; }
+
+/* Forms and checkout */
+.checkout { display: grid; grid-template-columns: 1fr 380px; gap: var(--s6); margin-top: var(--s5); }
+.panel { padding: var(--s5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.panel__head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s4); }
+.step { width: 22px; height: 22px; border-radius: var(--r-pill); border: 1px solid var(--amber); color: var(--amber);
+  font-size: 12px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.fields { display: grid; gap: var(--s4); grid-template-columns: 1fr 1fr; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field--wide { grid-column: 1 / -1; }
+.field label { font-size: 13px; font-weight: 600; }
+.field input { font: inherit; font-size: 15px; color: var(--text); background: #0d0f14;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 11px 12px; }
+.field input:focus-visible { border-color: var(--amber); }
+.field small { font-size: 12px; color: var(--muted); }
+.check { display: flex; flex-direction: row; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--muted); }
+.check input { margin-top: 3px; accent-color: var(--amber); }
+.notice { display: flex; gap: 10px; padding: var(--s3) var(--s4); border-radius: var(--r-sm);
+  border: 1px solid #2f4a3c; background: #121d17; color: #a9dcc0; font-size: 13px; }
+.notice--warn { border-color: #4a3a18; background: #1d1809; color: #f0cf8c; }
+.orderline { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+.orderline b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+
+/* Ticket */
+.ticketpage { display: grid; grid-template-columns: 1fr 420px; gap: var(--s6); align-items: start; }
+.ticket { display: grid; grid-template-columns: 1fr 148px; background: var(--surface); border-radius: var(--r-lg);
+  border: 1px solid var(--line); overflow: hidden; }
+.ticket__body { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); }
+.ticket__stub { padding: var(--s5) var(--s4); background: var(--surface-2); border-left: 1px dashed var(--line-2);
+  display: flex; flex-direction: column; align-items: center; gap: var(--s3); text-align: center; }
+.ticket--compact .qr { width: 84px; height: 84px; }
+.ticket--compact .ticket__body { padding: var(--s4) var(--s5); }
+.qr { width: 104px; height: 104px; background: #fff; padding: 6px; border-radius: 6px; }
+.qr svg { display: block; width: 100%; height: 100%; }
+.ticket__code { font-family: var(--mono); font-size: 13px; letter-spacing: .08em; }
+.ticket__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s4); }
+.kv { display: flex; flex-direction: column; gap: 3px; }
+.kv dt { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.kv dd { margin: 0; font-size: 16px; font-weight: 600; }
+.hairline { height: 1px; background: var(--line); }
+
+/* Door / box office */
+.adminhead { display: flex; align-items: center; gap: var(--s4); padding: var(--s3) var(--s5);
+  background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 13px; }
+.adminhead .tag { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--amber); font-weight: 700; }
+.adminhead .who { margin-left: auto; color: var(--muted); }
+.tabs { display: flex; gap: var(--s1); }
+.tabs span { padding: 6px 12px; border-radius: var(--r-sm); color: var(--muted); font-weight: 600; }
+.tabs .on { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
+.door { display: grid; grid-template-columns: 1fr 400px; gap: var(--s6); }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th { text-align: left; padding: 8px 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); border-bottom: 1px solid var(--line); font-weight: 600; }
+.table td { padding: 10px; border-bottom: 1px solid #1c1f26; }
+.table td.num { font-family: var(--mono); }
+.bar { height: 6px; border-radius: 3px; background: #22262e; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--amber); }
+.answers { display: grid; gap: var(--s2); margin-top: var(--s4); font-size: 12px; color: var(--muted); }
+.answers b { color: var(--text); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="board">
+  <header class="board__head">
+    <p class="board__tag">Dirección A · Marquesina</p>
+    <h1 class="board__title">Una cartelera que se comporta como el vestíbulo</h1>
+    <p class="board__note">Una sala oscura, bombillas cálidas y todo el programa legible en una sola columna: película,
+      duración, sala y una rejilla de horarios con las butacas libres bajo cada sesión. Contrapartida: la mayor autoridad
+      cinematográfica y la lectura más rápida para quien compara diez sesiones, a cambio de un lienzo oscuro en todas
+      partes, incluidos el formulario de pago y el puesto de acceso.</p>
+  </header>
+
+<!-- Poster art, drawn rather than fetched: the boards never reach the network. -->
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="p-luz" viewBox="0 0 200 300">
+    <defs><linearGradient id="g-luz" x1="0" y1="0" x2=".4" y2="1"><stop offset="0" stop-color="#3a2708"/><stop offset="1" stop-color="#0a0b0f"/></linearGradient>
+      <radialGradient id="r-luz" cx=".5" cy=".26" r=".55"><stop offset="0" stop-color="#ffd583"/><stop offset="1" stop-color="#ffd583" stop-opacity="0"/></radialGradient></defs>
+    <rect width="200" height="300" fill="url(#g-luz)"/><circle cx="100" cy="78" r="76" fill="url(#r-luz)"/>
+    <g fill="none" stroke="#f6b73c" stroke-opacity=".55"><path d="M18 236Q100 148 182 236"/><path d="M34 250Q100 172 166 250"/><path d="M50 264Q100 196 150 264"/></g>
+    <text x="100" y="272" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" letter-spacing="2" fill="#f6f7f9">EL VIAJE</text><text x="100" y="288" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" letter-spacing="2" fill="#f6f7f9">DE LA LUZ</text>
+  </symbol>
+  <symbol id="p-puerto" viewBox="0 0 200 300">
+    <defs><linearGradient id="g-puerto" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d3b3f"/><stop offset="1" stop-color="#08161a"/></linearGradient></defs>
+    <rect width="200" height="300" fill="url(#g-puerto)"/>
+    <g stroke="#5fd3c4" stroke-opacity=".5"><path d="M0 150h200M0 166h200M0 182h200M0 198h200"/></g>
+    <rect x="58" y="58" width="84" height="58" fill="none" stroke="#9bece0" stroke-width="2"/><path d="M58 58l42 34 42-34" fill="none" stroke="#9bece0" stroke-width="2"/>
+    <text x="100" y="272" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#eafaf7">CARTAS DESDE</text><text x="100" y="288" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#eafaf7">EL PUERTO</text>
+  </symbol>
+  <symbol id="p-ultima" viewBox="0 0 200 300">
+    <defs><linearGradient id="g-ultima" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b0d10"/><stop offset="1" stop-color="#120709"/></linearGradient>
+      <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8a6b" stop-opacity=".95"/><stop offset="1" stop-color="#ff8a6b" stop-opacity="0"/></linearGradient></defs>
+    <rect width="200" height="300" fill="url(#g-ultima)"/><path d="M86 40 176 250 16 250z" fill="url(#cone)" opacity=".55"/>
+    <circle cx="94" cy="44" r="11" fill="#ffd7c9"/>
+    <text x="100" y="272" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#ffe6e0">LA ÚLTIMA</text><text x="100" y="288" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#ffe6e0">PROYECCIÓN</text>
+  </symbol>
+  <symbol id="p-noche" viewBox="0 0 200 300">
+    <defs><linearGradient id="g-noche" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1b3a"/><stop offset="1" stop-color="#070a14"/></linearGradient></defs>
+    <rect width="200" height="300" fill="url(#g-noche)"/>
+    <g fill="#57e0f5" opacity=".8"><rect x="34" y="96" width="7" height="112"/><rect x="62" y="72" width="7" height="136"/><rect x="96" y="110" width="7" height="98"/><rect x="130" y="58" width="7" height="150"/><rect x="160" y="102" width="7" height="106"/></g>
+    <circle cx="100" cy="42" r="20" fill="none" stroke="#cfe9ff" stroke-width="2" opacity=".8"/>
+    <text x="100" y="272" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#e7f4ff">NOCHE EN EL</text><text x="100" y="288" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="#e7f4ff">CINE AZUL</text>
+  </symbol>
+</svg>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 1 · Cartelera</p>
+    <div class="screen">
+      <header class="site-head">
+        <div class="site-head__inner">
+          <div class="brand"><span class="brand__name">Cine Luna</span><span class="brand__meta">Madrid · desde 1948</span></div>
+          <nav class="nav" aria-label="Main">
+            <a href="#s1" aria-current="page">Cartelera</a><a href="#s1">Cines</a><a href="#s1">Mis entradas</a><a href="#s1">Taquilla</a>
+          </nav>
+          <button class="head-cta" type="button">Iniciar sesión</button>
+        </div>
+        <div class="bulbs" aria-hidden="true"></div>
+      </header>
+      <div class="main">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">Esta noche · Sala 1 · Dolby Atmos</p>
+            <h2 class="h1" style="margin:var(--s2) 0 var(--s3)">El viaje de la luz</h2>
+            <p class="lead">Un proyeccionista reconstruye el último rollo de una película que nunca llegó a estrenarse.
+              Una lámpara, una noche y una ciudad que ya se ha dormido.</p>
+            <div class="film__meta" style="margin-top:var(--s4)">
+              <span>112 min</span><span class="dot">·</span><span>Drama</span><span class="dot">·</span>
+              <span class="pill pill--rating">+12</span><span class="dot">·</span><span>Desde 12,50 €</span>
+            </div>
+            <div class="hero__times">
+              <button class="time" type="button"><b>17:15</b><span>Sala 2 · 34 libres</span></button>
+              <button class="time" type="button"><b>19:00</b><span>Sala 1 · 12 libres</span></button>
+              <button class="time" type="button"><b>21:30</b><span>Sala 1 · 4 libres</span></button>
+              <button class="time" type="button" disabled><b>23:10</b><span>Agotada</span></button>
+            </div>
+          </div>
+          <div class="hero__poster">
+            <svg class="poster" viewBox="0 0 200 300" role="img" aria-label="Poster for El viaje de la luz"><use href="#p-luz"/></svg>
+            <p class="poster-caption"><span class="pill pill--few">Quedan 4 butacas a las 21:30</span></p>
+          </div>
+        </div>
+
+        <div class="datestrip" role="group" aria-label="Choose a date">
+          <button class="day" type="button"><span>Lun</span><b>13</b></button>
+          <button class="day" type="button"><span>Mar</span><b>14</b></button>
+          <button class="day" type="button" aria-pressed="true"><span>Mié</span><b>15</b></button>
+          <button class="day" type="button"><span>Jue</span><b>16</b></button>
+          <button class="day" type="button"><span>Vie</span><b>17</b></button>
+          <button class="day" type="button"><span>Sáb</span><b>18</b></button>
+          <button class="day" type="button"><span>Dom</span><b>19</b></button>
+        </div>
+
+        <article class="film">
+          <svg class="film__poster" viewBox="0 0 200 300" aria-hidden="true"><use href="#p-puerto"/></svg>
+          <div>
+            <h3 class="h2">Cartas desde el puerto</h3>
+            <div class="film__meta"><span>98 min</span><span class="dot">·</span><span>Drama</span><span class="dot">·</span><span class="pill pill--rating">+7</span></div>
+            <p class="lead" style="margin-top:var(--s2);font-size:14px">Dos hermanas ordenan una caja de cartas que nunca<br>llegaron a su destino.</p>
+          </div>
+          <div class="times">
+            <button class="time" type="button"><b>16:40</b><span>61 libres</span></button>
+            <button class="time" type="button"><b>19:20</b><span>18 libres</span></button>
+            <button class="time" type="button"><b>22:00</b><span>6 libres</span></button>
+          </div>
+        </article>
+
+        <article class="film">
+          <svg class="film__poster" viewBox="0 0 200 300" aria-hidden="true"><use href="#p-ultima"/></svg>
+          <div>
+            <h3 class="h2">La última proyección</h3>
+            <div class="film__meta"><span>104 min</span><span class="dot">·</span><span>Thriller</span><span class="dot">·</span><span class="pill pill--rating">+16</span></div>
+            <p class="lead" style="margin-top:var(--s2);font-size:14px">El proyector se estropea a medianoche y la sala<br>se niega a vaciarse.</p>
+          </div>
+          <div class="times">
+            <button class="time" type="button"><b>18:10</b><span>44 libres</span></button>
+            <button class="time" type="button"><b>20:45</b><span>2 libres</span></button>
+            <button class="time" type="button" disabled><b>23:15</b><span>Agotada</span></button>
+          </div>
+        </article>
+
+        <article class="film">
+          <svg class="film__poster" viewBox="0 0 200 300" aria-hidden="true"><use href="#p-noche"/></svg>
+          <div>
+            <h3 class="h2">Noche en el cine azul</h3>
+            <div class="film__meta"><span>126 min</span><span class="dot">·</span><span>Drama</span><span class="dot">·</span><span class="pill pill--rating">Rated 12</span></div>
+            <p class="lead" style="margin-top:var(--s2);font-size:14px">Un programa doble, un desconocido y la hora en que<br>el neón deja de zumbar.</p>
+          </div>
+          <div class="times">
+            <button class="time" type="button"><b>17:00</b><span>72 libres</span></button>
+            <button class="time" type="button"><b>21:15</b><span>29 libres</span></button>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 2 · Selección de butacas</p>
+    <div class="screen">
+      <header class="site-head">
+        <div class="site-head__inner">
+          <div class="brand"><span class="brand__name">Cine Luna</span><span class="brand__meta">Madrid · desde 1948</span></div>
+          <nav class="nav" aria-label="Main"><a href="#s2" aria-current="page">Cartelera</a><a href="#s2">Cines</a><a href="#s2">Mis entradas</a><a href="#s2">Taquilla</a></nav>
+          <button class="head-cta" type="button">Iniciar sesión</button>
+        </div>
+        <div class="bulbs" aria-hidden="true"></div>
+      </header>
+      <div class="main">
+        <p class="eyebrow">Cartelera / El viaje de la luz</p>
+        <h2 class="h1" style="margin:var(--s2) 0 var(--s3)">Elige tus butacas</h2>
+        <div class="showbar">
+          <svg viewBox="0 0 200 300" style="width:44px;border-radius:4px" aria-hidden="true"><use href="#p-luz"/></svg>
+          <div>
+            <p style="font-weight:600">El viaje de la luz</p>
+            <p class="muted" style="font-size:13px">Mié 15 ene · Sala 1 · Dolby Atmos · 112 min · +12</p>
+          </div>
+          <div class="showbar__times">
+            <button class="time" type="button"><b>17:15</b><span>Sala 2</span></button>
+            <button class="time" type="button" aria-pressed="true" style="border-color:var(--amber)"><b style="color:var(--amber)">19:00</b><span>12 libres</span></button>
+            <button class="time" type="button"><b>21:30</b><span>4 libres</span></button>
+          </div>
+        </div>
+
+        <div class="seatwrap">
+          <div class="auditorium">
+            <div class="screen-arc">
+              <svg viewBox="0 0 600 46" preserveAspectRatio="none" aria-hidden="true">
+                <defs><linearGradient id="scr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6b73c" stop-opacity=".55"/><stop offset="1" stop-color="#f6b73c" stop-opacity=".04"/></linearGradient></defs>
+                <path d="M0 30Q300 -12 600 30V44Q300 2 0 44Z" fill="url(#scr)"/>
+                <path d="M0 30Q300 -12 600 30" fill="none" stroke="#f6b73c" stroke-width="2" stroke-opacity=".85"/>
+              </svg>
+              <span>Pantalla</span>
+            </div>
+            <div class="rows" id="rows" aria-label="Mapa de butacas"></div>
+            <div class="legend">
+              <span><i style="background:#1e222a;border-color:var(--line-2)"></i>Libre</span>
+              <span><i style="background:var(--amber);border-color:var(--amber)"></i>Seleccionada</span>
+              <span><i style="background:#0f1116;border-color:#22262e"></i>Ocupada</span>
+              <span><i style="border-color:var(--ok)"></i>Accesible</span>
+            </div>
+          </div>
+
+          <aside class="summary" aria-label="Your selection">
+            <div class="summary__row" style="font-weight:600"><span>Tu selección</span><span class="muted" style="font-weight:400" id="count">2 butacas</span></div>
+            <div class="chips" id="chips"><span class="chip">A3</span><span class="chip">A4</span></div>
+            <div class="hairline"></div>
+            <div class="summary__row"><span>2 × General</span><b>25,00 €</b></div>
+            <div class="summary__row"><span>Gastos de gestión</span><b>0,00 €</b></div>
+            <div class="total"><span>Total</span><strong id="total">25,00 €</strong></div>
+            <div class="holdbar"><span aria-hidden="true">◷</span><span>Te las guardamos</span><b>10:00</b></div>
+            <button class="btn btn--primary btn--block" type="button" id="hold">Reservar 2 butacas</button>
+            <p class="muted" style="font-size:12px">La reserva empieza al pulsar el botón. Las butacas sin pagar vuelven a
+              la sala automáticamente y, mientras tanto, nadie más puede comprarlas.</p>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 3 · Pago</p>
+    <div class="screen">
+      <header class="site-head">
+        <div class="site-head__inner">
+          <div class="brand"><span class="brand__name">Cine Luna</span><span class="brand__meta">Madrid · desde 1948</span></div>
+          <nav class="nav" aria-label="Main"><a href="#s3" aria-current="page">Cartelera</a><a href="#s3">Cines</a><a href="#s3">Mis entradas</a><a href="#s3">Taquilla</a></nav>
+          <button class="head-cta" type="button">Iniciar sesión</button>
+        </div>
+        <div class="bulbs" aria-hidden="true"></div>
+      </header>
+      <div class="main">
+        <p class="eyebrow">Pago · Pedido LUN-4KD9</p>
+        <h2 class="h1" style="margin:var(--s2) 0 var(--s4)">Tu compra</h2>
+        <div class="notice notice--warn">
+          <span aria-hidden="true">◷</span>
+          <span><b>Dos butacas reservadas para ti hasta las 19:12.</b> Quedan 08:34. Si el pago no termina, la sala las
+            recupera y este pedido se cierra.</span>
+        </div>
+
+        <div class="checkout">
+          <div style="display:flex;flex-direction:column;gap:var(--s4)">
+            <section class="panel">
+              <div class="panel__head"><span class="step">1</span><h3 class="h2">¿Quién recibe las entradas?</h3></div>
+              <div class="fields">
+                <label class="field field--wide"><span>Correo electrónico</span>
+                  <input type="email" value="nuria.serrano@example.com">
+                  <small>Un enlace abre las dos butacas. Comprar como invitado no necesita cuenta.</small>
+                </label>
+                <label class="field"><span>Nombre completo</span><input type="text" value="Nuria Serrano"></label>
+                <label class="field"><span>Teléfono (opcional)</span><input type="tel" value="+34 600 12 34 56"></label>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel__head"><span class="step">2</span><h3 class="h2">Pago</h3><span class="pill pill--ok" style="margin-left:auto">Simulado</span></div>
+              <div class="fields">
+                <label class="field field--wide"><span>Número de tarjeta</span><input inputmode="numeric" value="4242 4242 4242 4242"></label>
+                <label class="field"><span>Caducidad</span><input inputmode="numeric" value="09 / 29"></label>
+                <label class="field"><span>Código de seguridad</span><input inputmode="numeric" value="123"></label>
+                <label class="field field--wide check"><input type="checkbox" checked>
+                  <span>Acepto las condiciones de venta. Las butacas se pueden cambiar mientras dure la reserva y no son
+                    reembolsables una vez empezada la sesión.</span></label>
+              </div>
+              <p class="muted" style="font-size:12px;margin-top:var(--s3)">Aquí no se cobra ninguna tarjeta: el proveedor de pago es
+                una frontera que esta versión simula para poder probar el flujo de principio a fin.</p>
+            </section>
+          </div>
+
+          <aside class="summary" aria-label="Order summary">
+            <div style="display:flex;gap:var(--s3)">
+              <svg viewBox="0 0 200 300" style="width:56px;border-radius:4px" aria-hidden="true"><use href="#p-luz"/></svg>
+              <div>
+                <p style="font-weight:600">El viaje de la luz</p>
+                <p class="muted" style="font-size:13px">Mié 15 ene · 19:00<br>Sala 1 · Dolby Atmos</p>
+              </div>
+            </div>
+            <div class="hairline"></div>
+            <div class="orderline"><span>Butacas</span><b>A3, A4</b></div>
+            <div class="orderline"><span>2 × General</span><b>25,00 €</b></div>
+            <div class="orderline"><span>Gastos de gestión</span><b>0,00 €</b></div>
+            <div class="total"><span>Total</span><strong>25,00 €</strong></div>
+            <div class="holdbar"><span aria-hidden="true">◷</span><span>La reserva caduca en</span><b>08:34</b></div>
+            <button class="btn btn--primary btn--block" type="button">Pagar 25,00 €</button>
+            <a href="#s3" style="font-size:13px;text-align:center">Cambiar butacas</a>
+            <p class="muted" style="font-size:12px">No se cobra nada hasta que pulses pagar. Recibirás las entradas en este
+              navegador y por correo.</p>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 4 · Entrada tras el pago</p>
+    <div class="screen">
+      <header class="site-head">
+        <div class="site-head__inner">
+          <div class="brand"><span class="brand__name">Cine Luna</span><span class="brand__meta">Madrid · desde 1948</span></div>
+          <nav class="nav" aria-label="Main"><a href="#s4">Cartelera</a><a href="#s4">Cines</a><a href="#s4" aria-current="page">Mis entradas</a><a href="#s4">Taquilla</a></nav>
+          <button class="head-cta" type="button">Iniciar sesión</button>
+        </div>
+        <div class="bulbs" aria-hidden="true"></div>
+      </header>
+      <div class="main">
+        <p class="eyebrow">Mis entradas · Pedido LUN-4KD9</p>
+        <h2 class="h1" style="margin:var(--s2) 0 var(--s4)">Tu entrada</h2>
+        <div class="notice"><span aria-hidden="true">✓</span><span><b>Pagado.</b> Dos butacas, un código para cada una. Enseña esta
+página en el acceso o usa el enlace que te hemos enviado por correo.</span></div>
+
+        <div class="ticketpage" style="margin-top:var(--s5)">
+          <div style="display:flex;flex-direction:column;gap:var(--s4)">
+            <article class="ticket">
+              <div class="ticket__body">
+                <div>
+                  <p class="eyebrow" style="color:var(--amber)">Válida para una persona · Sala 1</p>
+                  <h3 class="h1" style="font-size:30px;margin:var(--s1) 0 var(--s2)">El viaje de la luz</h3>
+                  <p class="muted">Miércoles 15 de enero · 19:00 · Dolby Atmos</p>
+                </div>
+                <div class="hairline"></div>
+                <dl class="ticket__grid" style="margin:0">
+                  <div class="kv"><dt>Butaca</dt><dd>A3</dd></div>
+                  <div class="kv"><dt>Fila</dt><dd>A</dd></div>
+                  <div class="kv"><dt>Entradas</dt><dd>2</dd></div>
+                  <div class="kv"><dt>Pagado</dt><dd>25,00 €</dd></div>
+                </dl>
+                <p class="muted" style="font-size:13px">Cine Luna · Calle de la Prueba 1, Madrid · las puertas abren a las 18:40</p>
+              </div>
+              <div class="ticket__stub">
+                <div class="qr" aria-label="Ticket code square"><svg viewBox="0 0 25 25" id="qr" role="img"><rect width="25" height="25" fill="#fff"/></svg></div>
+                <span class="ticket__code">LUN-4KD9</span>
+                <span class="muted" style="font-size:11px">Butaca A3 de 2</span>
+              </div>
+            </article>
+
+            <article class="ticket ticket--compact">
+              <div class="ticket__body">
+                <div>
+                  <p class="eyebrow">Válida para una persona · Sala 1 · 19:00</p>
+                  <h3 style="font-size:22px;margin:var(--s1) 0 var(--s2)">Segunda entrada · A4</h3>
+                  <p class="muted" style="font-size:13px">Cada butaca admite a una persona una sola vez. Dos personas pueden
+                    entrar juntas enseñando los dos códigos.</p>
+                </div>
+                <div class="hairline"></div>
+                <dl class="ticket__grid" style="margin:0">
+                  <div class="kv"><dt>Butaca</dt><dd>A4</dd></div>
+                  <div class="kv"><dt>Fila</dt><dd>A</dd></div>
+                  <div class="kv"><dt>Entradas</dt><dd>1</dd></div>
+                  <div class="kv"><dt>Pagado</dt><dd>Incluido</dd></div>
+                </dl>
+              </div>
+              <div class="ticket__stub">
+                <div class="qr" aria-label="Ticket code square"><svg viewBox="0 0 25 25" id="qr2" role="img"><rect width="25" height="25" fill="#fff"/></svg></div>
+                <span class="ticket__code">LUN-4KDA</span>
+                <span class="muted" style="font-size:11px">Butaca A4 de 2</span>
+              </div>
+            </article>
+
+            <div style="display:flex;gap:var(--s2);flex-wrap:wrap">
+              <button class="btn btn--ghost" type="button">Enviarme las entradas</button>
+              <button class="btn btn--ghost" type="button">Descargar PDF</button>
+              <button class="btn btn--ghost" type="button">Abrir el código de acceso</button>
+            </div>
+          </div>
+
+          <aside class="panel" aria-label="At the door">
+            <h3 class="h2" style="margin-bottom:var(--s3)">En el acceso</h3>
+            <ol class="muted" style="font-size:14px;padding-left:var(--s4);display:flex;flex-direction:column;gap:var(--s3);margin:0">
+              <li>Las puertas abren 20 minutos antes de la sesión.</li>
+              <li>Enseña el código en el acceso. El personal lo escanea y la butaca se admite una sola vez.</li>
+              <li>El enlace funciona sin cuenta: quien lo tenga abre las entradas.</li>
+              <li>Una entrada usada, anulada o de una sesión cancelada se rechaza, y la respuesta dice cuál de los tres casos es.</li>
+            </ol>
+            <div class="hairline" style="margin:var(--s4) 0"></div>
+            <div class="orderline"><span>Pedido</span><b class="mono">LUN-4KD9</b></div>
+            <div class="orderline"><span>Comprada</span><b>Mié 15 ene · 18:31</b></div>
+            <div class="orderline"><span>Pago</span><b>Simulado · ···· 4242</b></div>
+            <a href="#s4" style="font-size:13px;display:inline-block;margin-top:var(--s3)">Dudas sobre este pedido</a>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 5 · Taquilla y acceso</p>
+    <div class="screen">
+      <div class="adminhead">
+        <span class="tag">Taquilla</span>
+        <div class="tabs"><span class="on">Hoy</span><span>Programación</span><span>Salas</span><span>Acceso</span></div>
+        <span class="who">Cine Luna · Sala 1 · personal</span>
+      </div>
+      <div class="main">
+        <div class="door">
+          <section aria-label="Today at this cinema">
+            <div style="display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s4)">
+              <h2 class="h2">Miércoles 15 de enero</h2>
+              <span class="pill pill--ok"><span aria-hidden="true">●</span> 6 en venta</span>
+              <span class="pill pill--rating">1 agotada</span>
+            </div>
+            <table class="table">
+              <caption class="visually-hidden" style="position:absolute;left:-9999px">Screenings today</caption>
+              <thead><tr><th scope="col">Hora</th><th scope="col">Película</th><th scope="col">Sala</th><th scope="col">Vendidas</th><th scope="col">Reservadas</th><th scope="col">Estado</th></tr></thead>
+              <tbody>
+                <tr><td class="num">17:15</td><td>El viaje de la luz</td><td>Sala 2</td><td class="num">78/96</td><td class="num">3</td><td><span class="pill pill--ok">En venta</span></td></tr>
+                <tr><td class="num">18:10</td><td>La última proyección</td><td>Sala 3</td><td class="num">44/88</td><td class="num">1</td><td><span class="pill pill--ok">En venta</span></td></tr>
+                <tr><td class="num">19:00</td><td>El viaje de la luz</td><td>Sala 1</td><td class="num">196/208</td><td class="num">2</td><td><span class="pill pill--few">Quedan 4</span></td></tr>
+                <tr><td class="num">20:45</td><td>La última proyección</td><td>Sala 3</td><td class="num">86/88</td><td class="num">0</td><td><span class="pill pill--few">Quedan 2</span></td></tr>
+                <tr><td class="num">21:30</td><td>Cartas desde el puerto</td><td>Sala 1</td><td class="num">208/208</td><td class="num">0</td><td><span class="pill pill--out">Agotada</span></td></tr>
+                <tr><td class="num">22:00</td><td>Noche en el cine azul</td><td>Sala 2</td><td class="num">61/96</td><td class="num">5</td><td><span class="pill pill--ok">En venta</span></td></tr>
+              </tbody>
+            </table>
+            <div style="margin-top:var(--s5);display:flex;flex-direction:column;gap:var(--s2)">
+              <div style="display:flex;justify-content:space-between;font-size:13px"><span class="muted">Sala 1 · 19:00</span><span class="mono">196 / 208 butacas</span></div>
+              <div class="bar"><i style="width:94%"></i></div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-top:var(--s2)"><span class="muted">Recaudación de hoy</span><span class="mono">3.812,50 € · 34 pedidos</span></div>
+            </div>
+          </section>
+
+          <aside class="panel" aria-label="Door check">
+            <h2 class="h2">En el acceso</h2>
+            <p class="muted" style="font-size:13px;margin:var(--s1) 0 var(--s4)">Un código, una respuesta. No se guarda nada en
+              este navegador.</p>
+            <label class="field"><span>Código de entrada</span><input type="text" value="LUN-4KD9" style="text-transform:uppercase;letter-spacing:.1em"></label>
+            <button class="btn btn--primary btn--block" type="button" style="margin-top:var(--s3)">Comprobar código</button>
+
+            <div class="notice" style="margin-top:var(--s4);flex-direction:column;gap:var(--s1);border-color:#2f4a3c;">
+              <b style="font-size:15px">✓ Acceso permitido — una persona</b>
+              <span style="font-size:13px">A3 · El viaje de la luz · Sala 1 · 19:00. El código ya está usado.</span>
+            </div>
+
+            <div class="answers">
+              <span><b>Usada</b> — ya canjeada a las 19:04.</span>
+              <span><b>Anulada</b> — la entrada se anuló o su sesión se canceló.</span>
+              <span><b>No es nuestra</b> — este código no es una entrada de este cine.</span>
+              <span><b>Otra sala</b> — una entrada real para otra sesión de esta noche.</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+<script>
+(function () {
+  /* Seat map: built here so the artboard stays readable; the real screen renders it from the layout version. */
+  var rowsEl = document.getElementById('rows');
+  var selected = new Set(['A3', 'A4']);
+  var taken = new Set(['B2', 'B5', 'C7', 'C8', 'D3', 'D12', 'E9', 'F4', 'F5', 'F6', 'G11', 'G12', 'H5']);
+  var accessible = new Set(['B1', 'H14']);
+  var PRICE = 12.5;
+  var STATE = { free: 'libre', selected: 'seleccionada', taken: 'ocupada', accessible: 'accesible' };
+
+  function money(n) { return n.toFixed(2).replace('.', ',') + ' €'; }
+
+  function update() {
+    var ids = Array.from(selected).sort();
+    var count = ids.length;
+    document.getElementById('count').textContent = count + (count === 1 ? ' butaca' : ' butacas');
+    document.getElementById('chips').innerHTML = count
+      ? ids.map(function (id) { return '<span class="chip">' + id + '</span>'; }).join('')
+      : '<span class="muted" style="font-size:13px">Aún sin butacas</span>';
+    document.getElementById('total').textContent = money(count * PRICE);
+    var btn = document.getElementById('hold');
+    btn.textContent = count ? 'Reservar ' + count + (count === 1 ? ' butaca' : ' butacas') : 'Elige una butaca';
+    btn.disabled = count === 0;
+  }
+
+  if (rowsEl) {
+    for (var r = 0; r < 8; r++) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.appendChild(label(String.fromCharCode(65 + r)));
+      for (var s = 1; s <= 14; s++) {
+        if (s === 7) { var a = document.createElement('span'); a.className = 'aisle'; row.appendChild(a); }
+        var id = String.fromCharCode(65 + r) + s;
+        var seat = document.createElement('button');
+        seat.type = 'button';
+        seat.className = 'seat';
+        seat.textContent = s;
+        seat.dataset.id = id;
+        seat.dataset.state = taken.has(id) ? 'taken' : selected.has(id) ? 'selected' : accessible.has(id) ? 'accessible' : 'free';
+        if (seat.dataset.state === 'taken') { seat.disabled = true; }
+        seat.setAttribute('aria-label', 'Fila ' + String.fromCharCode(65 + r) + ', butaca ' + s + ', ' + STATE[seat.dataset.state]);
+        row.appendChild(seat);
+      }
+      row.appendChild(label(String.fromCharCode(65 + r)));
+      rowsEl.appendChild(row);
+    }
+    rowsEl.appendChild(legendNote());
+    rowsEl.addEventListener('click', function (e) {
+      var seat = e.target.closest('.seat');
+      if (!seat || seat.dataset.state === 'taken') return;
+      var id = seat.dataset.id;
+      if (selected.has(id)) { selected.delete(id); seat.dataset.state = accessible.has(id) ? 'accessible' : 'free'; }
+      else { selected.add(id); seat.dataset.state = 'selected'; }
+      seat.setAttribute('aria-label', 'Fila ' + id[0] + ', butaca ' + id.slice(1) + ', ' + STATE[seat.dataset.state]);
+      update();
+    });
+    document.getElementById('hold').addEventListener('click', function () { update(); });
+    update();
+  }
+
+  function label(text) { var el = document.createElement('span'); el.className = 'row__label'; el.textContent = text; return el; }
+  function legendNote() { var el = document.createElement('p'); el.className = 'muted'; el.style.cssText = 'text-align:center;font-size:11px;margin-top:var(--s4);letter-spacing:.1em;text-transform:uppercase'; el.textContent = 'Sala 1 · 208 butacas · dos pasillos'; return el; }
+
+  /* A drawn code square: deterministic modules with the three finder corners, so the ticket
+     reads like a ticket. It is artwork, not a scannable code. */
+  function drawCode(el, seed) {
+    if (!el) return;
+    var n = 25, i, j, s = seed, out = [], x, y;
+    var inFinder = function (x, y) {
+      return (x < 8 && y < 8) || (x >= n - 8 && y < 8) || (x < 8 && y >= n - 8);
+    };
+    for (y = 0; y < n; y++) {
+      for (x = 0; x < n; x++) {
+        var on;
+        if (inFinder(x, y)) {
+          var fx = x >= n - 8 ? x - (n - 7) : x, fy = y >= n - 8 ? y - (n - 7) : y;
+          var ring = Math.min(fx, fy, 6 - fx, 6 - fy);
+          on = ring === 0 || ring === 2 || ring === 3;
+        } else {
+          s = (s * 1103515245 + 12345) % 2147483648;
+          on = (s >> 7) % 2 === 0;
+        }
+        if (on) out.push('<rect x="' + x + '" y="' + y + '" width="1" height="1"/>');
+      }
+    }
+    el.innerHTML += '<g fill="#0a0b0f">' + out.join('') + '</g>';
+  }
+
+  drawCode(document.getElementById('qr'), 20191);
+  drawCode(document.getElementById('qr2'), 7734);
+})();
+</script>
+
+</div>
+</body>
+</html>

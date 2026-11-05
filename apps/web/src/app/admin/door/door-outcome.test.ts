@@ -7,13 +7,17 @@
 // substitute), and a ticket that cannot admit its holder with the reason named. A fifth
 // answer exists for the case where the door could not ask at all, and it claims no verdict.
 //
+// The words are Castilian since the Marquesina redesign; the API's own refusal is still
+// printed exactly as the API sent it, because that sentence is the box office's and not
+// this screen's.
+//
 // The screen's promises that no type checker can see are pinned from its file text, as this
 // repository has no DOM test runner: one labelled field and one action, the answer in a live
 // region, and nothing at all kept in the browser.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import type { PublicProblem, PublicRedemption } from "../../../lib/public-api.ts";
+import type { PublicProblem, PublicRedemption, PublicTicketSeat } from "../../../lib/public-api.ts";
 import { describeRedemption } from "./door-outcome.ts";
 
 const SOURCE_OF_FORM = readFileSync(new URL("./door-form.tsx", import.meta.url), "utf8");
@@ -55,8 +59,8 @@ test("an admission says so and shows the seat and the screening", () => {
 
   assert.equal(answer.kind, "admitted");
   assert.equal(answer.admits, true);
-  assert.match(answer.headline, /admitted/i);
-  assert.deepEqual(answer.seatLabels, ["Row A seat 1"]);
+  assert.match(answer.headline, /admitida/i);
+  assert.deepEqual(answer.seatLabels, ["Fila A, butaca 1"]);
   assert.equal(answer.screening?.filmTitle, "The Long Take");
   // The venue's own hour, exactly as the API rendered it: reformatting it here would print
   // the browser's zone instead.
@@ -67,6 +71,31 @@ test("an admission says so and shows the seat and the screening", () => {
   assert.equal(answer.retryable, false);
 });
 
+test("a seat is named the way the rest of the product names it to a person", () => {
+  const labels = (seats: PublicTicketSeat[]) =>
+    describeRedemption({ ok: true, redemption: redemption({ seats }) }).seatLabels;
+
+  assert.deepEqual(labels([{ eventSeatId: 11, rowLabel: "A", seatNumber: "1" }]), [
+    "Fila A, butaca 1",
+  ]);
+  // The pieces the API may leave blank, each answered without inventing the other:
+  assert.deepEqual(labels([{ eventSeatId: 12, rowLabel: "", seatNumber: "7" }]), [
+    "Butaca 7",
+  ]);
+  assert.deepEqual(labels([{ eventSeatId: 13, rowLabel: "B", seatNumber: "" }]), ["Fila B"]);
+  assert.deepEqual(labels([{ eventSeatId: 14, rowLabel: "", seatNumber: "" }]), [
+    "Butaca 14",
+  ]);
+  // Two seats are two sentences, in the order the API served them.
+  assert.deepEqual(
+    labels([
+      { eventSeatId: 15, rowLabel: "A", seatNumber: "2" },
+      { eventSeatId: 16, rowLabel: "A", seatNumber: "3" },
+    ]),
+    ["Fila A, butaca 2", "Fila A, butaca 3"],
+  );
+});
+
 test("a ticket already used says when, and that this is not an admission", () => {
   const answer = describeRedemption({
     ok: true,
@@ -75,11 +104,11 @@ test("a ticket already used says when, and that this is not an admission", () =>
 
   assert.equal(answer.kind, "already_used");
   assert.equal(answer.admits, false);
-  assert.match(answer.headline, /already been used/i);
-  // The first admission's hour, from the served instant, labelled UTC because that is the
-  // only clock the admission route serves for it.
+  assert.match(answer.headline, /ya se usó/i);
+  // The first admission's hour, from the served instant, with the venue's own offset printed
+  // beside it because that is the clock the admission route serves for it.
   assert.equal(answer.usedAt, "2026-05-04 22:14:00+02:00");
-  assert.match(answer.message, /not an admission/i);
+  assert.match(answer.message, /no es una admisión/i);
   assert.match(answer.message, /22:14/);
 });
 
@@ -88,7 +117,9 @@ test("a code that is not ours is refused in the API's own sentence", () => {
 
   assert.equal(answer.kind, "not_ours");
   assert.equal(answer.admits, false);
+  // The API's sentence, unreworded: the screen names the verdict and quotes the box office.
   assert.equal(answer.message, "the presented code is not a valid ticket");
+  assert.match(answer.headline, /no es una entrada nuestra/i);
   assert.equal(answer.retryable, false);
 });
 
@@ -103,7 +134,7 @@ test("a void ticket and a cancelled screening say which one it is", () => {
   });
   assert.equal(voided.kind, "not_admissible");
   assert.equal(voided.admits, false);
-  assert.match(voided.headline, /voided/i);
+  assert.match(voided.headline, /anulada/i);
   assert.equal(voided.message, "the ticket was voided, so it does not admit its holder");
 
   const cancelled = describeRedemption({
@@ -115,7 +146,7 @@ test("a void ticket and a cancelled screening say which one it is", () => {
     }),
   });
   assert.equal(cancelled.kind, "not_admissible");
-  assert.match(cancelled.headline, /cancelled/i);
+  assert.match(cancelled.headline, /cancelada/i);
   assert.notEqual(cancelled.headline, voided.headline);
 });
 
@@ -128,10 +159,12 @@ test("a door that could not ask gives no verdict, only an invitation to ask agai
     assert.equal(answer.kind, "unavailable");
     assert.equal(answer.admits, false);
     assert.equal(answer.retryable, true);
+    // No verdict, in either language: not a bad code, not a used one, not a refusal.
     assert.doesNotMatch(
       `${answer.headline} ${answer.message}`,
-      /invalid|forged|not a valid ticket|already/i,
+      /no se admite|ya se usó|inválid|falsificad/i,
     );
+    assert.match(answer.headline, /no pudo comprobar/i);
   }
 });
 

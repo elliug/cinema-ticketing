@@ -490,7 +490,7 @@ test("the screen offers every status the column accepts, and each one says what 
 });
 
 test("eventStatusOption does not invent a status the column would refuse", () => {
-  assert.equal(eventStatusOption("on_sale")?.label, "On sale");
+  assert.equal(eventStatusOption("on_sale")?.label, "En venta");
   assert.equal(eventStatusOption("  ARCHIVED "), undefined);
   assert.equal(isEventStatus("archived"), false);
   assert.equal(isEventStatus("on_sale"), true);
@@ -611,22 +611,22 @@ test("the screening list prints the stored status and what it means for the sale
     { status: "draft", startsAt: "2024-05-01T18:00:00Z" },
     now,
   );
-  assert.equal(draft.label, "Draft");
+  assert.equal(draft.label, "Borrador");
   assert.equal(draft.tone, "neutral");
-  assert.match(String(draft.catalogueNote), /Not for sale/);
+  assert.match(String(draft.catalogueNote), /No está a la venta/);
 
   const published = describeScreeningStatus(
     { status: "published", startsAt: "2024-05-01T18:00:00Z" },
     now,
   );
   // The catalogue's membership is exactly `on_sale`, so publishing does not sell anything.
-  assert.match(String(published.catalogueNote), /not for sale/i);
+  assert.match(String(published.catalogueNote), /No está a la venta/i);
 
   const onSale = describeScreeningStatus(
     { status: "on_sale", startsAt: "2024-05-01T18:00:00Z" },
     now,
   );
-  assert.equal(onSale.label, "On sale");
+  assert.equal(onSale.label, "En venta");
   assert.equal(onSale.startPassed, false);
   assert.equal(onSale.catalogueNote, null);
 });
@@ -639,8 +639,8 @@ test("a screening whose start has passed is never called on sale", () => {
     now,
   );
   assert.equal(passed.startPassed, true);
-  assert.equal(passed.label, "Start passed");
-  assert.match(String(passed.catalogueNote), /catalogue no longer lists it/);
+  assert.equal(passed.label, "Hora pasada");
+  assert.match(String(passed.catalogueNote), /ya no la lista/);
 
   // The API's predicate is `starts_at > now()`, so a start equal to this instant is behind
   // it and the screening is already out of the catalogue.
@@ -649,7 +649,7 @@ test("a screening whose start has passed is never called on sale", () => {
     now,
   );
   assert.equal(boundary.startPassed, true);
-  assert.notEqual(boundary.label, "On sale");
+  assert.notEqual(boundary.label, "En venta");
 });
 
 test("a status this build does not interpret is printed verbatim", () => {
@@ -660,7 +660,7 @@ test("a status this build does not interpret is printed verbatim", () => {
 
   assert.equal(view.status, "archived");
   assert.equal(view.label, "archived", "an uninterpreted status is never translated");
-  assert.match(String(view.catalogueNote), /does not interpret/);
+  assert.match(String(view.catalogueNote), /no interpreta/);
 });
 
 test("fieldProblem splits the field the API named from its own words", () => {

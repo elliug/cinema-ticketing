@@ -192,17 +192,17 @@ test("toggleSeat selects, deselects, and refuses unavailable seats", () => {
 test("selectionSummary reports the running total without duplicates", () => {
   const empty = selectionSummary(EMPTY_SELECTION, LAYOUT);
   assert.equal(empty.count, 0);
-  assert.equal(empty.totalLabel, "0 seats selected");
+  assert.equal(empty.totalLabel, "0 butacas seleccionadas");
   assert.deepEqual(empty.labels, []);
 
   const single = selectionSummary([11], LAYOUT);
   assert.equal(single.count, 1);
-  assert.equal(single.totalLabel, "1 seat selected");
+  assert.equal(single.totalLabel, "1 butaca seleccionada");
   assert.deepEqual(single.labels, ["A1"]);
 
   const three = selectionSummary([11, 21, 31], LAYOUT);
   assert.equal(three.count, 3);
-  assert.equal(three.totalLabel, "3 seats selected");
+  assert.equal(three.totalLabel, "3 butacas seleccionadas");
   assert.deepEqual(three.seatIds, [11, 21, 31]);
   assert.deepEqual(three.labels, ["A1", "B1", "C1"]);
 });
@@ -253,10 +253,10 @@ test("describeCountdown switches to the expired state at the deadline", () => {
   assert.equal(expired.expired, true);
   assert.equal(expired.remainingMs, 0);
   assert.equal(expired.label, "0:00");
-  assert.equal(expired.displayLabel, "Hold expired");
+  assert.equal(expired.displayLabel, "Reserva caducada");
   assert.ok(expired.notice !== null);
-  assert.match(expired.notice, /expired/i);
-  assert.match(expired.notice, /no longer reserved/i);
+  assert.match(expired.notice, /caducad/i);
+  assert.match(expired.notice, /ya no están reservadas/i);
 });
 
 function problem(overrides: Partial<PublicProblem>): PublicProblem {
@@ -284,8 +284,8 @@ test("a 409 seat_unavailable asks for a refetch and names no culprit", () => {
   assert.equal(view.refetchAvailability, true);
   assert.equal(view.retryable, true);
   assert.equal(view.tone, "warning");
-  assert.match(view.message, /no longer selected|removed/i);
-  assert.doesNotMatch(view.message, /@|email|account/i);
+  assert.match(view.message, /quitado de tu selección/i);
+  assert.doesNotMatch(view.message, /@|correo|cuenta/i);
 });
 
 test("a 400 hold_window_expired is an expired window, not a taken seat", () => {
@@ -301,10 +301,10 @@ test("a 400 hold_window_expired is an expired window, not a taken seat", () => {
   assert.equal(view.kind, "hold_window_expired");
   assert.equal(view.refetchAvailability, false);
   assert.equal(view.retryable, true);
-  assert.match(view.headline + view.message, /window/i);
+  assert.match(view.headline + view.message, /reserva/i);
   assert.doesNotMatch(
     view.message,
-    /another guest|someone else|taken/i,
+    /se han ocupado|otra persona ha reservado/i,
     "an expired window is never reported as a seat taken by someone else",
   );
   assert.notEqual(
@@ -326,7 +326,7 @@ test("a 503 or a network failure is temporary and retryable", () => {
   assert.equal(unavailable.kind, "temporary");
   assert.equal(unavailable.retryable, true);
   assert.equal(unavailable.refetchAvailability, false);
-  assert.match(unavailable.message, /try again/i);
+  assert.match(unavailable.message, /inténtalo de nuevo/i);
 
   const offline = describeHoldFailure(
     problem({ status: 0, code: "network_error", title: "Network error" }),
@@ -445,7 +445,7 @@ test("layoutFromAvailability keeps the fallback when the projection is absent", 
   assert.equal(layout.geometryKnown, false);
   assert.deepEqual(
     layout.rows.map((row) => row.label),
-    ["Seats"],
+    ["Única"],
   );
   assert.deepEqual(
     layout.rows[0].seats.map((seat) => seat.label),
@@ -467,7 +467,7 @@ test("layoutFromAvailability never projects a half-labelled response", () => {
   assert.equal(layout.geometryKnown, false);
   assert.deepEqual(
     layout.rows.map((row) => row.label),
-    ["Seats"],
+    ["Única"],
   );
   assert.deepEqual(
     layout.rows[0].seats.map((seat) => seat.kind),
@@ -498,7 +498,7 @@ test("layoutFromAvailability keeps the fallback for an event with no seats", () 
   assert.equal(layout.geometryKnown, false, "an empty response proves no geometry");
   assert.deepEqual(
     layout.rows.map((row) => row.label),
-    ["Seats"],
+    ["Única"],
     "today's empty-list shape is preserved",
   );
 });
@@ -599,7 +599,7 @@ test("a screening that is on sale is stated plainly, with no reason to give", ()
   assert.equal(state.reason, null);
   assert.equal(state.headline, null);
   assert.equal(state.message, null);
-  assert.equal(state.badge, "On sale");
+  assert.equal(state.badge, "A la venta");
 });
 
 test("a cancelled screening says it was cancelled, never that it does not exist", () => {
@@ -607,13 +607,13 @@ test("a cancelled screening says it was cancelled, never that it does not exist"
 
   assert.equal(state.onSale, false);
   assert.equal(state.reason, "cancelled");
-  assert.equal(state.badge, "Cancelled");
+  assert.equal(state.badge, "Cancelada");
   assert.match(state.headline!, /cancel/i);
   assert.match(state.message!, /cancel/i);
   // The 404 branch owns "does not exist"; a cancellation must not borrow its words.
   assert.doesNotMatch(
     `${state.headline} ${state.message}`,
-    /not found|does not exist|could not be loaded/i,
+    /no existe|no se pudo cargar/i,
   );
 });
 
@@ -621,8 +621,8 @@ test("a draft screening is not on sale yet, and says which reason that is", () =
   const state = describeSaleState({ status: "draft", onSale: false });
 
   assert.equal(state.reason, "draft");
-  assert.equal(state.badge, "Not on sale yet");
-  assert.match(state.message!, /draft|not been published|not published/i);
+  assert.equal(state.badge, "Aún no a la venta");
+  assert.match(state.message!, /borrador|no se ha publicado/i);
   assert.doesNotMatch(`${state.headline} ${state.message}`, /cancel/i);
 });
 
@@ -632,8 +632,8 @@ test("a screening whose start has passed is no longer on sale, because it starte
   const state = describeSaleState({ status: "on_sale", onSale: false });
 
   assert.equal(state.reason, "started");
-  assert.equal(state.badge, "No longer on sale");
-  assert.match(state.headline!, /started/i);
+  assert.equal(state.badge, "Ya no a la venta");
+  assert.match(state.headline!, /empezado/i);
   assert.doesNotMatch(`${state.headline} ${state.message}`, /cancel/i);
 });
 
@@ -645,7 +645,7 @@ test("a status this page does not interpret is printed instead of explained", ()
     const state = describeSaleState({ status, onSale: false });
 
     assert.equal(state.reason, "closed", status);
-    assert.equal(state.badge, "No longer on sale");
+    assert.equal(state.badge, "Ya no a la venta");
     assert.match(
       state.message!,
       new RegExp(status),
@@ -680,10 +680,10 @@ test("a screening that does not exist is a 404, and asking again changes nothing
 
   assert.equal(view.kind, "missing");
   assert.equal(view.retryable, false);
-  assert.match(view.headline, /does not exist/i);
+  assert.match(view.headline, /no existe/i);
   assert.doesNotMatch(
     `${view.headline} ${view.message}`,
-    /temporar|could not be loaded/i,
+    /temporal|no se pudo cargar/i,
     "a screening that does not exist is not described as an outage",
   );
 });
@@ -703,10 +703,10 @@ test("an unavailable screening is retryable, and is never rendered as an empty p
 
     assert.equal(view.kind, "temporary", `status ${failure.status}`);
     assert.equal(view.retryable, true, "an outage is worth asking about again");
-    assert.match(view.message, /again|retry/i);
+    assert.match(view.message, /vuelve a preguntar|inténtalo/i);
     assert.doesNotMatch(
       `${view.headline} ${view.message}`,
-      /does not exist/i,
+      /no existe/i,
       "an outage is not a missing screening",
     );
   }
@@ -734,17 +734,17 @@ test("a screening read the API refused is a refusal, not an outage", () => {
 // screening's own price per seat times the seats in the selection, and the copy
 // says plainly that the order, not this sentence, is what gets paid.
 
-test("formatCents renders minor units the way the API renders a price", () => {
-  assert.equal(formatCents(1250), "12.50");
-  assert.equal(formatCents(0), "0.00");
-  assert.equal(formatCents(5), "0.05");
-  assert.equal(formatCents(3750), "37.50");
-  assert.equal(formatCents(100000), "1000.00");
+test("formatCents renders minor units the way this page prints money", () => {
+  assert.equal(formatCents(1250), "12,50 €");
+  assert.equal(formatCents(0), "0,00 €");
+  assert.equal(formatCents(5), "0,05 €");
+  assert.equal(formatCents(3750), "37,50 €");
+  assert.equal(formatCents(100000), "1000,00 €");
   // Fail closed: an amount that is not a whole, non-negative number is not money.
-  assert.equal(formatCents(-100), "0.00");
-  assert.equal(formatCents(Number.NaN), "0.00");
-  assert.equal(formatCents(Number.POSITIVE_INFINITY), "0.00");
-  assert.equal(formatCents(12.5), "0.00");
+  assert.equal(formatCents(-100), "0,00 €");
+  assert.equal(formatCents(Number.NaN), "0,00 €");
+  assert.equal(formatCents(Number.POSITIVE_INFINITY), "0,00 €");
+  assert.equal(formatCents(12.5), "0,00 €");
 });
 
 test("the running amount is the screening's price times the seats selected", () => {
@@ -755,15 +755,15 @@ test("the running amount is the screening's price times the seats selected", () 
 
   assert.equal(priced.count, 3);
   assert.equal(priced.amountCents, 3750);
-  assert.equal(priced.amountLabel, "37.50");
+  assert.equal(priced.amountLabel, "37,50 €");
   assert.equal(
     priced.amountCents,
     summary.count * 1250,
     "the price per seat is the screening's, never a count of availability",
   );
-  assert.match(priced.lineLabel, /3 seats/);
-  assert.match(priced.lineLabel, /12\.50/);
-  assert.match(priced.lineLabel, /37\.50/);
+  assert.match(priced.lineLabel, /3 butacas/);
+  assert.match(priced.lineLabel, /12,50 €/);
+  assert.match(priced.lineLabel, /37,50 €/);
   assert.equal(priced.overLimit, false);
   assert.equal(priced.limitNote, null);
 });
@@ -776,8 +776,8 @@ test("one seat is priced as one seat, in the singular", () => {
 
   assert.equal(priced.count, 1);
   assert.equal(priced.amountCents, 900);
-  assert.equal(priced.amountLabel, "9.00");
-  assert.match(priced.lineLabel, /1 seat/);
+  assert.equal(priced.amountLabel, "9,00 €");
+  assert.match(priced.lineLabel, /1 butaca/);
 });
 
 test("an empty selection states nothing rather than a cost", () => {
@@ -788,9 +788,9 @@ test("an empty selection states nothing rather than a cost", () => {
 
   assert.equal(priced.count, 0);
   assert.equal(priced.amountCents, 0);
-  assert.equal(priced.amountLabel, "0.00");
-  assert.match(priced.lineLabel, /no seats selected/i);
-  assert.match(priced.lineLabel, /12\.50 per seat/);
+  assert.equal(priced.amountLabel, "0,00 €");
+  assert.match(priced.lineLabel, /todavía no hay butacas/i);
+  assert.match(priced.lineLabel, /12,50 € por butaca/);
 });
 
 test("the running amount never promises the amount the payment will take", () => {
@@ -801,11 +801,11 @@ test("the running amount never promises the amount the payment will take", () =>
 
   // The order the API creates is authoritative; this sentence is a summary, and it
   // says so. Nothing here may read as a promise about the charge.
-  assert.match(priced.note, /price per seat|per seat/i);
-  assert.match(priced.note, /order|payment|charged/i);
+  assert.match(priced.note, /precio por butaca/i);
+  assert.match(priced.note, /pedido|pago|cobra/i);
   assert.doesNotMatch(
     priced.note,
-    /guarantee|final|exactly what you will pay|we will charge you/i,
+    /garantiz|definitiv|exactamente lo que vas a pagar|te vamos a cobrar/i,
     "the summary is not the charge",
   );
 });
@@ -852,9 +852,9 @@ test("the page counts the seats the map read, not the screening's number", () =>
 
   assert.equal(map.seatCount, view.seatCount);
   assert.equal(map.availableSeats, view.availableCount);
-  assert.equal(map.label, "8 of 10 seats available");
+  assert.equal(map.label, "8 de 10 butacas libres");
   assert.equal(map.matchesScreening, false);
-  assert.match(map.note!, /seat map|map/i, "the disagreement is attributed to the map");
+  assert.match(map.note!, /plano/i, "the disagreement is attributed to the map");
   assert.match(map.note!, /8|10/, "the note names the numbers the page printed");
 });
 
@@ -867,7 +867,7 @@ test("two reads that agree need no note, and still print the map's numbers", () 
 
   assert.equal(map.matchesScreening, true);
   assert.equal(map.note, null);
-  assert.equal(map.label, "8 of 10 seats available");
+  assert.equal(map.label, "8 de 10 butacas libres");
 });
 
 test("a sold-out map says so in words", () => {
@@ -879,7 +879,7 @@ test("a sold-out map says so in words", () => {
   });
 
   assert.equal(map.availableSeats, 0);
-  assert.equal(map.label, "0 of 10 seats available — sold out");
+  assert.equal(map.label, "0 de 10 butacas libres — agotada");
 });
 
 // ── The keyboard contract (M3.5 · T5 · S6) ───────────────────────────────────
@@ -1092,14 +1092,17 @@ test("each seat's accessible name is its row and number plus its state", () => {
   assert.deepEqual(
     view.rows[0].cells.map((cell) => cell.description),
     [
-      "Row A seat 1, selected",
-      "Row A seat 2, sold",
-      "Row A seat 3, not for sale",
+      "Fila A, butaca 1: seleccionada por ti",
+      "Fila A, butaca 2: vendida",
+      "Fila A, butaca 3: no a la venta",
     ],
   );
 
   const held = buildSeatMap(projected, [{ id: 11, held: true, state: "held" }]);
-  assert.equal(held.rows[0].cells[0].description, "Row A seat 1, held by another guest");
+  assert.equal(
+    held.rows[0].cells[0].description,
+    "Fila A, butaca 1: reservada por otra persona",
+  );
 });
 
 test("the legend names every state with words, never with a tone alone", () => {
@@ -1119,9 +1122,9 @@ test("the legend names every state with words, never with a tone alone", () => {
     assert.ok(entry.spoken.trim() !== "", `${entry.status} can be announced`);
   }
   // The word a cell prints is the state's own, so the map reads without colour.
-  assert.equal(seatStateWord("sold"), "sold");
-  assert.equal(seatStateWord("blocked"), "n/a");
-  assert.equal(seatStateWord("held"), "held");
+  assert.equal(seatStateWord("sold"), "vendida");
+  assert.equal(seatStateWord("blocked"), "n/d");
+  assert.equal(seatStateWord("held"), "ocupada");
 });
 
 test("a screening with no seats is not called sold out", () => {
@@ -1131,8 +1134,8 @@ test("a screening with no seats is not called sold out", () => {
   const map = mapAvailability(view, { seatCount: 0, availableSeats: 0 });
 
   assert.equal(map.seatCount, 0);
-  assert.equal(map.label, "No seats are sold for this screening");
-  assert.doesNotMatch(map.label, /sold out/i);
+  assert.equal(map.label, "Esta sesión no tiene butacas a la venta");
+  assert.doesNotMatch(map.label, /agotada/i);
   assert.equal(map.matchesScreening, true);
   assert.equal(map.note, null);
 });

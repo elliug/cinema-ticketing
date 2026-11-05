@@ -53,38 +53,42 @@ export interface AdminSection {
  * `purpose` and `prerequisite` are written for somebody setting a cinema up for the first
  * time, because that is the moment the order matters: a returning operator already knows it,
  * and a first-time operator is exactly who gets lost.
+ *
+ * Both are Castilian since the Marquesina redesign: the index, the section bar and the screens
+ * themselves speak one language, and the section names are the four words the browser gate
+ * looks for.
  */
 export const ADMIN_SECTIONS: readonly AdminSection[] = [
   {
     href: ADMIN_VENUES_PATH,
-    label: "Cinemas, rooms and layouts",
+    label: "Cines, salas y planos",
     purpose:
-      "Create a cinema with its own time zone, the rooms inside it, and their layout versions.",
+      "Crear un cine con su propia zona horaria, las salas que tiene dentro y sus versiones del plano.",
     prerequisite:
-      "Nothing comes before this: every other screen needs a cinema and a room to point at.",
+      "Nada va antes: todas las demás pantallas necesitan un cine y una sala a los que apuntar.",
   },
   {
     href: ADMIN_LAYOUTS_PATH,
-    label: "Layout editor",
+    label: "Editor de planos",
     purpose:
-      "Draw or amend a room's rows and seats, then publish the version the screenings will use.",
+      "Dibujar o corregir las filas y butacas de una sala, y publicar la versión que usarán las sesiones.",
     prerequisite:
-      "A room must exist first, and a published layout is immutable — a correction is a new version.",
+      "Primero tiene que existir una sala, y una versión publicada es inmutable: corregirla es crear otra.",
   },
   {
     href: ADMIN_SCHEDULE_PATH,
-    label: "Films and screenings",
+    label: "Películas y sesiones",
     purpose:
-      "Create a film, then bind it to a room and a published layout version with a price and a status.",
+      "Crear una película y atarla a una sala y a una versión publicada del plano, con un precio y un estado.",
     prerequisite:
-      "The room's layout version must already be published, and the film is created here.",
+      "La versión del plano de la sala ya tiene que estar publicada, y la película se crea aquí.",
   },
   {
     href: ADMIN_DOOR_PATH,
-    label: "Door",
-    purpose: "Admit a ticket once, and read the four verdicts a cashier has to tell apart.",
+    label: "Acceso",
+    purpose: "Admitir una entrada una sola vez y distinguir los cuatro veredictos que lee el personal.",
     prerequisite:
-      "Only after a screening has sold a ticket: the door admits what the checkout issued.",
+      "Sólo después de que una sesión haya vendido una entrada: el acceso admite lo que emitió el pago.",
   },
 ];
 

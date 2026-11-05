@@ -33,21 +33,22 @@
 // page is a summary of the screening's price per seat — the order the API creates is
 // what gets paid (T6), and the copy does not pretend otherwise.
 //
+// Since the Marquesina redesign (visual-redesign · T5) this screen is one of two that open
+// with the shared `ScreeningBanner` and close with the shared receipt, so the vocabulary of
+// "which session this is" and "what it costs" is one component each instead of two copies.
+// The copy is Castilian Spanish (L4): the film title and the hours come from the API and are
+// never translated; everything this screen says is.
+//
 // The route is server-rendered per request: availability is live data and must never be
 // prerendered or cached.
 import Link from "next/link";
 import { Suspense } from "react";
 
 import { PageHeader } from "@/components";
+import { ScreeningBanner } from "@/components/screening-banner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge, type BadgeProps } from "@/components/ui/badge";
+import { type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PublicProblem, PublicScreening } from "@/lib/public-api";
 import type { SaleState } from "@/lib/seat-selection";
@@ -132,6 +133,11 @@ async function Screening({ eventId }: { eventId: string }) {
  * instant into the browser's. The price per seat is `priceDisplay`, the same text the
  * catalogue showed, and availability is not stated here: it belongs to the map, which
  * is read later and is the answer this page sells.
+ *
+ * The `h1` is the screen's own deed ("Elegir butacas") and the film moved into the strip:
+ * a buyer who shares this address shares the screening, and the title of the page is the
+ * thing they are doing on it. The state of the sale is the badge's word, so the strip never
+ * relies on its tone.
  */
 function ScreeningContext({
   screening,
@@ -145,46 +151,21 @@ function ScreeningContext({
   return (
     <>
       <PageHeader
-        eyebrow="Seat selection · M3.5"
-        title={screening.filmTitle}
-        description={`${screening.cinemaName} · ${screening.roomName}. Times are the venue's own clock, and the price is per seat.`}
+        eyebrow={`Cartelera / ${screening.filmTitle}`}
+        title="Elegir butacas"
+        description="La hora es la del propio local y el precio es por butaca. Las butacas libres las cuenta el plano, que se lee al cargar esta página."
       />
 
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* An `h2`, not the card primitive's `h3`: the page's outline is the film
-                (h1), then the screening, the map and the selection, so a screen reader's
-                heading list reads as the page does. */}
-            <h2 className="m-0 text-lg leading-tight font-semibold">Your screening</h2>
-            {/* The word is the state; the tone only reinforces it. */}
-            <Badge variant={badgeVariant(sale)}>{sale.badge}</Badge>
-          </div>
-          <CardDescription>
-            Read from the catalogue when this page was loaded, so nothing you clicked on
-            is lost on the way here.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-muted-foreground">Film</dt>
-            <dd className="m-0 font-medium break-words">{screening.filmTitle}</dd>
-
-            <dt className="text-muted-foreground">Venue</dt>
-            <dd className="m-0 font-medium break-words">
-              {screening.cinemaName} · {screening.roomName}
-            </dd>
-
-            <dt className="text-muted-foreground">Starts</dt>
-            <dd className="m-0 font-medium break-words">
-              <time dateTime={startsAt}>{screening.startsAtLocal}</time>
-            </dd>
-
-            <dt className="text-muted-foreground">Price per seat</dt>
-            <dd className="m-0 font-medium">{screening.priceDisplay}</dd>
-          </dl>
-        </CardContent>
-      </Card>
+      <ScreeningBanner
+        filmTitle={screening.filmTitle}
+        cinemaName={screening.cinemaName}
+        roomName={screening.roomName}
+        startsAtLocal={screening.startsAtLocal}
+        startsAt={startsAt}
+        priceCents={screening.priceCents}
+        statusWord={sale.badge}
+        statusTone={badgeVariant(sale)}
+      />
     </>
   );
 }
@@ -205,16 +186,18 @@ function NotOnSale({ sale }: { sale: SaleState }) {
       aria-labelledby="not-on-sale"
       className="flex flex-col gap-2"
     >
-      <h2 id="not-on-sale">{sale.headline ?? "This screening is not on sale"}</h2>
+      <h2 id="not-on-sale" className="m-0 text-base font-semibold">
+        {sale.headline ?? "Esta sesión no está a la venta"}
+      </h2>
       <AlertDescription className="flex flex-col gap-2">
         <p className="m-0">{sale.message}</p>
         <p className="m-0">
-          No seat map is shown, because there is nothing to choose: the same seats would
-          only look selectable and then refuse to be held.
+          No se muestra ningún plano de butacas, porque no hay nada que elegir: las mismas
+          butacas solo parecerían seleccionables y luego se negarían a reservarse.
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
           <Button asChild variant="outline" size="sm">
-            <Link href="/events">See what is on sale</Link>
+            <Link href="/events">Ver qué está a la venta</Link>
           </Button>
         </div>
       </AlertDescription>
@@ -246,7 +229,9 @@ function ScreeningProblem({
       aria-labelledby="screening-problem"
       className="flex flex-col gap-2"
     >
-      <h2 id="screening-problem">{view.headline}</h2>
+      <h2 id="screening-problem" className="m-0 text-base font-semibold">
+        {view.headline}
+      </h2>
       <AlertDescription className="flex flex-col gap-2">
         <p className="m-0">
           <code>{problem.code}</code> · HTTP {problem.status}
@@ -256,12 +241,12 @@ function ScreeningProblem({
           {view.retryable ? (
             <Button asChild size="sm">
               <Link href={`/events/${encodeURIComponent(eventId)}/seats`}>
-                Ask again
+                Volver a preguntar
               </Link>
             </Button>
           ) : null}
           <Button asChild variant="outline" size="sm">
-            <Link href="/events">Back to the catalogue</Link>
+            <Link href="/events">Volver a la cartelera</Link>
           </Button>
         </div>
       </AlertDescription>
@@ -280,24 +265,27 @@ function SeatsLoading() {
   return (
     <>
       <PageHeader
-        eyebrow="Seat selection · M3.5"
-        title="Choose your seats"
-        description="Loading the screening, its price and its seats."
+        eyebrow="Cartelera"
+        title="Elegir butacas"
+        description="Cargando la sesión, su precio y sus butacas."
       />
       <section aria-labelledby="seats-loading" className="flex flex-col gap-3">
-        <h2 id="seats-loading">Seat map</h2>
+        <h2 id="seats-loading">Plano de butacas</h2>
         <p role="status" className="m-0 max-w-prose">
-          <span className="text-muted-foreground">Loading the seat map…</span>
+          <span className="text-muted-foreground">Cargando el plano de butacas…</span>
         </p>
-        <Card aria-hidden="true" className="flex flex-col gap-3 p-5">
+        <div
+          aria-hidden="true"
+          className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5"
+        >
           {[0, 1, 2].map((row) => (
             <div key={row} className="flex flex-wrap gap-2">
               {[0, 1, 2, 3, 4, 5].map((seat) => (
-                <Skeleton key={seat} className="size-11 rounded-md" />
+                <Skeleton key={seat} className="size-11 rounded-sm" />
               ))}
             </div>
           ))}
-        </Card>
+        </div>
       </section>
     </>
   );

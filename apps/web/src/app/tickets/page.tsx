@@ -64,10 +64,10 @@ async function readTicketAction(ticketId: string): Promise<TicketResponse> {
       ok: false,
       problem: {
         type: "https://cinema.local/problems/invalid-input",
-        title: "Invalid input",
+        title: "Entrada inválida",
         status: 0,
         code: "invalid_input",
-        detail: "this page needs a ticket id",
+        detail: "esta página necesita un identificador de entrada",
       },
     };
   }
@@ -127,18 +127,18 @@ async function AccountTickets() {
           ))}
         </ul>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          This list is the box office&apos;s answer for this account, so another browser and another
-          device show the same tickets. A ticket is still opened by its own link, which admits
-          whoever holds it.
+          Esta lista es la respuesta de la taquilla para esta cuenta, así que otro navegador y
+          otro dispositivo enseñan las mismas entradas. Cada entrada se sigue abriendo por su
+          propio enlace, que admite a quien lo tenga.
         </p>
         <form action={signOutAction} className="flex flex-wrap items-center gap-2 pt-1">
           <Button type="submit" size="sm" variant="outline">
-            Sign out
+            Cerrar sesión
           </Button>
           {/* Said plainly, because the button now does two things and used to do one: the row
               behind this cookie is revoked at the box office, not just forgotten here. */}
           <span className="text-sm text-muted-foreground">
-            Ends this session at the box office too, not only in this browser.
+            Cierra la sesión también en la taquilla, no solo en este navegador.
           </span>
         </form>
       </section>
@@ -153,13 +153,13 @@ async function AccountTickets() {
         <p className="m-0 max-w-prose text-sm text-muted-foreground">{view.nextStep}</p>
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <Button asChild size="sm">
-            <Link href="/events">See what is on sale</Link>
+            <Link href="/events">Ver qué hay a la venta</Link>
           </Button>
           {/* A signed-in account with nothing to show still needs the way out, or the only exit
               is a screen this person has no reason to visit. */}
           <form action={signOutAction}>
             <Button type="submit" size="sm" variant="outline">
-              Sign out
+              Cerrar sesión
             </Button>
           </form>
         </div>
@@ -181,7 +181,7 @@ async function AccountTickets() {
               then takes the person to the screen that replaces it. */}
           <form action={clearDeadSessionAction} className="flex flex-wrap gap-2 pt-1">
             <Button type="submit" size="sm">
-              Sign in again
+              Abrir sesión otra vez
             </Button>
           </form>
         </AlertDescription>
@@ -204,7 +204,7 @@ async function AccountTickets() {
         <p className="m-0">{view.nextStep}</p>
         <div className="flex flex-wrap gap-2 pt-1">
           <Button asChild size="sm">
-            <Link href="/tickets">Ask again</Link>
+            <Link href="/tickets">Preguntar otra vez</Link>
           </Button>
         </div>
       </AlertDescription>
@@ -224,20 +224,20 @@ function GuestTickets() {
     <>
       <Card aria-labelledby="guest-list" className="flex flex-col gap-2 p-5">
         <h2 id="guest-list" className="m-0 text-lg leading-tight font-semibold">
-          This list belongs to this tab
+          Esta lista es de esta pestaña
         </h2>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          An account would keep this list at the box office instead, so it would follow you to
-          another browser and another device, and survive clearing this site&apos;s data. That is
-          the whole of what signing in adds: nobody needs an account to buy a ticket or to open
-          one, and a ticket is opened by its own link either way.
+          Una cuenta guardaría esta lista en la taquilla, así que te seguiría a otro navegador y
+          a otro dispositivo, y sobreviviría a borrar los datos de este sitio. Eso es todo lo
+          que añade abrir sesión: nadie necesita una cuenta para comprar una entrada ni para
+          abrirla, y una entrada se abre por su propio enlace de todos modos.
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
           <Button asChild size="sm">
-            <Link href={SIGN_IN_PATH}>Sign in</Link>
+            <Link href={SIGN_IN_PATH}>Abrir sesión</Link>
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link href="/events">See what is on sale</Link>
+            <Link href="/events">Ver qué hay a la venta</Link>
           </Button>
         </div>
       </Card>

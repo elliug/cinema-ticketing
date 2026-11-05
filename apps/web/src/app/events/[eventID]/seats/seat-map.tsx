@@ -12,9 +12,8 @@
 //
 // Accessibility is the point of this component, not a coat of paint:
 //
-//   - every seat is a button whose accessible name is its own ("Row A seat 3,
-//     available"), so a screen reader never reads "A1 button" and leaves the state to
-//     the eye;
+//   - every seat is a button whose accessible name is its own ("Fila A, butaca 3: libre"),
+//     so a screen reader never reads "A1 button" and leaves the state to the eye;
 //   - the state is carried by words as well as by tone: a cell prints its state word
 //     under its seat number, the legend says what each one means, and the border style
 //     differs per state, so the map survives greyscale (S6);
@@ -27,6 +26,12 @@
 //   - a seat is selectable only when the availability read calls it available, and the
 //     running amount is a summary of the screening's price per seat — never a promise
 //     about the charge (S8).
+//
+// The Marquesina look (visual-redesign · T5) is the room itself: the plan sits in a dark
+// auditorium, a curved amber band over it says "PANTALLA", and a seat is a small rounded
+// square — amber when it is yours, a dim recessed square when it is taken. Every one of
+// those cues is a token utility, so the palette stays in globals.css, and every one of them
+// is redundant with the word the cell prints.
 //
 // Rules that live in the pure module and are only applied here:
 //
@@ -42,7 +47,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import type {
   AvailabilityResponse,
   HoldResponse,
@@ -110,18 +114,21 @@ const MOVEMENT_KEYS = new Set([
  *
  * The tone is one signal of several: the border style and weight differ per state, the
  * cell prints its own state word, and the accessible name spells the state out. Strip
- * the colour away and every state is still distinguishable.
+ * the colour away and every state is still distinguishable — a free seat is a lit square, a
+ * selected one is filled and bold, a taken one is recessed into the dark with its label
+ * struck through.
  */
 const SEAT_STATE_CLASSES: Record<SeatMapStatus, string> = {
-  available: "border border-border bg-background text-foreground hover:bg-muted",
+  available:
+    "border border-border bg-secondary text-foreground hover:border-primary hover:text-primary",
   selected:
-    "border-2 border-primary bg-primary text-primary-foreground hover:bg-primary/90",
-  held: "border border-dashed border-muted-foreground bg-muted text-muted-foreground",
-  sold: "border border-border bg-muted text-muted-foreground line-through",
+    "border border-primary bg-primary text-primary-foreground font-bold hover:bg-primary/90",
+  held: "border border-dashed border-border bg-background text-muted-foreground",
+  sold: "border border-border bg-background text-muted-foreground line-through",
   blocked:
-    "border-2 border-dotted border-muted-foreground bg-muted text-muted-foreground",
+    "border border-dotted border-muted-foreground bg-card text-muted-foreground",
   unknown:
-    "border border-dotted border-muted-foreground bg-background text-muted-foreground",
+    "border border-dotted border-border bg-background text-muted-foreground",
 };
 
 /** Reduces a seat to the fields the pure model reads. */
@@ -214,7 +221,7 @@ export function SeatSelectionPanel({
     if (!cell.selectable) {
       // A seat that cannot be picked is not silent: the announcement is the reason,
       // which is the whole point of letting the focus reach it.
-      setNotice(`${cell.description}. It cannot be selected.`);
+      setNotice(`${cell.description}. No se puede seleccionar.`);
       return;
     }
     setNotice(null);
@@ -324,10 +331,13 @@ export function SeatSelectionPanel({
   const announcement = notice ?? `${summary.totalLabel}. ${priced.lineLabel}.`;
 
   return (
-    <>
+    // The boards' two columns: the plan on the left, the running receipt on the right. The
+    // receipt is the second column only where there is room for one; on a narrow screen it
+    // follows the map, which is the order a buyer reads it in anyway.
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
       <section aria-labelledby="seat-map" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 id="seat-map">Seat map</h2>
+          <h2 id="seat-map">Plano de butacas</h2>
           <p className="m-0 text-sm text-muted-foreground">{availability.label}</p>
         </div>
 
@@ -343,112 +353,146 @@ export function SeatSelectionPanel({
 
         {layout.geometryKnown ? null : (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This API response carries no layout projection, so the map lists the
-            event&apos;s seats in order with the physical seat id the API reports. Rows
-            and seat kinds render as soon as the projection is served; nothing here is
-            guessed.
+            Esta respuesta de la API no trae la proyección del plano, así que el plano lista
+            las butacas de la sesión en orden con el identificador físico que informa la API.
+            Las filas y los tipos de butaca aparecerán en cuanto se sirva esa proyección;
+            aquí no se da nada por supuesto.
           </p>
         )}
 
-        <SeatLegend />
-
         {view.seatCount === 0 ? (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This screening has no seats to select.
+            Esta sesión no tiene butacas que elegir.
           </p>
         ) : (
-          // One scroll container for the whole map, so the rows move together and a
-          // 200-seat room stays navigable on a 360px screen: the map scrolls sideways
-          // instead of shrinking the seats below a touch target. It is focusable and
-          // named, so a keyboard user can scroll it without a mouse.
-          <div
-            role="region"
-            aria-label="Seat map, scrolls sideways to reach every seat"
-            tabIndex={0}
-            className="overflow-x-auto rounded-lg border border-border bg-card p-3 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
-          >
-            <ol className="m-0 flex w-max list-none flex-col gap-2 p-0">
-              {view.rows.map((row) => (
-                <li key={row.label} className="flex items-center gap-3">
-                  {/* The row label is visual: the list below is named "Row A, 5 seats"
-                      and every seat spells its row out, so a heading per row would only
-                      flood the heading list of a 200-seat room. */}
-                  <span
-                    aria-hidden="true"
-                    className="w-16 shrink-0 text-sm font-semibold"
-                  >
-                    Row {row.label}
-                  </span>
-                  <ul
-                    aria-label={`Row ${row.label}, ${row.seatCount} seat${row.seatCount === 1 ? "" : "s"}`}
-                    className="m-0 flex list-none gap-1.5 p-0"
-                  >
-                    {row.cells.map((cell) => {
-                      const stateWord = seatStateWord(cell.status);
-                      return (
-                        <li key={cell.eventSeatId} className="shrink-0">
-                          <button
-                            type="button"
-                            ref={(node) => {
-                              if (node === null) {
-                                buttonRefs.current.delete(cell.eventSeatId);
-                                return;
+          // The plan as the room draws it: a curved band over the seats that says where the
+          // screen is, then the rows inside one scroll container so a 200-seat room stays
+          // navigable on a 360px screen. The container is focusable and named, so a keyboard
+          // user can scroll it without a mouse.
+          <div className="flex flex-col gap-5 rounded-lg border border-border bg-card p-5">
+            <div className="flex flex-col items-center gap-1">
+              <svg
+                viewBox="0 0 600 46"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+                className="h-10 w-full text-primary"
+              >
+                <path
+                  d="M0 30Q300 -12 600 30V44Q300 2 0 44Z"
+                  fill="currentColor"
+                  fillOpacity="0.18"
+                />
+                <path
+                  d="M0 30Q300 -12 600 30"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+              </svg>
+              {/* The word, not only the shape: the band names what is on the other side. */}
+              <p className="m-0 text-[0.65rem] tracking-[0.3em] uppercase text-muted-foreground">
+                Pantalla
+              </p>
+            </div>
+
+            <div
+              role="region"
+              aria-label="Plano de butacas, se desplaza en horizontal para llegar a todas"
+              tabIndex={0}
+              className="overflow-x-auto rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+            >
+              <ol className="m-0 flex w-max list-none flex-col gap-1.5 p-0">
+                {view.rows.map((row) => (
+                  <li key={row.label} className="flex items-center gap-1.5">
+                    {/* The row label is visual: the list below is named "Fila A, 5 butacas"
+                        and every seat spells its row out, so a heading per row would only
+                        flood the heading list of a 200-seat room. */}
+                    <span
+                      aria-hidden="true"
+                      className="w-5 shrink-0 text-center font-mono text-xs text-muted-foreground"
+                    >
+                      {row.label}
+                    </span>
+                    <ul
+                      aria-label={`Fila ${row.label}, ${row.seatCount} butacas`}
+                      className="m-0 flex list-none gap-1.5 p-0"
+                    >
+                      {row.cells.map((cell) => {
+                        const stateWord = seatStateWord(cell.status);
+                        return (
+                          <li key={cell.eventSeatId} className="shrink-0">
+                            <button
+                              type="button"
+                              ref={(node) => {
+                                if (node === null) {
+                                  buttonRefs.current.delete(cell.eventSeatId);
+                                  return;
+                                }
+                                buttonRefs.current.set(cell.eventSeatId, node);
+                              }}
+                              // The roving tab stop: one seat is reachable with Tab, the
+                              // rest with the arrow keys the contract above defines.
+                              tabIndex={cell.eventSeatId === tabStop ? 0 : -1}
+                              aria-label={cell.description}
+                              aria-pressed={
+                                cell.selectable
+                                  ? cell.status === "selected"
+                                  : undefined
                               }
-                              buttonRefs.current.set(cell.eventSeatId, node);
-                            }}
-                            // The roving tab stop: one seat is reachable with Tab, the
-                            // rest with the arrow keys the contract above defines.
-                            tabIndex={cell.eventSeatId === tabStop ? 0 : -1}
-                            aria-label={cell.description}
-                            aria-pressed={
-                              cell.selectable
-                                ? cell.status === "selected"
-                                : undefined
-                            }
-                            aria-disabled={!cell.selectable || undefined}
-                            onClick={() => handleToggle(cell)}
-                            onKeyDown={(event) => handleKeyDown(event, cell)}
-                            onFocus={() => setFocusedSeatId(cell.eventSeatId)}
-                            className={`flex min-h-11 min-w-11 cursor-pointer flex-col items-center justify-center rounded-md px-1 py-0.5 text-xs leading-tight focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${SEAT_STATE_CLASSES[cell.status]}`}
-                          >
-                            <span className="max-w-16 truncate font-medium">
-                              {cell.label}
-                            </span>
-                            {stateWord === "" ? null : (
-                              <span className="text-[0.65rem]">{stateWord}</span>
-                            )}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </li>
-              ))}
-            </ol>
+                              aria-disabled={!cell.selectable || undefined}
+                              onClick={() => handleToggle(cell)}
+                              onKeyDown={(event) => handleKeyDown(event, cell)}
+                              onFocus={() => setFocusedSeatId(cell.eventSeatId)}
+                              className={`flex min-h-11 min-w-11 cursor-pointer flex-col items-center justify-center rounded-t-md rounded-b-sm px-1 py-0.5 text-xs leading-tight focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none ${SEAT_STATE_CLASSES[cell.status]}`}
+                            >
+                              <span className="max-w-16 truncate font-medium">
+                                {cell.label}
+                              </span>
+                              {stateWord === "" ? null : (
+                                <span className="text-[0.6rem]">{stateWord}</span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <SeatLegend />
           </div>
         )}
 
         <p className="m-0 text-xs text-muted-foreground">
-          Arrow keys walk the seats, Home and End jump inside a row, and Space or Enter
-          selects the seat you are on. Every seat also works with a mouse or a tap.
+          Las flechas recorren las butacas, Inicio y Fin saltan dentro de una fila, y Espacio
+          o Intro seleccionan la butaca en la que estás. Todas las butacas funcionan también
+          con ratón o con un toque.
         </p>
       </section>
 
-      <HoldForm
-        summary={summary}
-        priced={priced}
-        countdown={countdown}
-        attempt={attempt}
-        lostLabels={lostLabels}
-        canSubmit={canSubmit}
-        onSubmit={handleSubmit}
-        onReset={handleReset}
-      />
+      {/* The receipt sticks while the plan scrolls, so the money and the deadline stay in
+          sight on a 200-seat room. `top-4` and not `top-0`: the shell's header is not fixed,
+          and a flush edge would look like a mistake. */}
+      <div className="flex flex-col gap-3 lg:sticky lg:top-4">
+        <HoldForm
+          summary={summary}
+          priced={priced}
+          countdown={countdown}
+          attempt={attempt}
+          lostLabels={lostLabels}
+          canSubmit={canSubmit}
+          onSubmit={handleSubmit}
+          onReset={handleReset}
+        />
 
-      {attempt.status === "held" && attempt.hold !== null && !expired ? (
-        <ContinueToPayment eventId={eventId} reservationId={attempt.hold.id} />
-      ) : null}
-    </>
+        {attempt.status === "held" && attempt.hold !== null && !expired ? (
+          <ContinueToPayment eventId={eventId} reservationId={attempt.hold.id} />
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -463,10 +507,10 @@ export function SeatSelectionPanel({
 function SeatLegend() {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="m-0 text-sm font-semibold">What the seats mean</h3>
+      <h3 className="m-0 text-sm font-semibold">Qué significa cada butaca</h3>
       <ul
         role="list"
-        aria-label="Seat states"
+        aria-label="Estados de las butacas"
         className="m-0 flex list-none flex-wrap gap-x-4 gap-y-2 p-0 text-sm"
       >
         {SEAT_STATE_LEGEND.map((entry) => (
@@ -508,22 +552,25 @@ function ContinueToPayment({
     eventId,
   )}`;
   return (
-    <Card aria-labelledby="continue-to-payment" className="flex flex-col gap-3 p-5">
+    <section
+      aria-labelledby="continue-to-payment"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <h2 id="continue-to-payment" className="m-0">
-          Seats held — one step left
+          Butacas reservadas: queda un paso
         </h2>
-        <Badge variant="success">Held</Badge>
+        <Badge variant="success">Reservada</Badge>
       </div>
       <p className="m-0 max-w-prose">
-        Reservation <code>{reservationId}</code> holds your seats until its window
-        closes. Tickets are issued when the payment is approved.
+        La reserva <code>{reservationId}</code> guarda tus butacas hasta que se cierre su
+        plazo. Las entradas se emiten cuando el pago se aprueba.
       </p>
       <div className="flex flex-wrap gap-2">
         <Button asChild>
-          <a href={href}>Continue to payment</a>
+          <a href={href}>Ir al pago</a>
         </Button>
       </div>
-    </Card>
+    </section>
   );
 }

@@ -1,5 +1,5 @@
 // /admin/venues — create cinemas and rooms, then create and inspect layout versions
-// (M3.5 · T8 · S3).
+// (M3.5 · T8 · S3; the ledger since visual-redesign).
 //
 // The page is intentionally thin: the three forms are client components that call the
 // server actions in ./actions.ts, and every read goes through the same actions so the
@@ -12,6 +12,10 @@
 // what it is selecting. A page that showed every room of every cinema at once would answer
 // a question nobody asked, and one that asked for an identifier would be asking the
 // operator to know something the API is willing to list.
+//
+// Since the Marquesina redesign the three listings are ledgers — an uppercase head, one
+// hairline per row, the identifiers in the mono face — rather than bulleted paragraphs: an
+// operator reads a column of names, not a run of sentences.
 //
 // The route is server-rendered per request because it depends on local administrative
 // configuration and live data; it is never prerendered at build time. Like the API itself,
@@ -83,7 +87,7 @@ export default async function VenuesPage({ searchParams }: VenuesPageProps) {
       <CardContent className="pt-5">
         <ReadProblem
           id="cinemas-problem"
-          title="The cinemas could not be loaded"
+          title="No se pudieron cargar los cines"
           problem={cinemasResult.error}
         />
       </CardContent>
@@ -98,9 +102,9 @@ export default async function VenuesPage({ searchParams }: VenuesPageProps) {
           <CardContent className="pt-5">
             <ReadProblem
               id="rooms-problem"
-              title="The rooms could not be loaded"
+              title="No se pudieron cargar las salas"
               problem={roomsResult?.error ?? configurationProblem()}
-              selection={`Cinema ${cinemaId}`}
+              selection={`Cine ${cinemaId}`}
             />
           </CardContent>
         </Card>
@@ -122,9 +126,9 @@ export default async function VenuesPage({ searchParams }: VenuesPageProps) {
           <CardContent className="pt-5">
             <ReadProblem
               id="layouts-problem"
-              title="The layout versions could not be loaded"
+              title="No se pudieron cargar las versiones del plano"
               problem={layoutsResult?.error ?? configurationProblem()}
-              selection={`Room ${roomId}`}
+              selection={`Sala ${roomId}`}
             />
           </CardContent>
         </Card>
@@ -140,26 +144,26 @@ export default async function VenuesPage({ searchParams }: VenuesPageProps) {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Local administration · M3.5"
-        title="Cinemas, rooms and layouts"
+        eyebrow="Administración local · M3.5"
+        title="Cines, salas y planos"
         description={
           <>
-            Create a cinema, add rooms to it, and create layout versions for a room. A
-            published version is immutable and changes require a new draft. Works in local
-            development only: the API must run with local administration enabled, and this
-            page needs the same <code>{ADMIN_TOKEN_ENV}</code> token as the API.
+            Crea un cine, añádele salas y crea versiones del plano para una sala. Una versión
+            publicada es inmutable y cambiarla exige un borrador nuevo. Sólo funciona en
+            desarrollo local: la API tiene que correr con la administración local activada, y
+            esta página necesita el mismo <code>{ADMIN_TOKEN_ENV}</code> que la API.
           </>
         }
       />
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Create a cinema</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Crear un cine</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            The timezone is the venue&apos;s own clock, which is what the public catalogue
-            prints next to each screening, so it must be an IANA name such as{" "}
-            <code>Europe/Madrid</code> — not a city or an abbreviation. The API refuses a
-            name it cannot load.
+            La zona horaria es el reloj del propio local, que es lo que la cartelera pública
+            imprime junto a cada sesión, así que tiene que ser un nombre IANA como{" "}
+            <code>Europe/Madrid</code> — no una ciudad ni una abreviatura. La API rechaza un
+            nombre que no pueda cargar.
           </p>
         </CardHeader>
         <CardContent>
@@ -184,38 +188,54 @@ function CinemasCard({
   return (
     <Card>
       <CardHeader>
-        <h2 className="m-0 text-lg leading-tight font-semibold">Cinemas</h2>
+        <h2 className="m-0 text-lg leading-tight font-semibold">Cines</h2>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          Every cinema the API lists, then the one whose rooms you want to see.
+          Todos los cines que lista la API y, después, aquel cuyas salas quieres ver.
         </p>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {cinemaRows.length === 0 ? (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            No cinema exists yet. One created above appears here and can then hold rooms.
+            Todavía no existe ningún cine. El que se cree arriba aparece aquí y puede tener
+            salas después.
           </p>
         ) : (
-          <ul role="list" className="m-0 flex list-none flex-col gap-1 p-0 text-sm">
-            {cinemaRows.map((cinema) => (
-              <li key={cinema.id}>
-                <span className="font-medium">{cinema.label}</span>{" "}
-                <span className="text-muted-foreground">
-                  (cinema <code>{cinema.id}</code>)
-                </span>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="ledger">
+              <caption className="visually-hidden">Cines que lista la API</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Cine</th>
+                  <th scope="col">Zona horaria</th>
+                  <th scope="col">Dirección</th>
+                  <th scope="col">Identificador</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cinemaRows.map((cinema) => (
+                  <tr key={cinema.id}>
+                    <td className="font-medium break-words">{cinema.name}</td>
+                    <td className="ledger__num">{cinema.timezone}</td>
+                    <td className="break-words">{cinema.address}</td>
+                    <td>
+                      <code>{cinema.id}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         <form
           className="flex flex-wrap items-end gap-4"
           action={ADMIN_VENUES_PATH}
           method="get"
-          aria-label="Select a cinema"
+          aria-label="Elegir un cine"
         >
           <div className="flex min-w-56 flex-col gap-1.5">
             <label className="text-sm font-medium" htmlFor="venues-cinema">
-              Cinema
+              Cine
             </label>
             <select
               className={FILTER_SELECT_CLASS}
@@ -223,7 +243,7 @@ function CinemasCard({
               name="cinemaId"
               defaultValue={cinemaId}
             >
-              <option value="">Select a cinema</option>
+              <option value="">Elige un cine</option>
               {cinemaRows.map((cinema) => (
                 <option key={cinema.id} value={cinema.id}>
                   {cinema.label}
@@ -232,7 +252,7 @@ function CinemasCard({
             </select>
           </div>
           <Button type="submit" variant="outline">
-            Show rooms
+            Ver las salas
           </Button>
         </form>
       </CardContent>
@@ -256,10 +276,10 @@ function RoomsCard({
     <Card>
       <CardHeader>
         <h2 className="m-0 text-lg leading-tight font-semibold">
-          Rooms in {cinema?.name ?? `cinema ${cinemaId}`}
+          Salas de {cinema?.name ?? `cine ${cinemaId}`}
         </h2>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          A room belongs to one cinema and holds its own layout versions.
+          Una sala pertenece a un cine y tiene sus propias versiones del plano.
         </p>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -271,19 +291,30 @@ function RoomsCard({
 
         {roomRows.length === 0 ? (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This cinema has no rooms yet.
+            Este cine todavía no tiene salas.
           </p>
         ) : (
-          <ul role="list" className="m-0 flex list-none flex-col gap-1 p-0 text-sm">
-            {roomRows.map((room) => (
-              <li key={room.id}>
-                <span className="font-medium">{room.name}</span>{" "}
-                <span className="text-muted-foreground">
-                  (room <code>{room.id}</code>)
-                </span>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="ledger">
+              <caption className="visually-hidden">Salas de este cine</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Sala</th>
+                  <th scope="col">Identificador</th>
+                </tr>
+              </thead>
+              <tbody>
+                {roomRows.map((room) => (
+                  <tr key={room.id}>
+                    <td className="font-medium break-words">{room.name}</td>
+                    <td>
+                      <code>{room.id}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {roomRows.length === 0 ? null : (
@@ -291,12 +322,12 @@ function RoomsCard({
             className="flex flex-wrap items-end gap-4"
             action={ADMIN_VENUES_PATH}
             method="get"
-            aria-label="Select a room"
+            aria-label="Elegir una sala"
           >
             <input type="hidden" name="cinemaId" value={cinemaId} />
             <div className="flex min-w-56 flex-col gap-1.5">
               <label className="text-sm font-medium" htmlFor="venues-room">
-                Room
+                Sala
               </label>
               <select
                 className={FILTER_SELECT_CLASS}
@@ -304,7 +335,7 @@ function RoomsCard({
                 name="roomId"
                 defaultValue={roomId}
               >
-                <option value="">Select a room</option>
+                <option value="">Elige una sala</option>
                 {roomRows.map((room) => (
                   <option key={room.id} value={room.id}>
                     {room.name}
@@ -313,7 +344,7 @@ function RoomsCard({
               </select>
             </div>
             <Button type="submit" variant="outline">
-              Show layout versions
+              Ver las versiones del plano
             </Button>
           </form>
         )}
@@ -336,12 +367,12 @@ function LayoutsCard({
     <Card>
       <CardHeader>
         <h2 className="m-0 text-lg leading-tight font-semibold">
-          Layout versions in {room?.name ?? `room ${roomId}`}
+          Versiones del plano de {room?.name ?? `sala ${roomId}`}
         </h2>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          Creating a layout always adds the next draft version for the room. Edit its rows and
-          publish it in the <code>/admin/layouts</code> editor; a screening can only be
-          scheduled against a published version.
+          Crear un plano añade siempre la siguiente versión en borrador de la sala. Edita sus
+          filas y publícala en el editor de <code>/admin/layouts</code>; una sesión sólo se
+          puede programar contra una versión publicada.
         </p>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -353,28 +384,45 @@ function LayoutsCard({
 
         {layoutRows.length === 0 ? (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            This room has no layout versions yet.
+            Esta sala todavía no tiene versiones del plano.
           </p>
         ) : (
-          <ul role="list" className="m-0 flex list-none flex-col gap-2 p-0 text-sm">
-            {layoutRows.map((layout) => (
-              <li key={layout.id} className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">Version {layout.version}</span>
-                {/* The word is the state; the tone only reinforces it. */}
-                <Badge variant={layout.status === "published" ? "success" : "secondary"}>
-                  {layout.statusLabel}
-                </Badge>
-                <span className="text-muted-foreground">
-                  (layout <code>{layout.id}</code>)
-                </span>
-                <Button asChild variant="link" size="sm" className="h-auto p-0">
-                  <Link href={`/admin/layouts?layoutId=${encodeURIComponent(layout.id)}`}>
-                    Open version {layout.version} in the layout editor
-                  </Link>
-                </Button>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="ledger">
+              <caption className="visually-hidden">Versiones del plano de esta sala</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Versión</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Identificador</th>
+                  <th scope="col">Editor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {layoutRows.map((layout) => (
+                  <tr key={layout.id}>
+                    <td className="ledger__num">{layout.version}</td>
+                    <td>
+                      {/* The word is the state; the tone only reinforces it. */}
+                      <Badge variant={layout.status === "published" ? "success" : "secondary"}>
+                        {layout.statusLabel}
+                      </Badge>
+                    </td>
+                    <td>
+                      <code>{layout.id}</code>
+                    </td>
+                    <td>
+                      <Button asChild variant="link" size="sm" className="h-auto p-0">
+                        <Link href={`/admin/layouts?layoutId=${encodeURIComponent(layout.id)}`}>
+                          Abrir la versión {layout.version} en el editor de planos
+                        </Link>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -385,10 +433,10 @@ function LayoutsCard({
 function configurationProblem(): AdminProblem {
   return {
     type: "https://cinema.local/problems/configuration",
-    title: "Configuration error",
+    title: "Error de configuración",
     status: 0,
     code: "configuration_error",
-    detail: `${ADMIN_TOKEN_ENV} must be set to use local administration`,
+    detail: `${ADMIN_TOKEN_ENV} tiene que estar definido para usar la administración local`,
   };
 }
 
@@ -397,7 +445,8 @@ function configurationProblem(): AdminProblem {
  *
  * An unavailable list is never rendered as an empty one: the code, the HTTP status and the
  * API's own detail are printed, so a missing token reads as a missing token instead of as a
- * cinema with no rooms.
+ * cinema with no rooms. The API's detail stays in the API's own words: it is the box office's
+ * sentence, not this screen's.
  */
 function ReadProblem({
   id,
@@ -422,9 +471,9 @@ function ReadProblem({
         </p>
         <p className="m-0">{problem.detail}</p>
         <p className="m-0">
-          This surface works only in local development: the API must run with local
-          administration enabled, and this page needs the same <code>{ADMIN_TOKEN_ENV}</code>{" "}
-          token as the API.
+          Esta pantalla sólo funciona en desarrollo local: la API tiene que correr con la
+          administración local activada, y esta página necesita el mismo{" "}
+          <code>{ADMIN_TOKEN_ENV}</code> que la API.
         </p>
       </AlertDescription>
     </Alert>

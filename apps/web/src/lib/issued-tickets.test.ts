@@ -249,14 +249,14 @@ test("a storage that refuses the read is unavailable, never empty", () => {
   assert.equal(read.kind, "unavailable");
   // Unavailable and empty are different facts: one says nothing was bought, the
   // other says this browser would not answer.
-  assert.match(read.kind === "unavailable" ? read.detail : "", /storage|browser/i);
+  assert.match(read.kind === "unavailable" ? read.detail : "", /pestaña|navegador/i);
 });
 
 test("a storage that refuses the write says so instead of claiming the ticket was kept", () => {
   const read = rememberIssuedTicket(readOnlyStorage(), "ticket-1");
 
   assert.equal(read.kind, "unavailable");
-  assert.match(read.kind === "unavailable" ? read.detail : "", /store|storage|browser/i);
+  assert.match(read.kind === "unavailable" ? read.detail : "", /guardar|pestaña|navegador/i);
 });
 
 test("no storage at all is unavailable, and remembering does not pretend", () => {
@@ -337,9 +337,9 @@ test("a valid ticket says it admits its holder, and says who answered", () => {
   assert.equal(view.retryable, false);
   assert.equal(view.reason, null);
   assert.equal(view.tone, "success");
-  assert.match(view.headline, /valid/i);
+  assert.match(view.headline, /válida/i);
   // The claim is the check's, not the page's: the box office just answered it.
-  assert.match(`${view.message} ${view.nextStep}`, /box office|check/i);
+  assert.match(`${view.message} ${view.nextStep}`, /taquilla|comprobaci/i);
 });
 
 test("a voided ticket says it was withdrawn, and names the reason", () => {
@@ -351,7 +351,7 @@ test("a voided ticket says it was withdrawn, and names the reason", () => {
   assert.equal(view.admits, false);
   assert.equal(view.reason, "voided");
   assert.equal(view.retryable, false);
-  assert.match(view.message, /withdrawn|voided/i);
+  assert.match(view.message, /anulad/i);
 });
 
 test("a cancelled screening does not make the ticket a forgery", () => {
@@ -401,7 +401,7 @@ test("a code the box office never signed is refused, and asking again will not h
   assert.equal(view.admits, false);
   assert.equal(view.retryable, false);
   assert.equal(view.reason, null);
-  assert.match(view.headline, /not recognised/i);
+  assert.match(view.headline, /no se reconoce/i);
 });
 
 test("an unreadable check is not a bad ticket: it is retryable and changes nothing", () => {
@@ -411,7 +411,7 @@ test("an unreadable check is not a bad ticket: it is retryable and changes nothi
     assert.equal(view.kind, "unavailable", `${code} is a failed check`);
     assert.equal(view.admits, false);
     assert.equal(view.retryable, true);
-    assert.match(view.nextStep, /again|reload/i);
+    assert.match(view.nextStep, /recarga|otra vez/i);
   }
 });
 
@@ -459,7 +459,7 @@ test("a stale id the box office does not know is named, and asking again will no
   assert.equal(described.kind === "unknown" ? described.retryable : true, false);
   assert.match(
     described.kind === "unknown" ? described.message : "",
-    /does not know|unknown|no ticket/i,
+    /no conoce|no responde|ninguna entrada/i,
   );
 });
 
@@ -474,9 +474,9 @@ test("an unreadable ticket is retryable, and never drawn as a stale one", () => 
 
 test("a seat reads as the venue paints it, never as a reconstructed label", () => {
   assert.equal(ticketSeatLabel({ rowLabel: "A", seatNumber: "3" }), "A3");
-  assert.equal(ticketSeatLabel({ rowLabel: "A", seatNumber: "" }), "row A");
+  assert.equal(ticketSeatLabel({ rowLabel: "A", seatNumber: "" }), "fila A");
   assert.equal(ticketSeatLabel({ rowLabel: "", seatNumber: "3" }), "3");
-  assert.equal(ticketSeatLabel({ rowLabel: "", seatNumber: "" }), "unknown seat");
+  assert.equal(ticketSeatLabel({ rowLabel: "", seatNumber: "" }), "butaca desconocida");
   assert.equal(ticketSeatLabel({ rowLabel: " A ", seatNumber: " 3 " }), "A3");
 });
 
@@ -563,11 +563,14 @@ test("globals.css no longer carries the rules only the ticket screen used", () =
 });
 
 test("the QR image is named after the ticket and the PDF is a link", () => {
+  // The stub is where the image and the code now live, so the two promises moved with
+  // them: the entry code is drawn on the paper, and the page keeps the PDF as an anchor.
+  const stub = sourceAt("../components/ticket-stub.tsx");
   const view = sourceAt("../app/tickets/[ticketID]/ticket-view.tsx");
 
   // An `alt` of "QR" names the object, not the ticket: a screen reader user hears the
   // same thing for every image on the page.
-  assert.match(view, /alt=\{`[^`]*\$\{ticket\.ticketId\}/, "the alt must name the ticket");
+  assert.match(stub, /alt=\{`[^`]*\$\{ticketId\}/, "the alt must name the ticket");
   // A link, not a JS download: the browser follows the API's short-lived redirect and
   // the page never handles the bytes.
   assert.match(view, /href=\{pdfUrl\}/, "the PDF is an anchor target");

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de diseño — web de cinema-ticketing</title>
+<style>
+  /* Tokens copied verbatim from apps/web/src/app/globals.css. This board is the reference
+     rendering of design/system.md; it is not the redesign. */
+  :root {
+    --color-bg: #f6f8fa;
+    --color-surface: #ffffff;
+    --color-surface-muted: #eaeff5;
+    --color-text: #141c26;
+    --color-text-muted: #4b5561;
+    --color-border: #c6cfda;
+    --color-border-strong: #66727f;
+    --color-accent: #1b4fa8;
+    --color-accent-hover: #143d85;
+    --color-on-accent: #ffffff;
+    --color-danger: #b3261e;
+    --color-danger-text: #b3261e;
+    --color-on-danger: #ffffff;
+    --color-neutral-bg: #e9edf2; --color-neutral-fg: #37414c;
+    --color-info-bg: #e7effd;    --color-info-fg: #1b4fa8;
+    --color-success-bg: #e4f3e9; --color-success-fg: #0f5c28;
+    --color-warning-bg: #fdf3d7; --color-warning-fg: #6f4300;
+    --color-danger-bg: #fdecea;  --color-danger-fg: #b3261e;
+    --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+    --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem; --space-8: 4rem;
+    --radius-sm: .375rem; --radius-md: .5rem; --radius-lg: .75rem; --radius-pill: 999px;
+    --font-family-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-family-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-size-xs: .75rem; --font-size-sm: .875rem; --font-size-base: 1rem;
+    --font-size-lg: 1.125rem; --font-size-xl: 1.375rem; --font-size-2xl: 1.75rem; --font-size-3xl: 2.125rem;
+    --line-height-tight: 1.2; --line-height-normal: 1.5;
+    --font-weight-normal: 400; --font-weight-medium: 500; --font-weight-bold: 600;
+    --focus-ring-color: var(--color-accent); --focus-ring-width: 2px; --focus-ring-offset: 2px;
+    --shadow-1: 0 1px 2px rgb(16 24 32 / 8%);
+    --shadow-2: 0 4px 16px rgb(16 24 32 / 12%);
+    --layout-max-width: 64rem; --layout-gutter: var(--space-5); --measure: 74ch;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--color-bg); color: var(--color-text);
+    font-family: var(--font-family-sans); font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+  }
+  h1, h2, h3 { line-height: var(--line-height-tight); font-weight: var(--font-weight-bold); margin: 0; }
+  h1 { font-size: var(--font-size-2xl); }
+  h2 { font-size: var(--font-size-lg); }
+  h3 { font-size: var(--font-size-base); }
+  p { margin: 0; }
+  a { color: var(--color-accent); text-underline-offset: .2em; }
+  :focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring-color); outline-offset: var(--focus-ring-offset); border-radius: 2px; }
+
+  .page { max-width: var(--layout-max-width); margin: 0 auto; padding: var(--space-6) var(--layout-gutter) var(--space-8);
+          display: flex; flex-direction: column; gap: var(--space-7); }
+  .eyebrow { margin: 0 0 var(--space-1); font-size: var(--font-size-xs); font-weight: var(--font-weight-bold);
+             letter-spacing: .08em; text-transform: uppercase; color: var(--color-text-muted); }
+  .lead { max-width: var(--measure); color: var(--color-text-muted); }
+
+  .grid { display: grid; gap: var(--space-4); }
+  .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  .card { background: var(--color-surface); border: 1px solid var(--color-border);
+          border-radius: var(--radius-lg); padding: var(--space-5); box-shadow: var(--shadow-1); }
+
+  .swatch { border-radius: var(--radius-md); border: 1px solid var(--color-border); overflow: hidden; }
+  .swatch__chip { height: 72px; display: flex; align-items: flex-end; padding: var(--space-2); }
+  .swatch__body { padding: var(--space-2) var(--space-3) var(--space-3); background: var(--color-surface); }
+  .swatch__name { font-family: var(--font-family-mono); font-size: var(--font-size-sm); }
+  .swatch__value { font-family: var(--font-family-mono); font-size: var(--font-size-xs); color: var(--color-text-muted); text-transform: uppercase; }
+
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4);
+         font: inherit; font-weight: var(--font-weight-bold); line-height: var(--line-height-tight);
+         border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; text-decoration: none; }
+  .btn--primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
+  .btn--secondary { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border-strong); }
+  .btn--danger { background: var(--color-danger); color: var(--color-on-danger); border-color: var(--color-danger); }
+  .btn[aria-disabled="true"] { background: var(--color-surface-muted); color: var(--color-text-muted);
+                               border-color: var(--color-border); cursor: not-allowed; }
+
+  .badge { display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 0 var(--space-2);
+           font-size: var(--font-size-xs); font-weight: var(--font-weight-bold); line-height: 1.6;
+           border: 1px solid currentColor; border-radius: var(--radius-sm);
+           background: var(--color-neutral-bg); color: var(--color-neutral-fg); }
+  .badge--pill { border-radius: var(--radius-pill); padding: 0 var(--space-3); }
+  .badge--info { background: var(--color-info-bg); color: var(--color-info-fg); }
+  .badge--success { background: var(--color-success-bg); color: var(--color-success-fg); }
+  .badge--warning { background: var(--color-warning-bg); color: var(--color-warning-fg); }
+  .badge--danger { background: var(--color-danger-bg); color: var(--color-danger-fg); }
+
+  .field { display: flex; flex-direction: column; gap: var(--space-1); }
+  .field__label { font-size: var(--font-size-sm); font-weight: var(--font-weight-bold); }
+  .field__input { font: inherit; color: var(--color-text); background: var(--color-surface);
+                  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+                  padding: var(--space-2) var(--space-3); max-width: 24rem; }
+  .field__hint { font-size: var(--font-size-sm); color: var(--color-text-muted); }
+
+  .alert { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4);
+           border: 1px solid var(--color-neutral-fg); border-left-width: 4px;
+           border-radius: var(--radius-md); background: var(--color-neutral-bg); color: var(--color-neutral-fg); }
+  .alert__title { display: flex; gap: var(--space-2); font-weight: var(--font-weight-bold); }
+  .alert--info { background: var(--color-info-bg); border-color: var(--color-info-fg); color: var(--color-info-fg); }
+  .alert--error { background: var(--color-danger-bg); border-color: var(--color-danger-fg); color: var(--color-danger-fg); }
+
+  .empty-state { padding: var(--space-5); border: 1px dashed var(--color-border-strong);
+                 border-radius: var(--radius-md); background: var(--color-surface-muted); }
+  .skeleton { border-radius: var(--radius-sm); background: var(--color-surface-muted);
+              border: 1px solid var(--color-border); height: 12px; }
+  .skeleton--lg { height: 1.5rem; }
+
+  .row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: var(--space-3); }
+  .type-row { display: flex; align-items: baseline; gap: var(--space-4); padding-block: var(--space-2);
+              border-bottom: 1px solid var(--color-border); }
+  .type-row__meta { font-family: var(--font-family-mono); font-size: var(--font-size-xs);
+                    color: var(--color-text-muted); min-width: 17rem; }
+  .space-track { display: flex; align-items: flex-end; gap: var(--space-3); }
+  .space-track > div { display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+                       font-family: var(--font-family-mono); font-size: var(--font-size-xs);
+                       color: var(--color-text-muted); }
+  .space-bar { background: var(--color-accent); border-radius: 2px 2px 0 0; width: 26px; }
+  .radius-demo { width: 92px; height: 68px; background: var(--color-info-bg); border: 1px solid var(--color-info-fg);
+                 display: grid; place-items: center; font-family: var(--font-family-mono); font-size: var(--font-size-xs);
+                 color: var(--color-info-fg); }
+  .shadow-demo { background: var(--color-surface); border: 1px solid var(--color-border);
+                 border-radius: var(--radius-lg); padding: var(--space-4); display: grid; place-items: center;
+                 font-family: var(--font-family-mono); font-size: var(--font-size-xs); color: var(--color-text-muted); }
+  .mono { font-family: var(--font-family-mono); font-size: var(--font-size-sm); }
+  .note { font-size: var(--font-size-sm); color: var(--color-text-muted); max-width: var(--measure); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<main class="page" id="main-content">
+  <header>
+    <p class="eyebrow">Sistema de diseño · sincronizado con apps/web/src/app/globals.css</p>
+    <h1>cinema-ticketing — tokens y componentes</h1>
+    <p class="lead" style="margin-top: var(--space-2)">El aspecto que la aplicación web tiene hoy: una paleta, una escala
+      de espaciado, una escala de radios y tres grosores. Todo lo que sigue es un valor tomado del archivo de origen; las
+      tres direcciones de rediseño están en <span class="mono">design/cinema-redesign/</span>.</p>
+  </header>
+
+  <section aria-labelledby="colour">
+    <p class="eyebrow">Color — esquema claro</p>
+    <h2 id="colour" style="margin-bottom: var(--space-4)">Superficies, texto y estados</h2>
+    <div class="grid cols-4">
+      <div class="swatch"><div class="swatch__chip" style="background:#f6f8fa"></div><div class="swatch__body"><div class="swatch__name">--color-bg</div><div class="swatch__value">#f6f8fa</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#ffffff"></div><div class="swatch__body"><div class="swatch__name">--color-surface</div><div class="swatch__value">#ffffff</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#eaeff5"></div><div class="swatch__body"><div class="swatch__name">--color-surface-muted</div><div class="swatch__value">#eaeff5</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#141c26"></div><div class="swatch__body"><div class="swatch__name">--color-text</div><div class="swatch__value">#141c26</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#4b5561"></div><div class="swatch__body"><div class="swatch__name">--color-text-muted</div><div class="swatch__value">#4b5561</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#c6cfda"></div><div class="swatch__body"><div class="swatch__name">--color-border</div><div class="swatch__value">#c6cfda</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#66727f"></div><div class="swatch__body"><div class="swatch__name">--color-border-strong</div><div class="swatch__value">#66727f</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#1b4fa8"></div><div class="swatch__body"><div class="swatch__name">--color-accent</div><div class="swatch__value">#1b4fa8</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#143d85"></div><div class="swatch__body"><div class="swatch__name">--color-accent-hover</div><div class="swatch__value">#143d85</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#b3261e"></div><div class="swatch__body"><div class="swatch__name">--color-danger</div><div class="swatch__value">#b3261e</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#e9edf2"></div><div class="swatch__body"><div class="swatch__name">--color-neutral-bg</div><div class="swatch__value">#e9edf2</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#e7effd"></div><div class="swatch__body"><div class="swatch__name">--color-info-bg</div><div class="swatch__value">#e7effd</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#e4f3e9"></div><div class="swatch__body"><div class="swatch__name">--color-success-bg</div><div class="swatch__value">#e4f3e9</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#fdf3d7"></div><div class="swatch__body"><div class="swatch__name">--color-warning-bg</div><div class="swatch__value">#fdf3d7</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#fdecea"></div><div class="swatch__body"><div class="swatch__name">--color-danger-bg</div><div class="swatch__value">#fdecea</div></div></div>
+      <div class="swatch"><div class="swatch__chip" style="background:#0d1117"></div><div class="swatch__body"><div class="swatch__name">dark --color-bg</div><div class="swatch__value">#0d1117 · @media</div></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="type">
+    <p class="eyebrow">Tipografía</p>
+    <h2 id="type" style="margin-bottom: var(--space-3)">Una sans, una mono, seis tamaños</h2>
+    <div>
+      <div class="type-row"><span class="type-row__meta">--font-size-3xl · 2.125rem</span><span style="font-size:2.125rem;font-weight:600;line-height:1.2">Your tickets</span></div>
+      <div class="type-row"><span class="type-row__meta">--font-size-2xl · 1.75rem</span><span style="font-size:1.75rem;font-weight:600;line-height:1.2">Now showing</span></div>
+      <div class="type-row"><span class="type-row__meta">--font-size-xl · 1.375rem</span><span style="font-size:1.375rem;font-weight:600;line-height:1.2">Choose your seats</span></div>
+      <div class="type-row"><span class="type-row__meta">--font-size-lg · 1.125rem</span><span style="font-size:1.125rem;font-weight:600;line-height:1.2">Cartas desde el puerto</span></div>
+      <div class="type-row"><span class="type-row__meta">--font-size-base · 1rem</span><span>Row B · seats 4 and 5 · 1250 each</span></div>
+      <div class="type-row"><span class="type-row__meta">--font-size-sm · .875rem</span><span style="font-size:.875rem;color:#4b5561">Your hold ends in 09:41. Unpaid seats return to the room.</span></div>
+      <div class="type-row" style="border-bottom:0"><span class="type-row__meta">--font-size-xs · .75rem</span><span style="font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#4b5561">Checkout · Sala 1</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="scale">
+    <p class="eyebrow">Espaciado y radios</p>
+    <h2 id="scale" style="margin-bottom: var(--space-4)">Ocho pasos, cuatro radios</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="space-track">
+          <div><div class="space-bar" style="height:4px"></div>1<br>4px</div>
+          <div><div class="space-bar" style="height:8px"></div>2<br>8px</div>
+          <div><div class="space-bar" style="height:12px"></div>3<br>12px</div>
+          <div><div class="space-bar" style="height:16px"></div>4<br>16px</div>
+          <div><div class="space-bar" style="height:24px"></div>5<br>24px</div>
+          <div><div class="space-bar" style="height:32px"></div>6<br>32px</div>
+          <div><div class="space-bar" style="height:48px"></div>7<br>48px</div>
+          <div><div class="space-bar" style="height:64px"></div>8<br>64px</div>
+        </div>
+      </div>
+      <div class="card row" style="gap: var(--space-4)">
+        <div class="radius-demo" style="border-radius:6px">sm · 6</div>
+        <div class="radius-demo" style="border-radius:8px">md · 8</div>
+        <div class="radius-demo" style="border-radius:12px">lg · 12</div>
+        <div class="radius-demo" style="border-radius:999px">pill</div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="components">
+    <p class="eyebrow">Componentes</p>
+    <h2 id="components" style="margin-bottom: var(--space-4)">El vocabulario que comparten todas las pantallas</h2>
+    <div class="grid cols-2">
+      <div class="card stack">
+        <h3>Botones</h3>
+        <div class="row">
+          <a class="btn btn--primary" href="#components">Reservar 2 butacas</a>
+          <a class="btn btn--secondary" href="#components">Cambiar butacas</a>
+          <button class="btn btn--danger" type="button">Anular entrada</button>
+          <button class="btn btn--primary" type="button" aria-disabled="true">Agotada</button>
+        </div>
+        <p class="note">Tres variantes, un radio, etiqueta en negrita. El estado desactivado conserva su ancho y lo anuncia la plataforma.</p>
+      </div>
+      <div class="card stack">
+        <h3>Etiquetas de estado</h3>
+        <div class="row">
+          <span class="badge">Reservada</span>
+          <span class="badge badge--pill badge--info">En venta</span>
+          <span class="badge badge--success"><span aria-hidden="true">✓</span> Pagada</span>
+          <span class="badge badge--warning"><span aria-hidden="true">!</span> Caduca en 2 min</span>
+          <span class="badge badge--danger"><span aria-hidden="true">✕</span> Ya usada</span>
+        </div>
+        <p class="note">La etiqueta es el estado; el glifo es decorativo y el tono solo lo refuerza.</p>
+      </div>
+      <div class="card stack">
+        <h3>Campo</h3>
+        <label class="field" for="demo-email">
+          <span class="field__label">Correo para las entradas</span>
+          <input class="field__input" id="demo-email" type="email" value="nuria@example.com">
+          <span class="field__hint">Enviamos un enlace que abre todas las butacas del pedido.</span>
+        </label>
+      </div>
+      <div class="card stack">
+        <h3>Avisos</h3>
+        <div class="alert alert--info"><span class="alert__title"><span aria-hidden="true">i</span> Dos butacas reservadas</span><span>Son tuyas hasta las 19:12. Después, la sala las recupera.</span></div>
+        <div class="alert alert--error"><span class="alert__title"><span aria-hidden="true">✕</span> La tarjeta fue rechazada</span><span>No se ha cobrado nada. Las butacas siguen reservadas hasta las 19:12.</span></div>
+      </div>
+      <div class="card stack">
+        <h3>Estado vacío y esqueleto</h3>
+        <div class="empty-state"><strong>No hay sesiones en esta fecha</strong><p class="note" style="margin-top:var(--space-1)">Elige otro día arriba o mira la semana completa.</p></div>
+        <div class="stack" style="gap: var(--space-2)"><div class="skeleton skeleton--lg" style="width:60%"></div><div class="skeleton" style="width:100%"></div><div class="skeleton" style="width:80%"></div></div>
+      </div>
+      <div class="card stack">
+        <h3>Elevación y foco</h3>
+        <div class="row" style="gap: var(--space-5)">
+          <div class="shadow-demo" style="box-shadow: var(--shadow-1)">--shadow-1</div>
+          <div class="shadow-demo" style="box-shadow: var(--shadow-2)">--shadow-2</div>
+        </div>
+        <p class="note">Dos niveles. Solo decoración: nada depende de una sombra para entenderse. El anillo de foco son 2px de acento más 2px de separación, en <span class="mono">:focus-visible</span>.</p>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

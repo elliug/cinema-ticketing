@@ -130,11 +130,11 @@ test("a refused cursor offers the catalogue from the beginning, in words", () =>
 
   // A sentence carries the state; greyscale and a screen reader read the same thing, so no
   // colour is the only cue.
-  assert.match(stale, /no longer valid/);
+  assert.match(stale, /ya no vale/);
   // A real link back to the catalogue's own address — the first page, which is the one
   // without a cursor — rather than a retry that would send the same cursor again.
   assert.match(stale, /<Link href=\{CATALOGUE_PATH\}>/);
-  assert.match(stale, /from the beginning/);
+  assert.match(stale, /desde el principio/);
   // It does not pretend to be page one: the screen says what happened instead of quietly
   // rendering the first page as if that were the page the link named.
   assert.match(SOURCE, /isRefusedCursor\(result\.error, cursor\)/);

@@ -116,12 +116,12 @@ test("a closed link says links expire on purpose and offers the way forward", ()
 
   // The honest version names the rule rather than an incident: nothing here says the
   // reader's purchase is gone.
-  assert.match(view.message, /expire/i);
-  assert.match(view.message, /deliberate/i);
-  assert.match(view.nextStep, /My tickets/);
-  assert.match(view.nextStep, /confirmation/);
+  assert.match(view.message, /caduc/i);
+  assert.match(view.message, /a propósito/i);
+  assert.match(view.nextStep, /Mis entradas/);
+  assert.match(view.nextStep, /confirmación/);
   // A closed link is not a reason to buy again, and it must not read like one.
-  assert.doesNotMatch(view.message, /buy|purchase again|not found/i);
+  assert.doesNotMatch(view.message, /comprar|compra otra vez|no encontrado/i);
 });
 
 // ── Our own failure ─────────────────────────────────────────────────────────
@@ -136,9 +136,9 @@ test("an unreadable API reaches the retry state, never a verdict on the link", (
   assert.equal(view.retryable, true);
   assert.equal(view.problem.code, "service_unavailable");
   // Ours, said as ours: a failure to ask is not an answer about the link.
-  assert.match(view.message, /our failure/i);
-  assert.match(view.nextStep, /again/i);
-  assert.doesNotMatch(view.message, /expire|invalid|no longer opens/i);
+  assert.match(view.message, /fallo nuestro/i);
+  assert.match(view.nextStep, /otra vez/i);
+  assert.doesNotMatch(view.message, /caduc|inválid|ya no abre/i);
 });
 
 test("a network failure and a broken answer are the same retry, not a closed link", () => {
@@ -173,25 +173,25 @@ test("a network failure and a broken answer are the same retry, not a closed lin
 
 test("what this tab kept is said in words, with no claim about an account", () => {
   const writing = describeLinkRetention("writing", 3);
-  assert.match(writing, /3 tickets/);
+  assert.match(writing, /3 entradas/);
   assert.match(writing, /…$/);
 
   const kept = describeLinkRetention("kept", 1);
-  assert.match(kept, /1 ticket/);
-  assert.match(kept, /not an account/);
+  assert.match(kept, /Esa entrada ya está en Mis entradas/);
+  assert.match(kept, /no es una cuenta/);
   // D2/S2: the address was never verified, and this page never saw one.
-  assert.doesNotMatch(`${writing} ${kept}`, /verified|sent to|your email/i);
+  assert.doesNotMatch(`${writing} ${kept}`, /verificad|enviado a tu|tu correo/i);
 });
 
 test("a refused storage says the tickets are still openable from their links", () => {
   const refused = describeLinkRetention("refused", 2);
 
-  assert.match(refused, /refused/i);
-  assert.match(refused, /2 tickets/);
+  assert.match(refused, /negó/i);
+  assert.match(refused, /2 entradas/);
   // The consequence of a refused write is the list, never the tickets (S8): each one is
   // still reachable from the link this page prints.
-  assert.match(refused, /unaffected/i);
-  assert.match(refused, /link/i);
+  assert.match(refused, /no se ven afectadas/i);
+  assert.match(refused, /enlace/i);
 });
 
 // ── What the route itself promises ──────────────────────────────────────────

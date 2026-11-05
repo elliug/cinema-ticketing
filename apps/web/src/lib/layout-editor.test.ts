@@ -6,7 +6,7 @@
 // three seats and a row with one seat are both normal.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AdminLayout } from "./admin-api.ts";
+import type { AdminLayout, SeatKind } from "./admin-api.ts";
 import type { EditorLayout } from "./layout-editor.ts";
 import {
   addRow,
@@ -21,6 +21,7 @@ import {
   setSeatKind,
   setSeatNumber,
   setSeatPosition,
+  seatKindLabel,
   toRowPayloads,
   toggleSeatEnabled,
   validateForPublish,
@@ -82,6 +83,16 @@ function details(layout: EditorLayout): string[] {
 function publishDetails(layout: EditorLayout): string[] {
   return validateForPublish(layout).map(layoutIssueDetail);
 }
+
+test("a seat kind is printed in the word an operator reads", () => {
+  // The stored value is the column's and travels unchanged; what this adds is the word the
+  // editor's select shows, in the same Castilian as every other word on the screen.
+  assert.equal(seatKindLabel("standard"), "estándar");
+  assert.equal(seatKindLabel("accessible"), "accesible");
+  assert.equal(seatKindLabel("companion"), "acompañante");
+  // A kind the column grew later is printed as served, never blanked.
+  assert.equal(seatKindLabel("recliner" as SeatKind), "recliner");
+});
 
 test("fromLayout keeps rows with different seat counts without padding", () => {
   const layout = editor();

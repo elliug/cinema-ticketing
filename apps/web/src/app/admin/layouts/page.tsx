@@ -42,25 +42,27 @@ export default async function LayoutsPage({ searchParams }: LayoutsPageProps) {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Local administration · M3.5"
-        title="Layout editor"
+        eyebrow="Administración local · M3.5"
+        title="Editor de planos"
         description={
           <>
-            Rows and seats of one layout version. A draft can be edited and published, and a
-            published version is immutable — clone it to change it. Works in local
-            development only: the API must run with local administration enabled, and this
-            page needs the same <code>{ADMIN_TOKEN_ENV}</code> token as the API.
+            Filas y butacas de una versión del plano. Un borrador se puede editar y publicar,
+            y una versión publicada es inmutable — clónala para cambiarla. Sólo funciona en
+            desarrollo local: la API tiene que correr con la administración local activada, y
+            esta página necesita el mismo <code>{ADMIN_TOKEN_ENV}</code> que la API.
           </>
         }
       />
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Open a layout version</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">
+            Abrir una versión del plano
+          </h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Every version of a room is listed in{" "}
-            <Link href="/admin/venues">cinemas, rooms and layouts</Link>, where its own link opens it
-            here. An identifier can also be typed directly.
+            Todas las versiones de una sala están en{" "}
+            <Link href="/admin/venues">cines, salas y planos</Link>, donde su propio enlace la
+            abre aquí. También se puede escribir un identificador directamente.
           </p>
         </CardHeader>
         <CardContent>
@@ -68,14 +70,14 @@ export default async function LayoutsPage({ searchParams }: LayoutsPageProps) {
             className="flex flex-wrap items-end gap-4"
             action="/admin/layouts"
             method="get"
-            aria-label="Open a layout version"
+            aria-label="Abrir una versión del plano"
           >
             <div className="flex min-w-72 flex-col gap-1.5">
-              <Label htmlFor="layout-id">Layout version id</Label>
+              <Label htmlFor="layout-id">Identificador de la versión del plano</Label>
               <Input id="layout-id" name="layoutId" defaultValue={layoutId} />
             </div>
             <Button type="submit" variant="outline">
-              Open layout
+              Abrir el plano
             </Button>
           </form>
         </CardContent>
@@ -85,8 +87,9 @@ export default async function LayoutsPage({ searchParams }: LayoutsPageProps) {
         <Card>
           <CardContent className="pt-5">
             <p className="m-0 max-w-prose text-sm text-muted-foreground">
-              Enter a layout version id to view and edit its rows. Rows may hold different
-              seat counts, so one row can have a single seat while the next has twelve.
+              Escribe el identificador de una versión del plano para ver y editar sus filas.
+              Las filas pueden tener distinto número de butacas, así que una fila puede tener
+              una sola butaca y la siguiente doce.
             </p>
           </CardContent>
         </Card>
@@ -116,7 +119,8 @@ async function renderLayout(layoutId: string) {
  * The layout could not be read, printed as the API answered it.
  *
  * A version this page cannot read is not an empty draft: the code, the HTTP status and the
- * API's own detail are printed, and nothing is offered for editing.
+ * API's own detail are printed, and nothing is offered for editing. The API's detail stays in
+ * the API's own words: it is the box office's sentence, not this screen's.
  */
 function ProblemCard({ problem }: { problem: AdminProblem }) {
   return (
@@ -129,7 +133,7 @@ function ProblemCard({ problem }: { problem: AdminProblem }) {
           className="flex flex-col gap-2"
         >
           <h2 id="layout-problem" className="m-0 text-lg leading-tight font-semibold">
-            The layout could not be loaded
+            No se pudo cargar el plano
           </h2>
           <AlertDescription className="flex flex-col gap-1">
             <p className="m-0">
@@ -137,9 +141,9 @@ function ProblemCard({ problem }: { problem: AdminProblem }) {
             </p>
             <p className="m-0">{problem.detail}</p>
             <p className="m-0">
-              This surface works only in local development: the API must run with local
-              administration enabled, and this page needs the same{" "}
-              <code>{ADMIN_TOKEN_ENV}</code> token as the API.
+              Esta pantalla sólo funciona en desarrollo local: la API tiene que correr con la
+              administración local activada, y esta página necesita el mismo{" "}
+              <code>{ADMIN_TOKEN_ENV}</code> que la API.
             </p>
           </AlertDescription>
         </Alert>

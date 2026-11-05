@@ -18,6 +18,7 @@ import type {
   AdminResult,
   AdminRoom,
   AdminRoomList,
+  LayoutStatus,
 } from "./admin-api.ts";
 import type {
   CinemaFormValues,
@@ -32,6 +33,7 @@ import {
   createLayout,
   createRoom,
   layoutInput,
+  layoutStatusWord,
   readCinemas,
   readLayouts,
   readRooms,
@@ -361,17 +363,26 @@ test("summarizeLayouts states every version with its status", () => {
       id: "layout-1",
       version: 1,
       status: "published",
-      statusLabel: "published",
-      label: "v1 · published",
+      statusLabel: "publicada",
+      label: "v1 · publicada",
     },
     {
       id: "layout-2",
       version: 2,
       status: "draft",
-      statusLabel: "draft",
-      label: "v2 · draft",
+      statusLabel: "borrador",
+      label: "v2 · borrador",
     },
   ]);
+});
+
+test("a layout version's status is a word a reader understands, and only the word moves", () => {
+  // The stored value is what the API serves and what this screen sends back; the label is
+  // what a person reads on the badge and in the scheduling select.
+  assert.equal(layoutStatusWord("published"), "publicada");
+  assert.equal(layoutStatusWord("draft"), "borrador");
+  // A value the union did not anticipate is printed verbatim, never mapped to a silence.
+  assert.equal(layoutStatusWord("archived" as LayoutStatus), "archived");
 });
 
 test("publishedLayoutOptions offers only the versions a screening may use", () => {

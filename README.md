@@ -194,6 +194,7 @@ Three properties worth knowing before the first deploy:
 | `db/seeds` | Development-only seed data |
 | `apps/api/cmd/bootstrap` | Readiness wait, development seed and ticket bucket creation |
 | `scripts` | Migration and M0 smoke verification |
+| `design/` | the design system (`system.md`, `system.html`) and the artboard directions compared before the redesign |
 | `odd/tasks` | ODD specifications, task state, and evidence |
 | `ARCHITECTURE.md` | Approved system architecture and milestone scope |
 
@@ -373,6 +374,13 @@ its own.
 
 M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and administration on top of that.
 
+**The interface is Castilian Spanish, in one dark scheme.** Screen copy, the sentences the rules
+produce, and the answers the door gives are all Spanish; there is no `prefers-color-scheme` branch
+and no light theme, because the redesign chose the dark room everywhere. Poster art is drawn in
+the application from the film title — no image is fetched — and every amount is formatted by one
+formatter, `lib/receipt.ts`, from the cents the API serves. The directions this replaced are kept
+in `design/cinema-redesign/`, next to the design system they were drawn against.
+
 | Surface | What it does |
 |---|---|
 | `/events` | the catalogue: screenings on sale, the venue's own hour, price per seat, seats available — one page at a time, with the cursor in the address so the next page is a link a buyer can bookmark, share and reload |
@@ -385,7 +393,7 @@ M3 shipped the purchase path over HTTP; M3.5 put a product on top of it, and adm
 Two things this build is honest about:
 
 - **Signing in is optional, and it protects the list rather than the tickets.** An account exists once an address is proved by a link mailed to it — a link that expires in minutes and works once. It adds exactly one thing: `/tickets` becomes the account's list, read from the box office, so it follows you to another browser, another device and a cleared site. Nobody needs an account to buy a ticket or to open one, and a ticket is opened by its own link, which admits whoever holds it — so login never protected a link already handed out.
-- **Without a session, "My tickets" is what this tab kept**, and it says so. Unavailable storage says it cannot be read rather than showing an empty list, and an account is offered as the way to have a list the box office answers.
+- **Without a session, the ticket list is what this tab kept**, and it says so. Unavailable storage says it cannot be read rather than showing an empty list, and an account is offered as the way to have a list the box office answers.
 
 `make verify-m35` proves all of it in a real browser: administration creates a screening already priced and on sale in one request, then edits it through the price-and-status form; a buyer picks seats with the keyboard, pays, gets a ticket whose code the server verifies and whose PDF downloads; the list survives a reload and distinguishes empty from unreadable. It runs in CI as its own job, one stack, in Chromium and Firefox.
 

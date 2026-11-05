@@ -156,15 +156,15 @@ test("no shipped source mentions the demonstration session any more", () => {
 test("the header offers the way in and claims nothing about who is signed in", () => {
   const source = sourceOf("site-header");
 
-  // The label is the whole affordance. "Sign in" is a link to the screen that asks for one;
-  // "signed in as Ana" would need the cookie, which this component cannot read, and a
+  // The label is the whole affordance. "Iniciar sesión" is a link to the screen that asks for
+  // one; "sesión de Ana" would need the cookie, which this component cannot read, and a
   // client-side guess would hydrate differently from the server's HTML.
   assert.match(
     source,
-    /href=\{SIGN_IN_PATH\}[\s\S]{0,120}>\s*Sign in\s*</,
+    /href=\{SIGN_IN_PATH\}[\s\S]{0,120}>\s*Iniciar sesión\s*</,
     "site-header.tsx must link to the sign-in screen, labelled plainly",
   );
-  for (const claim of ["Signed in as", "Signed out", "Sign out", "Your account"]) {
+  for (const claim of ["Sesión de", "Sesión cerrada", "Cerrar sesión", "Tu cuenta"]) {
     assert.equal(
       source.includes(claim),
       false,
@@ -208,10 +208,10 @@ test("the Administration entry owns its whole section, and only it declares a pr
   const source = sourceOf("site-header");
 
   assert.ok(
-    /\{ label: "Administration", href: "\/admin\/venues", prefix: "\/admin" \}/.test(
+    /\{ label: "Administración", href: "\/admin\/venues", prefix: "\/admin" \}/.test(
       source,
     ),
-    "the Administration entry must declare the /admin prefix, because it links to one child of that section",
+    "the Administración entry must declare the /admin prefix, because it links to one child of that section",
   );
   assert.equal(
     source.match(/\bprefix: /g)?.length,
@@ -250,9 +250,9 @@ test("both ticket surfaces call the PDF what the route delivers", () => {
 
   // One exported sentence, because only one of them can be true: the download route
   // declares `Content-Disposition: attachment`, so both screens promise a download and
-  // neither calls it something else (S8).
+  // neither calls it something else (S8). It is Castilian since the Marquesina redesign.
   assert.equal(
-    library.includes('export const TICKET_PDF_LINK_LABEL = "Download the ticket PDF";'),
+    library.includes('export const TICKET_PDF_LINK_LABEL = "Descargar la entrada en PDF";'),
     true,
     "lib/issued-tickets.ts must export the one sentence both ticket surfaces print",
   );
@@ -267,7 +267,7 @@ test("both ticket surfaces call the PDF what the route delivers", () => {
       `${screen.pathname} must print the exported sentence rather than its own`,
     );
     assert.equal(
-      source.includes("Download the ticket PDF"),
+      source.includes("Descargar la entrada en PDF"),
       false,
       `${screen.pathname} must not carry a copy of the sentence: a copy is a promise that can drift`,
     );
@@ -277,13 +277,14 @@ test("both ticket surfaces call the PDF what the route delivers", () => {
 test("every navigation entry that has a screen points at it, and none is left as text", () => {
   const source = sourceOf("site-header");
 
-  // L5's rule: an entry is plain text with a "not built yet" badge until its screen
-  // exists, and the slice that builds that screen changes the href and nothing else.
-  // T7 built `/tickets`, which was the last entry still waiting for its route.
+  // L5's rule: an entry is plain text with a badge until its screen exists, and the slice
+  // that builds that screen changes the href and nothing else. T7 built `/tickets`, which
+  // was the last entry still waiting for its route. The label is Castilian since the
+  // Marquesina redesign (visual-redesign L4), and this test pins the wiring, not the words.
   assert.match(
     source,
-    /\{ label: "My tickets", href: "\/tickets" \}/,
-    'site-header.tsx must point "My tickets" at the /tickets screen T7 built',
+    /\{ label: "Mis entradas", href: "\/tickets" \}/,
+    'site-header.tsx must point "Mis entradas" at the /tickets screen T7 built',
   );
   assert.equal(
     source.includes("href: null"),

@@ -1,4 +1,5 @@
-// /admin — the index of the local administration (issue #92).
+// /admin — the index of the local administration (issue #92; Marquesina since
+// visual-redesign).
 //
 // The section had no page here: `/admin` answered 404, and the header linked straight to
 // the venue screen. An operator who wanted to create a film landed on cinemas and rooms and
@@ -12,10 +13,13 @@
 //
 // It reads nothing and calls nothing: the four screens own their data, and this page is a
 // map. That is also why it can be static — there is no configuration to fail here.
+//
+// The map is drawn as the section's own ledger: a mono numeral per step, the screen's name,
+// and the two sentences that say what it is for and what has to come before it. The numeral
+// is decoration next to an `<ol>`, which is what actually states the order to a screen reader.
 import Link from "next/link";
 
 import { PageHeader } from "@/components";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 import { ADMIN_SECTIONS } from "@/lib/admin-sections";
 
@@ -25,38 +29,38 @@ export default function AdminIndexPage() {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Local administration · M3.5"
-        title="Administration"
+        eyebrow="Administración local · M3.5"
+        title="Administración"
         description={
           <>
-            Four screens, in the order they have to be used: a cinema with its own time zone,
-            the rooms inside it and the layout version their seats come from, then the film,
-            then the screening that binds the film to a room at a price. Works in local
-            development only.
+            Cuatro pantallas, en el orden en que hay que usarlas: un cine con su propia zona
+            horaria, las salas que tiene dentro y la versión del plano de la que salen sus
+            butacas, después la película y por último la sesión que ata la película a una sala
+            con un precio. Sólo funciona en desarrollo local.
           </>
         }
       />
 
-      <ol className="m-0 grid list-none gap-4 p-0 sm:grid-cols-2">
-        {ADMIN_SECTIONS.map((section) => (
-          <li key={section.href} className="m-0">
-            <Card className="h-full">
-              <CardHeader>
-                <h2 className="m-0 text-lg leading-tight font-semibold">
-                  <Link href={section.href} className="hover:underline">
-                    {section.label}
-                  </Link>
-                </h2>
-                <p className="m-0 max-w-prose text-sm text-muted-foreground">
-                  {section.purpose}
-                </p>
-              </CardHeader>
-              <CardContent>
-                <p className="m-0 max-w-prose text-sm text-muted-foreground">
-                  {section.prerequisite}
-                </p>
-              </CardContent>
-            </Card>
+      <ol className="m-0 flex list-none flex-col gap-0 border-t border-border p-0">
+        {ADMIN_SECTIONS.map((section, index) => (
+          <li
+            key={section.href}
+            className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-border py-4"
+          >
+            <span className="ledger__num text-sm text-muted-foreground">
+              {index + 1}
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <h2 className="m-0 text-lg leading-tight font-semibold">
+                <Link href={section.href} className="hover:underline">
+                  {section.label}
+                </Link>
+              </h2>
+              <p className="m-0 max-w-prose text-sm">{section.purpose}</p>
+              <p className="m-0 max-w-prose text-sm text-muted-foreground">
+                {section.prerequisite}
+              </p>
+            </div>
           </li>
         ))}
       </ol>

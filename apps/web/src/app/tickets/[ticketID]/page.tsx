@@ -99,8 +99,6 @@ async function TicketSurface({ ticketId }: { ticketId: string }) {
     ? { kind: "verified", verification: verification.value }
     : { kind: "refused", problem: verification.error };
 
-  const title =
-    ticket.event.filmTitle.trim() === "" ? "Your ticket" : ticket.event.filmTitle;
   const venue = [ticket.event.cinemaName, ticket.event.roomName]
     .map((part) => part.trim())
     .filter((part) => part !== "")
@@ -109,10 +107,12 @@ async function TicketSurface({ ticketId }: { ticketId: string }) {
   return (
     <>
       <PageHeader
-        eyebrow="Ticket · M3.5"
-        title={title}
-        description={`${venue === "" ? "Venue not served." : `${venue}.`} Times are the venue's own clock. This page is opened by the ticket's own link: nothing here checks who you are, and the link is what opens it. A purchase that left an address is also mailed a link to this ticket, and that link expires, so the PDF is still downloaded here.`}
+        eyebrow="Entrada"
+        title="Tu entrada"
+        description={`${venue === "" ? "La taquilla no sirvió ni el cine ni la sala." : `${venue}.`} La hora es la del propio local. Esta página se abre con el enlace de la propia entrada: nada aquí comprueba quién eres, y el enlace es lo que la abre. Una compra que dejó una dirección recibió también un enlace a esta entrada, y ese enlace caduca, así que el PDF se sigue descargando aquí.`}
       />
+      {/* The film is the stub's own heading, so the page's one `h1` names the screen and the
+          paper below names what it is for. */}
       <TicketView
         ticket={ticket}
         checked={checked}
@@ -129,25 +129,25 @@ function MissingTicket() {
   return (
     <>
       <PageHeader
-        eyebrow="Ticket · M3.5"
-        title="Your ticket"
-        description="This address does not name a ticket, so there is nothing to read."
+        eyebrow="Entrada"
+        title="Tu entrada"
+        description="Esta dirección no nombra ninguna entrada, así que no hay nada que leer."
       />
       <Alert variant="destructive" role="alert" aria-labelledby="ticket-missing">
         <h2 id="ticket-missing" className="m-0 text-base font-semibold">
-          This address names no ticket
+          Esta dirección no nombra ninguna entrada
         </h2>
         <AlertDescription className="flex flex-col gap-2">
           <p className="m-0">
-            A ticket is opened by its own identifier. Open it from the link your payment
-            returned, or from the list of tickets this browser kept.
+            Una entrada se abre por su propio identificador. Ábrela desde el enlace que devolvió
+            tu pago, o desde la lista de entradas que guardó este navegador.
           </p>
           <div className="flex flex-wrap gap-2 pt-1">
             <Button asChild size="sm">
-              <Link href="/tickets">My tickets</Link>
+              <Link href="/tickets">Mis entradas</Link>
             </Button>
             <Button asChild variant="outline" size="sm">
-              <Link href="/events">See what is on sale</Link>
+              <Link href="/events">Ver qué hay a la venta</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -176,9 +176,9 @@ function TicketReadProblem({
   return (
     <>
       <PageHeader
-        eyebrow="Ticket · M3.5"
-        title="Your ticket"
-        description="The box office was asked for this ticket, and the answer did not describe one."
+        eyebrow="Entrada"
+        title="Tu entrada"
+        description="La taquilla fue preguntada por esta entrada, y la respuesta no describió ninguna."
       />
       <Alert
         variant="destructive"
@@ -187,7 +187,7 @@ function TicketReadProblem({
         className="flex flex-col gap-2"
       >
         <h2 id="ticket-problem" className="m-0 text-base font-semibold">
-          {row.kind === "unknown" ? row.headline : "The ticket could not be loaded"}
+          {row.kind === "unknown" ? row.headline : "No se pudo cargar la entrada"}
         </h2>
         <AlertDescription className="flex flex-col gap-2">
           <p className="m-0">
@@ -197,16 +197,16 @@ function TicketReadProblem({
           <p className="m-0">
             {row.kind === "unknown" || row.kind === "unavailable"
               ? row.nextStep
-              : "This page does not interpret the refusal into a verdict about the ticket."}
+              : "Esta página no interpreta el rechazo como un veredicto sobre la entrada."}
           </p>
           <div className="flex flex-wrap gap-2 pt-1">
             {row.kind === "unavailable" ? (
               <Button asChild size="sm">
-                <Link href={`/tickets/${encodeURIComponent(ticketId)}`}>Ask again</Link>
+                <Link href={`/tickets/${encodeURIComponent(ticketId)}`}>Preguntar otra vez</Link>
               </Button>
             ) : null}
             <Button asChild variant="outline" size="sm">
-              <Link href="/tickets">My tickets</Link>
+              <Link href="/tickets">Mis entradas</Link>
             </Button>
           </div>
         </AlertDescription>
@@ -226,14 +226,14 @@ function TicketLoading() {
   return (
     <>
       <PageHeader
-        eyebrow="Ticket · M3.5"
-        title="Your ticket"
-        description="Reading the ticket, its screening and its code from the box office."
+        eyebrow="Entrada"
+        title="Tu entrada"
+        description="Leyendo de la taquilla la entrada, su sesión y su código."
       />
       <section aria-labelledby="ticket-loading" className="flex flex-col gap-3">
-        <h2 id="ticket-loading">Your ticket</h2>
+        <h2 id="ticket-loading">Tu entrada</h2>
         <p role="status" className="m-0 max-w-prose">
-          <span className="text-muted-foreground">Loading the ticket…</span>
+          <span className="text-muted-foreground">Cargando la entrada…</span>
         </p>
         <Card aria-hidden="true" className="flex flex-col gap-3 p-5">
           {[0, 1, 2, 3].map((row) => (

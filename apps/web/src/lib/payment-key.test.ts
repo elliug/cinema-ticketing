@@ -280,8 +280,8 @@ test("an approved answer is a purchase with tickets, and its key is spent", () =
   assert.equal(outcome.retryable, false);
   assert.equal(outcome.keyDisposition, "discard");
   // A payment answer reports tickets; nothing here claims one admits its holder.
-  assert.match(outcome.message, /ticket/);
-  assert.doesNotMatch(`${outcome.message} ${outcome.nextStep}`, /\bvalid\b/i);
+  assert.match(outcome.message, /entrada/);
+  assert.doesNotMatch(`${outcome.message} ${outcome.nextStep}`, /\bválida\b/i);
 });
 
 test("a declined answer leaves the seats held and retries with a new key", () => {
@@ -294,9 +294,9 @@ test("a declined answer leaves the seats held and retries with a new key", () =>
   assert.equal(outcome.retryable, true);
   // The refused attempt is recorded, so a retry must be a new attempt.
   assert.equal(outcome.keyDisposition, "discard");
-  assert.match(outcome.message, /no money was taken/i);
-  assert.match(outcome.nextStep, /still held/i);
-  assert.match(outcome.nextStep, /new key/i);
+  assert.match(outcome.message, /no se ha cobrado nada/i);
+  assert.match(outcome.nextStep, /siguen reservadas/i);
+  assert.match(outcome.nextStep, /clave nueva/i);
 });
 
 test("an unknown payment status is neither an approval nor a failure", () => {
@@ -309,7 +309,7 @@ test("an unknown payment status is neither an approval nor a failure", () => {
   // The safe direction is the one that cannot abandon an open attempt.
   assert.equal(outcome.keyDisposition, "keep");
   assert.match(outcome.message, /refunded/, "the served status is printed verbatim");
-  assert.doesNotMatch(outcome.headline, /approved|declined/i);
+  assert.doesNotMatch(outcome.headline, /aprobado|rechazado/i);
 });
 
 test("every outcome's key disposition is the one the M3 rule already decides", () => {
@@ -354,7 +354,7 @@ test("the in-flight conflict asks for the key that is already open", () => {
   assert.equal(outcome.tone, "warning");
   assert.equal(outcome.retryable, true);
   assert.equal(outcome.keyDisposition, "keep");
-  assert.match(outcome.message, /only the request that started it/i);
+  assert.match(outcome.message, /solo la petición que lo abrió/i);
 });
 
 test("already_paid is not an error: it points at the order's own tickets", () => {
@@ -363,8 +363,8 @@ test("already_paid is not an error: it points at the order's own tickets", () =>
   assert.equal(outcome.kind, "already_paid");
   assert.equal(outcome.tone, "info");
   assert.equal(outcome.retryable, false);
-  assert.match(outcome.nextStep, /tickets/i);
-  assert.match(outcome.nextStep, /reads/i, "the read is what knows the tickets");
+  assert.match(outcome.nextStep, /entradas/i);
+  assert.match(outcome.nextStep, /lee/i, "the read is what knows the tickets");
 });
 
 test("an expired hold offers the seat map and nothing that could charge", () => {
@@ -373,11 +373,11 @@ test("an expired hold offers the seat map and nothing that could charge", () => 
   assert.equal(outcome.kind, "hold_expired");
   assert.equal(outcome.offersSeatMap, true);
   assert.equal(outcome.retryable, false);
-  assert.match(outcome.message, /released/i);
-  assert.match(outcome.message, /no money was taken/i);
+  assert.match(outcome.message, /liberaron/i);
+  assert.match(outcome.message, /no se ha cobrado nada/i);
   // The page must never re-hold on its own: only the seat map takes a hold.
-  assert.match(outcome.nextStep, /seat map/i);
-  assert.match(outcome.nextStep, /never takes a hold/i);
+  assert.match(outcome.nextStep, /plano de butacas/i);
+  assert.match(outcome.nextStep, /nunca reserva por su cuenta/i);
 });
 
 test("the refusals that are not each other stay apart", () => {
@@ -413,7 +413,7 @@ test("a temporary failure is retryable with the same key, whatever its code", ()
     assert.equal(outcome.kind, "temporary", label);
     assert.equal(outcome.retryable, true, label);
     assert.equal(outcome.keyDisposition, "keep", label);
-    assert.match(outcome.nextStep, /same key/i, label);
+    assert.match(outcome.nextStep, /misma clave/i, label);
   }
 });
 
@@ -464,10 +464,10 @@ test("the window ends in an explicit expired state, decided by the server clock"
 
   assert.equal(window.kind, "expired");
   assert.equal(window.remainingMs, 0);
-  assert.equal(window.endLabel, "Hold expired");
+  assert.equal(window.endLabel, "Reserva caducada");
   assert.equal(window.payable, false, "a page past its deadline must not offer a charge");
-  assert.match(window.notice ?? "", /expired/i);
-  assert.match(window.notice ?? "", /choose them again/i);
+  assert.match(window.notice ?? "", /caducado/i);
+  assert.match(window.notice ?? "", /vuelve a elegirlas/i);
 });
 
 test("an unreadable deadline fails closed instead of promising a window", () => {
@@ -491,7 +491,7 @@ test("a paid order keeps its deadline and is not expired", () => {
 
   assert.equal(window.kind, "paid");
   assert.equal(window.payable, false);
-  assert.equal(window.endLabel, "Paid");
+  assert.equal(window.endLabel, "Pagado");
   assert.equal(window.notice, null);
 });
 
@@ -502,7 +502,7 @@ test("a cancelled order says it was cancelled, and a status it does not know is 
   );
   assert.equal(cancelled.kind, "cancelled");
   assert.equal(cancelled.payable, false);
-  assert.match(cancelled.notice ?? "", /cancelled/i);
+  assert.match(cancelled.notice ?? "", /canceló/i);
 
   const unknown = describeHoldWindow(
     { status: "refund_pending", expiresAt: DEADLINE },
@@ -537,7 +537,7 @@ test("before paying, the API states no amount and the page prints none", () => {
   assert.equal(amount.amountCents, null);
   assert.equal(amount.amountLabel, null);
   assert.equal(amount.known, false);
-  assert.match(amount.note, /no amount/i);
+  assert.match(amount.note, /todavía no se ha cobrado/i);
 });
 
 test("after a payment the amount is the one the answer reported", () => {
@@ -548,7 +548,7 @@ test("after a payment the amount is the one the answer reported", () => {
 
   assert.equal(amount.source, "payment");
   assert.equal(amount.amountCents, 2540);
-  assert.equal(amount.amountLabel, "25.40");
+  assert.equal(amount.amountLabel, "25,40 €");
   assert.equal(amount.known, true);
 });
 
@@ -559,8 +559,8 @@ test("a reload prints the amount the read serves, and leaves its text alone", ()
   );
 
   assert.equal(amount.source, "reservation");
-  assert.equal(amount.amountLabel, "19.98");
-  assert.match(amount.note, /read/i);
+  assert.equal(amount.amountLabel, "19,98 €");
+  assert.match(amount.note, /lectura/i);
 });
 
 test("an amount whose served text is missing is still the read's own number", () => {
@@ -570,7 +570,7 @@ test("an amount whose served text is missing is still the read's own number", ()
   );
 
   assert.equal(amount.source, "reservation");
-  assert.equal(amount.amountLabel, "12.50");
+  assert.equal(amount.amountLabel, "12,50 €");
 });
 
 test("a declined answer is not money taken", () => {
@@ -628,7 +628,7 @@ test("what cannot be an address at all is refused before it is sent", () => {
     assert.equal(view.kind, "refused", value);
     assert.match(
       view.kind === "refused" ? view.problem : "",
-      /not an address/i,
+      /no sirve para enviar/i,
       value,
     );
   }

@@ -50,25 +50,25 @@ import { SignInForm } from "./sign-in-form";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Sign in",
+  title: "Iniciar sesión",
 };
 
 export default function SignInPage() {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Identity · T6"
-        title="Sign in"
-        description="A sign-in link, mailed to your address. No password is stored, and buying a ticket or opening one does not need an account at all — signing in only makes the list of your tickets something the box office answers instead of something this browser remembers."
+        eyebrow="Identidad"
+        title="Iniciar sesión"
+        description="Un enlace de acceso, enviado a tu dirección. No se guarda ninguna contraseña, y comprar una entrada o abrirla no necesita cuenta: iniciar sesión solo hace que la lista de tus entradas la responda la taquilla en vez de guardarla este navegador."
       />
 
       <section aria-labelledby="sign-in-request" className="flex flex-col gap-4">
         <Card>
           <CardHeader>
-            <CardTitle id="sign-in-request">Email me a link</CardTitle>
+            <CardTitle id="sign-in-request">Envíame un enlace</CardTitle>
             <CardDescription>
-              Type the address you bought with. We mail one link to it, and the link is what
-              signs you in.
+              Escribe la dirección con la que compraste. Enviamos un enlace a ella, y ese enlace
+              es lo que te hace entrar.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -78,7 +78,7 @@ export default function SignInPage() {
 
         <Alert variant="info" aria-labelledby="sign-in-promises">
           <h2 id="sign-in-promises" className="m-0 text-lg leading-tight font-semibold">
-            What this link is, and what it is not
+            Qué es este enlace y qué no es
           </h2>
           <AlertDescription className="text-sm">
             <ul className="m-0 flex list-disc flex-col gap-2 pl-5">
@@ -91,18 +91,18 @@ export default function SignInPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle id="sign-out">Signed in on this browser?</CardTitle>
+            <CardTitle id="sign-out">¿Tienes sesión en este navegador?</CardTitle>
             <CardDescription>
-              Signing out ends the session at both ends: this browser drops the cookie, and the
-              box office closes the session itself, so the credential stops working everywhere
-              rather than only here. If the box office cannot be reached, this browser is signed
-              out anyway — the session then ends on its own when it expires.
+              Cerrar sesión la termina en los dos extremos: este navegador suelta la cookie y la
+              taquilla cierra la sesión, así que la credencial deja de valer en todas partes y no
+              solo aquí. Si no se puede llegar a la taquilla, este navegador cierra la sesión
+              igualmente, y terminará sola cuando caduque.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form action={signOutAction}>
               <Button type="submit" variant="outline">
-                Sign out
+                Cerrar sesión
               </Button>
             </form>
           </CardContent>

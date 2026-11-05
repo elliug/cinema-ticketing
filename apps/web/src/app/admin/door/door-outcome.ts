@@ -15,6 +15,10 @@
 // The fifth answer is not a verdict: a door that could not reach the box office must not be
 // told the code is bad, so it says it does not know and offers to ask again.
 //
+// The sentences are Castilian since the Marquesina redesign (the logic did not move with
+// them): the headline is what a cashier reads aloud, and the seat is named the way the rest
+// of the product names it — "Fila A, butaca 1".
+//
 // No `"use client"`: nothing here renders, and the same module is used by the screen and by
 // its tests.
 import type { PublicProblem, PublicRedemption, PublicTicketSeat } from "../../../lib/public-api.ts";
@@ -53,6 +57,13 @@ export interface DoorAnswer {
   tone: DoorTone;
   headline: string;
   message: string;
+  /**
+   * The verdict as a stamp: one or two words, printed as the block a doorman would carry.
+   *
+   * It is the same fact as `headline`, shortened for the stamp-like block on the screen, and
+   * it exists here so the screen does not invent a second vocabulary for the same verdict.
+   */
+  stamp: string;
   /** Whether this answer lets the person in. True for exactly one kind. */
   admits: boolean;
   /** Whether asking again could answer it: true only when the door could not ask at all. */
@@ -78,8 +89,9 @@ function describeAdmitted(redemption: PublicRedemption): DoorAnswer {
   return {
     kind: "admitted",
     tone: "success",
-    headline: "Admitted: one person, this once",
-    message: "The ticket had not been used. It admits its holder now, and never again.",
+    headline: "Admitida: una persona, esta vez",
+    message: "La entrada no se había usado. Admite a su titular ahora, y nunca más.",
+    stamp: "Admitida",
     admits: true,
     retryable: false,
     seatLabels: redemption.seats.map(seatLabel),
@@ -96,8 +108,9 @@ function describeAlreadyUsed(redemption: PublicRedemption): DoorAnswer {
   return {
     kind: "already_used",
     tone: "warning",
-    headline: "This ticket has already been used: do not admit",
-    message: `It was first used at ${usedAt}. This is not an admission: one ticket admits one person, once.`,
+    headline: "Esta entrada ya se usó: no se admite",
+    message: `Se usó por primera vez a las ${usedAt}. Esto no es una admisión: una entrada admite a una persona, una sola vez.`,
+    stamp: "Ya usada",
     admits: false,
     retryable: false,
     seatLabels: redemption.seats.map(seatLabel),
@@ -111,19 +124,21 @@ function describeProblem(problem: PublicProblem): DoorAnswer {
     case "invalid_token":
       // The API's own sentence, unreworded: every code that is not a ticket of ours gets this
       // one answer, whether it was forged, tampered with, or names a ticket nobody sold.
-      return verdict("not_ours", "error", "Not a ticket of ours: do not admit", problem);
+      return verdict("not_ours", "error", "No es una entrada nuestra: no se admite", "No es nuestra", problem);
     case "voided":
       return verdict(
         "not_admissible",
         "error",
-        "Cannot be admitted: the ticket was voided",
+        "No se puede admitir: la entrada está anulada",
+        "Anulada",
         problem,
       );
     case "event_cancelled":
       return verdict(
         "not_admissible",
         "error",
-        "Cannot be admitted: the screening was cancelled",
+        "No se puede admitir: la sesión está cancelada",
+        "Sesión cancelada",
         problem,
       );
     default:
@@ -132,11 +147,12 @@ function describeProblem(problem: PublicProblem): DoorAnswer {
       return {
         kind: "unavailable",
         tone: "warning",
-        headline: "The door could not check this code",
+        headline: "El acceso no pudo comprobar este código",
         message:
           problem.detail.trim() === ""
-            ? "The box office did not answer, so this code has no verdict yet. Ask again."
-            : `Nothing about this code is known yet: ${problem.detail}`,
+            ? "La taquilla no respondió, así que este código no tiene veredicto todavía. Vuelve a preguntar."
+            : `Todavía no se sabe nada de este código: ${problem.detail}`,
+        stamp: "Sin respuesta",
         admits: false,
         retryable: true,
         seatLabels: [],
@@ -151,6 +167,7 @@ function verdict(
   kind: DoorOutcomeKind,
   tone: DoorTone,
   headline: string,
+  stamp: string,
   problem: PublicProblem,
 ): DoorAnswer {
   return {
@@ -158,6 +175,7 @@ function verdict(
     tone,
     headline,
     message: problem.detail,
+    stamp,
     admits: false,
     retryable: false,
     seatLabels: [],
@@ -178,14 +196,14 @@ function serving(redemption: PublicRedemption): DoorScreening {
   };
 }
 
-/** `Row A seat 1`, the way the rest of the product names a seat to a person. */
+/** `Fila A, butaca 1`, the way the rest of the product names a seat to a person. */
 function seatLabel(seat: PublicTicketSeat): string {
   const row = seat.rowLabel.trim();
   const number = seat.seatNumber.trim();
   if (row === "") {
-    return number === "" ? `Seat ${seat.eventSeatId}` : `Seat ${number}`;
+    return number === "" ? `Butaca ${seat.eventSeatId}` : `Butaca ${number}`;
   }
-  return number === "" ? `Row ${row}` : `Row ${row} seat ${number}`;
+  return number === "" ? `Fila ${row}` : `Fila ${row}, butaca ${number}`;
 }
 
 /**

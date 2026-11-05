@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dirección C · Mosaico de carteles — cinema-ticketing</title>
+<style>
+/* DIRECTION C — "Poster grid".
+   Strategy: a modern ticketing product. A dark editorial hero, without a listings table, a
+   mosaic of poster cards with time pills, and a sticky booking bar that follows the funnel.
+   Deviations from design/system.md: light warm background plus a dark hero band, a coral
+   accent, larger radii (18px cards) and a wider type scale up to 56px. Spacing steps and the
+   three weight levels are the shipped ones. */
+:root {
+  --bg: #fbf7f4; --card: #ffffff; --ink: #150f1d; --ink-2: #554b60; --ink-3: #7d7389;
+  --line: #e8ded6; --line-2: #cfc2b8;
+  --dark: #12101a; --dark-2: #1c1928; --dark-line: #2c2739; --dark-text: #f6f2f6; --dark-muted: #a49db4;
+  --coral: #e8462a; --coral-dark: #c7351c; --coral-soft: #fde8e2;
+  --teal: #0d7d70; --teal-soft: #dff1ed;
+  --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem; --s5: 1.5rem; --s6: 2rem; --s7: 3rem; --s8: 4rem;
+  --r-sm: .5rem; --r-md: .75rem; --r-lg: 1.125rem; --r-xl: 1.5rem; --r-pill: 999px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --w: 1160px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 16px; line-height: 1.5; }
+h1, h2, h3, h4 { margin: 0; line-height: 1.08; font-weight: 600; letter-spacing: -.02em; }
+p { margin: 0; }
+a { color: var(--coral); text-underline-offset: .2em; }
+button, input, select { font: inherit; }
+:focus-visible { outline: 3px solid var(--coral); outline-offset: 2px; border-radius: 6px; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--ink-2); }
+.faint { color: var(--ink-3); }
+.caps { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+.board { padding: var(--s5) 0 0; }
+.board__head { max-width: var(--w); margin: 0 auto var(--s6); padding: 0 var(--s5); }
+.board__tag { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--coral); }
+.board__title { font-size: 36px; margin: var(--s2) 0; }
+.board__note { color: var(--ink-2); max-width: 70ch; }
+.frame { max-width: var(--w); margin: 0 auto var(--s7); padding: 0 var(--s5); }
+.frame__label { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3);
+  font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
+.frame__label::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.screen { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+
+/* Shell */
+.topbar { display: flex; align-items: center; gap: var(--s5); padding: var(--s4) var(--s6); }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.03em; font-size: 19px; }
+.logo span.mark { width: 26px; height: 26px; border-radius: 9px; background: var(--coral); display: grid; place-items: center;
+  color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0; }
+.topnav { display: flex; gap: var(--s4); margin-left: auto; }
+.topnav a { color: var(--ink-2); text-decoration: none; font-size: 14px; font-weight: 500; padding: 6px 10px; border-radius: var(--r-pill); }
+.topnav a[aria-current="page"] { background: var(--ink); color: #fff; }
+.topnav a:hover { color: var(--ink); }
+.pillbtn { border: 1px solid var(--line-2); background: var(--card); color: var(--ink); border-radius: var(--r-pill);
+  padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.pillbtn:hover { border-color: var(--ink); }
+.topbar--dark { color: var(--dark-text); }
+.topbar--dark .topnav a { color: var(--dark-muted); }
+.topbar--dark .topnav a[aria-current="page"] { background: var(--coral); color: #fff; }
+.topbar--dark .pillbtn { background: transparent; border-color: var(--dark-line); color: var(--dark-text); }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 24px;
+  border-radius: var(--r-pill); border: 1px solid transparent; font-size: 15px; font-weight: 600; cursor: pointer;
+  text-decoration: none; }
+.btn--primary { background: var(--coral); color: #fff; }
+.btn--primary:hover { background: var(--coral-dark); }
+.btn--dark { background: var(--ink); color: #fff; }
+.btn--ghost { background: transparent; border-color: var(--line-2); color: var(--ink); }
+.btn--ghost:hover { border-color: var(--ink); }
+.btn--on-dark { background: rgba(255 255 255 / 12%); color: #fff; border-color: rgba(255 255 255 / 22%); }
+.btn--block { width: 100%; }
+.btn[disabled] { background: var(--line); color: var(--ink-3); cursor: not-allowed; }
+
+/* Screen 1: dark hero + poster mosaic */
+.hero { background: var(--dark); color: var(--dark-text); padding: 0 0 var(--s7); }
+.hero__grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: var(--s6); align-items: center;
+  max-width: var(--w); margin: 0 auto; padding: var(--s6) var(--s6) var(--s5); }
+.hero__tag { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: var(--r-pill);
+  background: rgba(232 70 42 / 16%); color: #ff8f78; font-size: 12px; font-weight: 600; }
+.hero__title { font-size: 56px; margin: var(--s4) 0 var(--s3); letter-spacing: -.035em; }
+.hero__lede { color: var(--dark-muted); font-size: 17px; max-width: 46ch; }
+.hero__facts { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s4); }
+.hero__facts span { font-size: 12px; color: var(--dark-text); border: 1px solid var(--dark-line);
+  border-radius: var(--r-pill); padding: 4px 11px; }
+.hero__cta { display: flex; gap: var(--s3); margin-top: var(--s5); align-items: center; }
+.hero__posters { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s3); align-items: end; }
+.hero__posters svg { width: 100%; display: block; border-radius: var(--r-md); }
+.hero__posters > :nth-child(2) { transform: translateY(-26px) scale(1.06); box-shadow: 0 24px 60px rgb(0 0 0 / 55%); border-radius: var(--r-md); }
+.stripline { max-width: var(--w); margin: 0 auto; padding: var(--s4) var(--s6) 0; display: flex; gap: var(--s4);
+  border-top: 1px solid var(--dark-line); font-size: 12px; color: var(--dark-muted); }
+.stripline span:last-child { margin-left: auto; }
+
+.weekbar { display: flex; gap: var(--s2); padding: var(--s5) 0 var(--s4); overflow-x: auto; }
+.day { flex: none; border: 1px solid var(--line); background: var(--card); border-radius: var(--r-pill);
+  padding: 8px 16px; cursor: pointer; color: var(--ink); font-size: 14px; font-weight: 500; display: flex; gap: 8px; align-items: baseline; }
+.day b { font-weight: 700; }
+.day[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.mosaic { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s5); }
+.filmcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden;
+  display: flex; flex-direction: column; }
+.filmcard__art { position: relative; background: var(--dark); }
+.filmcard__art svg { display: block; width: 100%; }
+.filmcard__badge { position: absolute; top: 10px; left: 10px; background: rgba(18 16 26 / 78%); color: #fff;
+  font-size: 11px; font-weight: 600; padding: 4px 9px; border-radius: var(--r-pill); backdrop-filter: blur(4px); }
+.filmcard__body { padding: var(--s4); display: flex; flex-direction: column; gap: var(--s2); flex: 1; }
+.filmcard__title { font-size: 19px; letter-spacing: -.02em; }
+.filmcard__meta { font-size: 12px; color: var(--ink-3); }
+.filmcard__desc { font-size: 13px; color: var(--ink-2); }
+.times { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: var(--s2); }
+.tp { border: 1px solid var(--line-2); background: var(--card); border-radius: var(--r-pill); padding: 6px 12px;
+  font-size: 13px; font-weight: 600; cursor: pointer; color: var(--ink); }
+.tp:hover { border-color: var(--coral); color: var(--coral); }
+.tp small { font-weight: 500; color: var(--ink-3); margin-left: 5px; }
+.tp[disabled] { border-style: dashed; color: var(--ink-3); cursor: not-allowed; }
+.tp[disabled] small { display: none; }
+.tp--few { border-color: var(--coral); color: var(--coral); }
+.tp--few small { color: var(--coral); }
+
+/* Screen 2: seats + sticky bar */
+.main { padding: var(--s5) var(--s6) var(--s6); }
+.crumb { font-size: 13px; color: var(--ink-3); }
+.crumb a { color: var(--ink-3); text-decoration: none; }
+.headline { display: flex; align-items: flex-start; gap: var(--s4); margin: var(--s2) 0 var(--s5); }
+.headline h2 { font-size: 34px; }
+.headline p { color: var(--ink-2); font-size: 14px; margin-top: 6px; }
+.headline .tp { margin-left: auto; }
+.seatbox { display: grid; grid-template-columns: 1fr 300px; gap: var(--s5); }
+.map { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); }
+.map__screen { height: 54px; margin-bottom: var(--s5); position: relative; }
+.map__screen::before { content: ""; position: absolute; inset: 0 8% auto; height: 20px;
+  border-radius: 50% / 100% 100% 0 0; background: linear-gradient(180deg, rgba(232 70 42 / 55%), rgba(232 70 42 / 0%)); }
+.map__screen::after { content: "PANTALLA"; position: absolute; bottom: 0; left: 0; right: 0; text-align: center;
+  font-size: 10px; letter-spacing: .3em; color: var(--ink-3); font-weight: 700; }
+.rows { display: flex; flex-direction: column; gap: 7px; }
+.srow { display: flex; justify-content: center; align-items: center; gap: 7px; }
+.srow__id { width: 16px; text-align: center; font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+.gap { width: 20px; }
+.seat { width: 27px; height: 25px; border-radius: 8px 8px 5px 5px; border: 1px solid var(--line-2); background: #fff;
+  color: var(--ink-3); font-size: 10px; cursor: pointer; padding: 0; }
+.seat:hover { border-color: var(--coral); color: var(--coral); }
+.seat[data-state="taken"] { background: var(--line); border-color: var(--line); color: #b6aa9f; cursor: not-allowed; }
+.seat[data-state="selected"] { background: var(--coral); border-color: var(--coral); color: #fff; font-weight: 700; }
+.seat[data-state="accessible"] { border-color: var(--teal); color: var(--teal); border-width: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s5); padding-top: var(--s4);
+  border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 13px; height: 13px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: #fff; vertical-align: -2px; margin-right: 6px; }
+.side { display: flex; flex-direction: column; gap: var(--s3); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); }
+.ring { width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: conic-gradient(var(--coral) 0deg 300deg, var(--line) 300deg 360deg); }
+.ring span { width: 42px; height: 42px; border-radius: 50%; background: var(--card); display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; font-family: var(--mono); }
+.holdrow { display: flex; gap: var(--s3); align-items: center; }
+.holdrow b { display: block; font-size: 15px; }
+.holdrow small { color: var(--ink-3); font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--coral); background: var(--coral-soft); color: var(--coral); border-radius: var(--r-sm);
+  padding: 2px 9px; font-size: 12px; font-family: var(--mono); font-weight: 600; }
+.line { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink-2); }
+.line b { color: var(--ink); font-weight: 600; }
+.total { display: flex; justify-content: space-between; align-items: baseline; padding-top: var(--s3);
+  border-top: 1px solid var(--line); }
+.total strong { font-size: 26px; letter-spacing: -.02em; }
+.stickybar { display: flex; align-items: center; gap: var(--s4); margin-top: var(--s5); padding: var(--s3) var(--s4);
+  background: var(--dark); color: var(--dark-text); border-radius: var(--r-lg); }
+.stickybar b { font-size: 18px; }
+.stickybar .btn { margin-left: auto; }
+.stickybar small { color: var(--dark-muted); }
+
+/* Screen 3: checkout */
+.split { display: grid; grid-template-columns: 1fr 340px; gap: var(--s5); align-items: start; }
+.cardhead { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s4); }
+.cardhead h3 { font-size: 20px; }
+.num { width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 12px;
+  font-weight: 700; display: grid; place-items: center; flex: none; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); }
+.fld { display: flex; flex-direction: column; gap: 6px; }
+.fld--wide { grid-column: 1 / -1; }
+.fld label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.fld input { border: 1px solid var(--line-2); background: #fff; border-radius: var(--r-sm); padding: 12px 14px;
+  font-size: 15px; color: var(--ink); }
+.fld input:focus-visible { border-color: var(--coral); }
+.fld small { font-size: 12px; color: var(--ink-3); }
+.segmented { display: flex; gap: 6px; padding: 5px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r-pill); margin-bottom: var(--s4); }
+.segmented button { flex: 1; border: 0; background: transparent; border-radius: var(--r-pill); padding: 9px 12px;
+  font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
+.segmented button[aria-pressed="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgb(21 15 29 / 12%); }
+.note { display: flex; gap: 10px; padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--teal-soft);
+  color: #0a5c53; font-size: 13px; }
+.tickline { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--ink-2); }
+.tickline input { margin-top: 3px; accent-color: var(--coral); }
+
+/* Screen 4: ticket */
+.ticketwrap { background: var(--dark); padding: var(--s6); border-radius: var(--r-lg); }
+.ticket { display: grid; grid-template-columns: 1fr 200px; background: var(--dark-2); border: 1px solid var(--dark-line);
+  border-radius: var(--r-lg); color: var(--dark-text); overflow: hidden; }
+.ticket__body { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); }
+.ticket__stub { background: var(--coral); color: #fff; padding: var(--s5) var(--s4); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: var(--s3); text-align: center; }
+.qr { width: 104px; height: 104px; background: #fff; border-radius: var(--r-md); padding: 7px; }
+.qr svg { display: block; width: 100%; height: 100%; }
+.tgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s4); }
+.kv dt { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--dark-muted); }
+.kv dd { margin: 0; font-size: 17px; font-weight: 600; }
+.hr { height: 1px; background: var(--dark-line); }
+.stacktop { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--s5); }
+.stacktop h2 { font-size: 30px; color: #fff; }
+.stacktop p { color: var(--dark-muted); font-size: 13px; }
+
+/* Screen 5: admin */
+.adminhead { display: flex; align-items: center; gap: var(--s4); padding: var(--s3) var(--s5); background: var(--dark);
+  color: var(--dark-text); font-size: 13px; }
+.adminhead .tag { background: var(--coral); color: #fff; border-radius: var(--r-sm); padding: 3px 9px; font-size: 11px;
+  font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.adminhead nav { display: flex; gap: var(--s4); margin-left: var(--s5); }
+.adminhead nav span { color: var(--dark-muted); }
+.adminhead nav .on { color: #fff; }
+.adminhead .who { margin-left: auto; color: var(--dark-muted); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s4); margin-bottom: var(--s5); }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s4); }
+.stat b { display: block; font-size: 28px; letter-spacing: -.03em; margin-top: 2px; }
+.stat span { font-size: 12px; color: var(--ink-3); }
+.stat--hi { background: var(--coral); border-color: var(--coral); color: #fff; }
+.stat--hi span { color: #ffd8ce; }
+.ledger { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ledger th { text-align: left; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+  padding: 0 10px 8px; border-bottom: 1px solid var(--line); }
+.ledger td { padding: 12px 10px; border-bottom: 1px solid var(--line); }
+.ledger tr:last-child td { border-bottom: 0; }
+.dotpill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+.dotpill i { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+.dotpill--few i { background: var(--coral); }
+.dotpill--out i { background: var(--line-2); }
+.dotpill--out { color: var(--ink-3); }
+.doorinput { display: flex; gap: var(--s2); align-items: stretch; }
+.doorinput .btn { padding: 13px 18px; flex: none; }
+.doorinput input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 13px 14px;
+  font-family: var(--mono); font-size: 16px; letter-spacing: .1em; }
+.admitted { background: var(--teal-soft); border: 1px solid #9fd0c6; border-radius: var(--r-md); padding: var(--s4); }
+.admitted b { color: #0a5c53; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.admitted p { color: #12685e; font-size: 13px; margin-top: 4px; }
+.key { display: flex; flex-direction: column; gap: 8px; margin-top: var(--s4); font-size: 12px; color: var(--ink-2); }
+.key b { color: var(--ink); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="board">
+  <header class="board__head">
+    <p class="board__tag">Dirección C · Mosaico de carteles</p>
+    <h1 class="board__title">Un producto de entradas que resulta ser un cine</h1>
+    <p class="board__note">Portada editorial grande, un mosaico de carteles con horarios en cápsulas y un embudo que
+      mantiene la decisión a la vista: la página de butacas termina en una barra fija y la entrada es una tarjeta de
+      cartera. Contrapartida: el camino más corto hasta la entrada pagada y el más fácil de llevar al móvil, a cambio del
+      carácter de vestíbulo y de imprenta de las otras dos.</p>
+  </header>
+
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="c-luz" viewBox="0 0 300 450">
+    <defs><linearGradient id="cg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a5c"/><stop offset=".55" stop-color="#e8462a"/><stop offset="1" stop-color="#4a1020"/></linearGradient>
+      <radialGradient id="cg1b" cx=".5" cy=".42" r=".5"><stop offset="0" stop-color="#ffe9c9" stop-opacity=".9"/><stop offset="1" stop-color="#ffe9c9" stop-opacity="0"/></radialGradient></defs>
+    <rect width="300" height="450" fill="url(#cg1)"/><circle cx="150" cy="190" r="120" fill="url(#cg1b)"/>
+    <circle cx="150" cy="190" r="62" fill="#2a0f18"/>
+    <g stroke="#ffd9c0" stroke-opacity=".5"><path d="M0 330h300M0 352h300M0 374h300"/></g>
+    <text x="24" y="404" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="#fff">EL VIAJE</text>
+    <text x="24" y="428" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="#fff">DE LA LUZ</text>
+  </symbol>
+  <symbol id="c-puerto" viewBox="0 0 300 450">
+    <defs><linearGradient id="cg2" x1="0" y1="0" x2=".4" y2="1"><stop offset="0" stop-color="#3ec7b4"/><stop offset="1" stop-color="#08343c"/></linearGradient></defs>
+    <rect width="300" height="450" fill="url(#cg2)"/>
+    <g fill="none" stroke="#eafffb" stroke-opacity=".65" stroke-width="2"><path d="M0 250q75-40 150 0t150 0"/><path d="M0 282q75-40 150 0t150 0"/><path d="M0 314q75-40 150 0t150 0"/></g>
+    <rect x="104" y="112" width="92" height="64" rx="4" fill="#f4fffb" opacity=".92"/>
+    <path d="M104 112l46 36 46-36" fill="none" stroke="#08343c" stroke-width="3"/>
+    <text x="24" y="404" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#fff">CARTAS DESDE</text>
+    <text x="24" y="428" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#fff">EL PUERTO</text>
+  </symbol>
+  <symbol id="c-ultima" viewBox="0 0 300 450">
+    <defs><linearGradient id="cg3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6b2a86"/><stop offset=".6" stop-color="#a4193a"/><stop offset="1" stop-color="#1b0a17"/></linearGradient></defs>
+    <rect width="300" height="450" fill="url(#cg3)"/>
+    <path d="M150 120l96 210H54z" fill="#ffb3a0" opacity=".22"/><circle cx="150" cy="112" r="16" fill="#fff2ec"/>
+    <g stroke="#ffd2c6" stroke-opacity=".5"><path d="M0 366h300M30 384h240M70 402h160"/></g>
+    <text x="24" y="432" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#fff">LA ÚLTIMA PROYECCIÓN</text>
+  </symbol>
+  <symbol id="c-noche" viewBox="0 0 300 450">
+    <defs><linearGradient id="cg4" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b3bd6"/><stop offset="1" stop-color="#070b22"/></linearGradient></defs>
+    <rect width="300" height="450" fill="url(#cg4)"/>
+    <g fill="#7cf2ff" opacity=".85"><rect x="52" y="150" width="10" height="150" rx="5"/><rect x="96" y="112" width="10" height="188" rx="5"/><rect x="150" y="168" width="10" height="132" rx="5"/><rect x="196" y="92" width="10" height="208" rx="5"/><rect x="240" y="158" width="10" height="142" rx="5"/></g>
+    <text x="24" y="404" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#fff">NOCHE EN EL</text>
+    <text x="24" y="428" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#fff">CINE AZUL</text>
+  </symbol>
+</svg>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 1 · Cartelera</p>
+    <div class="screen">
+      <div class="hero">
+        <div class="topbar topbar--dark">
+          <span class="logo" style="color:var(--dark-text)"><span class="mark">CL</span> Cine Luna</span>
+          <nav class="topnav" aria-label="Main"><a href="#c1" aria-current="page">Cartelera</a><a href="#c1">Cines</a><a href="#c1">Mis entradas</a><a href="#c1">Taquilla</a></nav>
+          <button class="pillbtn" type="button">Iniciar sesión</button>
+        </div>
+        <div class="hero__grid">
+          <div>
+            <span class="hero__tag">★ Esta noche en Sala 1 · 19:00</span>
+            <h2 class="hero__title">El viaje<br>de la luz</h2>
+            <p class="hero__lede">Un proyeccionista reconstruye el último rollo de una película que nunca llegó a estrenarse.
+              Una lámpara, una noche y una ciudad que ya se ha dormido.</p>
+            <div class="hero__facts"><span>112 min</span><span>Drama</span><span>+12</span><span>Dolby Atmos</span><span>Desde 12,50 €</span></div>
+            <div class="hero__cta">
+              <button class="btn btn--primary" type="button">Elegir butacas · quedan 4</button>
+              <button class="btn btn--on-dark" type="button">Todos los horarios</button>
+            </div>
+          </div>
+          <div class="hero__posters">
+            <svg viewBox="0 0 300 450" aria-hidden="true"><use href="#c-puerto"/></svg>
+            <svg viewBox="0 0 300 450" role="img" aria-label="Poster for El viaje de la luz"><use href="#c-luz"/></svg>
+            <svg viewBox="0 0 300 450" aria-hidden="true"><use href="#c-noche"/></svg>
+          </div>
+        </div>
+        <div class="stripline"><span>Cine Luna · Madrid</span><span>Hoy: 6 sesiones · 1 agotada</span><span>Entradas 11,50 € – 12,50 €</span></div>
+      </div>
+
+      <div class="main" style="padding-top:0">
+        <div class="weekbar" role="group" aria-label="Choose a day">
+          <button class="day" type="button"><b>Lun</b> 13</button>
+          <button class="day" type="button"><b>Mar</b> 14</button>
+          <button class="day" type="button" aria-pressed="true"><b>Mié</b> 15</button>
+          <button class="day" type="button"><b>Jue</b> 16</button>
+          <button class="day" type="button"><b>Vie</b> 17</button>
+          <button class="day" type="button"><b>Sáb</b> 18</button>
+          <button class="day" type="button"><b>Dom</b> 19</button>
+        </div>
+
+        <div class="mosaic">
+          <article class="filmcard">
+            <div class="filmcard__art"><svg viewBox="0 0 300 450" aria-hidden="true"><use href="#c-luz"/></svg><span class="filmcard__badge">Quedan 4 butacas a las 21:30</span></div>
+            <div class="filmcard__body">
+              <h3 class="filmcard__title">El viaje de la luz</h3>
+              <p class="filmcard__meta">112 min · Drama · +12 · Sala 1</p>
+              <p class="filmcard__desc">Una lámpara, una noche y una ciudad dormida.</p>
+              <div class="times">
+                <button class="tp" type="button">17:15<small>34</small></button>
+                <button class="tp" type="button">19:00<small>12</small></button>
+                <button class="tp tp--few" type="button">21:30<small>4</small></button>
+              </div>
+            </div>
+          </article>
+
+          <article class="filmcard">
+            <div class="filmcard__art"><svg viewBox="0 0 300 450" aria-hidden="true"><use href="#c-puerto"/></svg></div>
+            <div class="filmcard__body">
+              <h3 class="filmcard__title">Cartas desde el puerto</h3>
+              <p class="filmcard__meta">98 min · Drama · +7 · Sala 2</p>
+              <p class="filmcard__desc">Cartas que nunca llegaron a su destino.</p>
+              <div class="times">
+                <button class="tp" type="button">16:40<small>61</small></button>
+                <button class="tp" type="button">19:20<small>18</small></button>
+                <button class="tp tp--few" type="button">22:00<small>6</small></button>
+              </div>
+            </div>
+          </article>
+
+          <article class="filmcard">
+            <div class="filmcard__art"><svg viewBox="0 0 300 450" aria-hidden="true"><use href="#c-ultima"/></svg><span class="filmcard__badge">Estreno</span></div>
+            <div class="filmcard__body">
+              <h3 class="filmcard__title">La última proyección</h3>
+              <p class="filmcard__meta">104 min · Suspense · +16 · Sala 3</p>
+              <p class="filmcard__desc">La sala se niega a vaciarse.</p>
+              <div class="times">
+                <button class="tp" type="button">18:10<small>44</small></button>
+                <button class="tp tp--few" type="button">20:45<small>2</small></button>
+                <button class="tp" type="button" disabled>23:15</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 2 · Selección de butacas</p>
+    <div class="screen">
+      <div class="topbar">
+        <span class="logo"><span class="mark">CL</span> Cine Luna</span>
+        <nav class="topnav" aria-label="Main"><a href="#c2" aria-current="page">Cartelera</a><a href="#c2">Cines</a><a href="#c2">Mis entradas</a><a href="#c2">Taquilla</a></nav>
+        <button class="pillbtn" type="button">Iniciar sesión</button>
+      </div>
+      <div class="main">
+        <p class="crumb"><a href="#c2">Cartelera</a> / El viaje de la luz</p>
+        <div class="headline">
+          <div>
+            <h2>Elige tus butacas</h2>
+            <p>Mié 15 ene · 19:00 · Sala 1 · Dolby Atmos · 12,50 € por butaca</p>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="tp" type="button">17:15</button>
+            <button class="tp" type="button" style="background:var(--ink);color:#fff;border-color:var(--ink)">19:00</button>
+            <button class="tp tp--few" type="button">21:30<small>4</small></button>
+          </div>
+        </div>
+
+        <div class="seatbox">
+          <div class="map">
+            <div class="map__screen"></div>
+            <div class="rows" id="rows" aria-label="Mapa de butacas"></div>
+            <div class="legend">
+              <span><i></i>Libre</span>
+              <span><i style="background:var(--coral);border-color:var(--coral)"></i>Seleccionada</span>
+              <span><i style="background:var(--line);border-color:var(--line)"></i>Ocupada</span>
+              <span><i style="border-color:var(--teal);border-width:2px"></i>Accesible</span>
+            </div>
+          </div>
+
+          <div class="side">
+            <div class="card">
+              <div class="holdrow">
+                <div class="ring" style="background:var(--line)"><span>10′</span></div>
+                <div><b>Puedes elegir cualquier butaca libre</b><small>Diez minutos para pagar cuando las reserves.</small></div>
+              </div>
+            </div>
+            <div class="card" style="display:flex;flex-direction:column;gap:var(--s3)">
+              <p class="caps faint">Tu selección</p>
+              <div class="chips" id="chips"><span class="chip">A3</span><span class="chip">A4</span></div>
+              <div class="line"><span>2 × General</span><b id="line">25,00 €</b></div>
+              <div class="line"><span>Gastos de gestión</span><b>0,00 €</b></div>
+              <div class="total"><span>Total</span><strong id="total">25,00 €</strong></div>
+              <p class="faint" style="font-size:12px">Las butacas sin pagar vuelven a la sala al caducar la reserva.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="stickybar">
+          <div><b id="bar-title">2 butacas · A3 A4</b><br><small>El viaje de la luz · Mié 15 · 19:00 · Sala 1</small></div>
+          <span style="color:var(--dark-muted);margin-left:auto;font-size:13px">Total <b style="font-size:16px;color:#fff" id="bartotal">25,00 €</b></span>
+          <button class="btn btn--primary" type="button" id="hold">Reservar 2 butacas y pagar</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 3 · Pago</p>
+    <div class="screen">
+      <div class="topbar">
+        <span class="logo"><span class="mark">CL</span> Cine Luna</span>
+        <nav class="topnav" aria-label="Main"><a href="#c3" aria-current="page">Cartelera</a><a href="#c3">Cines</a><a href="#c3">Mis entradas</a><a href="#c3">Taquilla</a></nav>
+        <button class="pillbtn" type="button">Iniciar sesión</button>
+      </div>
+      <div class="main">
+        <p class="crumb"><a href="#c3">Elegir butacas</a> / Pago</p>
+        <h2 style="font-size:34px;margin:var(--s2) 0 var(--s3)">Ya casi está</h2>
+        <div class="note" style="margin-bottom:var(--s5)">
+          <span aria-hidden="true">◷</span>
+          <span><b>Dos butacas reservadas hasta las 19:12 · quedan 8 min 34 s.</b> Si el pago no termina, la sala las recupera.</span>
+        </div>
+
+        <div class="split">
+          <div style="display:flex;flex-direction:column;gap:var(--s5)">
+            <section class="card">
+              <div class="cardhead"><span class="num">1</span><h3>¿Quién recibe las entradas?</h3></div>
+              <div class="fields">
+                <div class="fld fld--wide"><label for="c-email">Correo electrónico</label><input id="c-email" type="email" value="nuria.serrano@example.com">
+                  <small>Un enlace abre las dos butacas. Sin cuenta.</small></div>
+                <div class="fld"><label for="c-name">Nombre completo</label><input id="c-name" type="text" value="Nuria Serrano"></div>
+                <div class="fld"><label for="c-phone">Teléfono, opcional</label><input id="c-phone" type="tel" value="+34 600 12 34 56"></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="cardhead"><span class="num">2</span><h3>Pago</h3>
+                <span class="caps faint" style="margin-left:auto">Simulado</span></div>
+              <div class="segmented" role="group" aria-label="Payment method">
+                <button type="button" aria-pressed="true">Tarjeta</button>
+                <button type="button" aria-pressed="false">Bizum</button>
+                <button type="button" aria-pressed="false">Tarjeta regalo</button>
+              </div>
+              <div class="fields">
+                <div class="fld fld--wide"><label for="c-card">Número de tarjeta</label><input id="c-card" inputmode="numeric" value="4242 4242 4242 4242"></div>
+                <div class="fld"><label for="c-exp">Caducidad</label><input id="c-exp" inputmode="numeric" value="09 / 29"></div>
+                <div class="fld"><label for="c-cvc">Código de seguridad</label><input id="c-cvc" inputmode="numeric" value="123"></div>
+                <label class="tickline fld--wide"><input type="checkbox" checked><span>Acepto las condiciones de venta. Las butacas
+                  se pueden cambiar mientras dure la reserva y no son reembolsables una vez empezada la sesión.</span></label>
+              </div>
+            </section>
+          </div>
+
+          <aside class="card" style="position:sticky;top:0;display:flex;flex-direction:column;gap:var(--s3)">
+            <div style="display:flex;gap:var(--s3);align-items:center">
+              <svg viewBox="0 0 300 450" style="width:58px;border-radius:var(--r-sm)" aria-hidden="true"><use href="#c-luz"/></svg>
+              <div><p style="font-weight:600">El viaje de la luz</p><p class="faint" style="font-size:13px">Mié 15 ene · 19:00<br>Sala 1 · Dolby Atmos</p></div>
+            </div>
+            <div class="hr" style="background:var(--line)"></div>
+            <div class="line"><span>Butacas</span><b class="mono">A3, A4</b></div>
+            <div class="line"><span>2 × General</span><b>25,00 €</b></div>
+            <div class="line"><span>Gastos de gestión</span><b>0,00 €</b></div>
+            <div class="total"><span>Total</span><strong>25,00 €</strong></div>
+            <button class="btn btn--primary btn--block" type="button">Pagar 25,00 €</button>
+            <a href="#c3" style="font-size:13px;text-align:center">Cambiar butacas</a>
+            <p class="faint" style="font-size:12px;text-align:center">No se cobra nada hasta que pulses pagar.</p>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 4 · Entrada</p>
+    <div class="screen">
+      <div class="topbar">
+        <span class="logo"><span class="mark">CL</span> Cine Luna</span>
+        <nav class="topnav" aria-label="Main"><a href="#c4">Cartelera</a><a href="#c4">Cines</a><a href="#c4" aria-current="page">Mis entradas</a><a href="#c4">Taquilla</a></nav>
+        <button class="pillbtn" type="button">Iniciar sesión</button>
+      </div>
+      <div class="main" style="display:grid;grid-template-columns:1fr 320px;gap:var(--s5);align-items:start">
+        <div class="ticketwrap">
+          <div class="stacktop">
+            <div><h2>Tus entradas</h2><p>Pedido LUN-4KD9 · pagado 25,00 € · miércoles 15 de enero</p></div>
+            <button class="btn btn--on-dark" type="button">Enviármelas</button>
+          </div>
+          <article class="ticket">
+            <div class="ticket__body">
+              <div><p class="caps" style="color:#ff9d86">Válida para una persona · Sala 1 · 19:00</p>
+                <h3 style="font-size:28px;color:#fff;margin:var(--s1) 0 var(--s2)">El viaje de la luz</h3>
+                <p style="color:var(--dark-muted);font-size:13px">Fila A · las puertas abren a las 18:40 · Dolby Atmos</p></div>
+              <div class="hr"></div>
+              <dl class="tgrid" style="margin:0">
+                <div class="kv"><dt>Butaca</dt><dd>A3</dd></div>
+                <div class="kv"><dt>Fila</dt><dd>A</dd></div>
+                <div class="kv"><dt>Entradas</dt><dd>2</dd></div>
+                <div class="kv"><dt>Pagado</dt><dd>25,00 €</dd></div>
+              </dl>
+            </div>
+            <div class="ticket__stub">
+              <div class="qr"><svg viewBox="0 0 25 25" id="qr" role="img" aria-label="Ticket code square"><rect width="25" height="25" fill="#fff"/></svg></div>
+              <span class="mono" style="font-size:13px;letter-spacing:.1em">LUN-4KD9</span>
+              <span style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;opacity:.85">Butaca 1 de 2</span>
+            </div>
+          </article>
+          <article class="ticket" style="margin-top:var(--s3)">
+            <div class="ticket__body">
+              <div><p class="caps" style="color:#ff9d86">Válida para una persona · Sala 1 · 19:00</p>
+                <h3 style="font-size:24px;color:#fff;margin:var(--s1) 0 var(--s2)">Segunda butaca · A4</h3>
+                <p style="color:var(--dark-muted);font-size:13px">Cada código admite a una persona una sola vez.</p></div>
+            </div>
+            <div class="ticket__stub">
+              <div class="qr" style="width:88px;height:88px"><svg viewBox="0 0 25 25" id="qr2" role="img" aria-label="Ticket code square"><rect width="25" height="25" fill="#fff"/></svg></div>
+              <span class="mono" style="font-size:13px;letter-spacing:.1em">LUN-4KDA</span>
+              <span style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;opacity:.85">Butaca 2 de 2</span>
+            </div>
+          </article>
+          <div style="display:flex;gap:var(--s2);margin-top:var(--s4)">
+            <button class="btn btn--on-dark" type="button">Descargar PDF</button>
+            <button class="btn btn--on-dark" type="button">Añadir a la cartera</button>
+          </div>
+        </div>
+
+        <aside class="card" aria-label="At the door">
+          <h3 style="font-size:19px;margin-bottom:var(--s3)">En el acceso</h3>
+          <ol class="muted" style="font-size:13px;padding-left:var(--s4);display:flex;flex-direction:column;gap:var(--s3);margin:0">
+            <li>Las puertas abren 20 minutos antes de la sesión.</li>
+            <li>El código se lee una vez; un código usado se rechaza y la respuesta lo dice.</li>
+            <li>El enlace funciona sin cuenta: quien lo tenga abre las entradas.</li>
+            <li>Una entrada anulada y una sesión cancelada son respuestas distintas.</li>
+          </ol>
+          <div class="hr" style="background:var(--line);margin:var(--s4) 0"></div>
+          <div class="line"><span>Pedido</span><b class="mono">LUN-4KD9</b></div>
+          <div class="line"><span>Tarjeta</span><b class="mono">···· 4242</b></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section class="frame">
+    <p class="frame__label">Pantalla 5 · Panel de taquilla</p>
+    <div class="screen">
+      <div class="adminhead">
+        <span class="tag">Taquilla</span>
+        <nav aria-label="Administración"><span class="on">Hoy</span><span>Programación</span><span>Salas</span><span>Acceso</span></nav>
+        <span class="who">Cine Luna · Sala 1 · personal</span>
+      </div>
+      <div class="main">
+        <div class="stats">
+          <div class="stat"><span>Recaudación de hoy</span><b>3.812,50 €</b></div>
+          <div class="stat"><span>Pedidos</span><b>34</b></div>
+          <div class="stat stat--hi"><span>Butacas libres esta noche</span><b>4</b></div>
+          <div class="stat"><span>Reservas caducadas sin pagar</span><b>2</b></div>
+        </div>
+        <div class="split" style="grid-template-columns:1fr 340px">
+          <section class="card" style="padding:var(--s4) var(--s5) var(--s5)">
+            <div style="display:flex;align-items:baseline;gap:var(--s3);padding:var(--s2) 0 var(--s3)">
+              <h3 style="font-size:19px">Miércoles 15 de enero</h3><span class="faint" style="font-size:12px">6 en venta · 1 agotada</span>
+            </div>
+            <table class="ledger">
+              <thead><tr><th scope="col">Hora</th><th scope="col">Película</th><th scope="col">Sala</th><th scope="col">Vendidas</th><th scope="col">Reservadas</th><th scope="col">Estado</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">17:15</td><td>El viaje de la luz</td><td>Sala 2</td><td class="mono">78/96</td><td class="mono">3</td><td><span class="dotpill"><i></i>En venta</span></td></tr>
+                <tr><td class="mono">18:10</td><td>La última proyección</td><td>Sala 3</td><td class="mono">44/88</td><td class="mono">1</td><td><span class="dotpill"><i></i>En venta</span></td></tr>
+                <tr><td class="mono">19:00</td><td>El viaje de la luz</td><td>Sala 1</td><td class="mono">196/208</td><td class="mono">2</td><td><span class="dotpill dotpill--few"><i></i>Quedan 4</span></td></tr>
+                <tr><td class="mono">20:45</td><td>La última proyección</td><td>Sala 3</td><td class="mono">86/88</td><td class="mono">0</td><td><span class="dotpill dotpill--few"><i></i>Quedan 2</span></td></tr>
+                <tr><td class="mono">21:30</td><td>Cartas desde el puerto</td><td>Sala 1</td><td class="mono">208/208</td><td class="mono">0</td><td><span class="dotpill dotpill--out"><i></i>Agotada</span></td></tr>
+                <tr><td class="mono">22:00</td><td>Noche en el cine azul</td><td>Sala 2</td><td class="mono">61/96</td><td class="mono">5</td><td><span class="dotpill"><i></i>En venta</span></td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <aside class="card" aria-label="Door check">
+            <h3 style="font-size:19px">En el acceso</h3>
+            <p class="faint" style="font-size:13px;margin:var(--s1) 0 var(--s4)">Un código, una respuesta. No se guarda nada en
+              este navegador.</p>
+            <label class="fld"><span style="font-size:12px;font-weight:600;color:var(--ink-2)">Código de entrada</span></label>
+            <div class="doorinput"><input type="text" value="LUN-4KD9" aria-label="Código de entrada"><button class="btn btn--primary" type="button">Comprobar</button></div>
+            <div class="admitted" style="margin-top:var(--s4)">
+              <b><span aria-hidden="true">✓</span> Acceso permitido · una persona</b>
+              <p>A3 · El viaje de la luz · Sala 1 · 19:00. El código ya está usado.</p>
+            </div>
+            <div class="key">
+              <span><b>Usada</b> — canjeada a las 19:04.</span>
+              <span><b>Anulada</b> — entrada anulada o sesión cancelada.</span>
+              <span><b>No es nuestra</b> — no es una entrada de este cine.</span>
+              <span><b>Otra sala</b> — una entrada real para otra sesión.</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+<script>
+(function () {
+  var rowsEl = document.getElementById('rows');
+  if (!rowsEl) return;
+  var selected = new Set(['A3', 'A4']);
+  var taken = new Set(['B2', 'B5', 'C7', 'C8', 'D3', 'D12', 'E9', 'F4', 'F5', 'F6', 'G11', 'G12', 'H5']);
+  var accessible = new Set(['B1', 'H14']);
+  var PRICE = 12.5;
+  var STATE = { free: 'libre', selected: 'seleccionada', taken: 'ocupada', accessible: 'accesible' };
+
+  function money(n) { return n.toFixed(2).replace('.', ',') + ' €'; }
+  function update() {
+    var ids = Array.from(selected).sort();
+    document.getElementById('chips').innerHTML = ids.length
+      ? ids.map(function (id) { return '<span class="chip">' + id + '</span>'; }).join('')
+      : '<span class="faint" style="font-size:13px">Aún sin butacas</span>';
+    document.getElementById('line').textContent = money(ids.length * PRICE);
+    document.getElementById('total').textContent = money(ids.length * PRICE);
+    document.getElementById('bartotal').textContent = money(ids.length * PRICE);
+    document.getElementById('bar-title').textContent = ids.length
+      ? ids.length + (ids.length === 1 ? ' butaca · ' : ' butacas · ') + ids.join(' ')
+      : 'Ninguna butaca elegida';
+    var b = document.getElementById('hold');
+    b.textContent = ids.length ? 'Reservar ' + ids.length + (ids.length === 1 ? ' butaca' : ' butacas') + ' y pagar' : 'Elige una butaca';
+    b.disabled = ids.length === 0;
+  }
+
+  for (var r = 0; r < 8; r++) {
+    var row = document.createElement('div'); row.className = 'srow';
+    row.appendChild(lbl(String.fromCharCode(65 + r)));
+    for (var s = 1; s <= 14; s++) {
+      if (s === 7) { var g = document.createElement('span'); g.className = 'gap'; row.appendChild(g); }
+      var id = String.fromCharCode(65 + r) + s;
+      var seat = document.createElement('button');
+      seat.type = 'button'; seat.className = 'seat'; seat.textContent = s;
+      seat.dataset.id = id;
+      seat.dataset.state = taken.has(id) ? 'taken' : selected.has(id) ? 'selected' : accessible.has(id) ? 'accessible' : 'free';
+      if (seat.dataset.state === 'taken') seat.disabled = true;
+      seat.setAttribute('aria-label', 'Fila ' + id[0] + ', butaca ' + s + ', ' + STATE[seat.dataset.state]);
+      row.appendChild(seat);
+    }
+    row.appendChild(lbl(String.fromCharCode(65 + r)));
+    rowsEl.appendChild(row);
+  }
+  rowsEl.addEventListener('click', function (e) {
+    var seat = e.target.closest('.seat');
+    if (!seat || seat.dataset.state === 'taken') return;
+    var id = seat.dataset.id;
+    if (selected.has(id)) { selected.delete(id); seat.dataset.state = accessible.has(id) ? 'accessible' : 'free'; }
+    else { selected.add(id); seat.dataset.state = 'selected'; }
+    update();
+  });
+  update();
+
+  function lbl(t) { var el = document.createElement('span'); el.className = 'srow__id'; el.textContent = t; return el; }
+
+  function drawCode(el, seed) {
+    if (!el) return;
+    var n = 25, out = [], s = seed, x, y;
+    var inFinder = function (x, y) { return (x < 8 && y < 8) || (x >= n - 8 && y < 8) || (x < 8 && y >= n - 8); };
+    for (y = 0; y < n; y++) {
+      for (x = 0; x < n; x++) {
+        var on;
+        if (inFinder(x, y)) {
+          var fx = x >= n - 8 ? x - (n - 7) : x, fy = y >= n - 8 ? y - (n - 7) : y;
+          var ring = Math.min(fx, fy, 6 - fx, 6 - fy);
+          on = ring === 0 || ring === 2 || ring === 3;
+        } else {
+          s = (s * 1103515245 + 12345) % 2147483648;
+          on = (s >> 7) % 2 === 0;
+        }
+        if (on) out.push('<rect x="' + x + '" y="' + y + '" width="1" height="1"/>');
+      }
+    }
+    el.innerHTML += '<g fill="#12101a">' + out.join('') + '</g>';
+  }
+  drawCode(document.getElementById('qr'), 5501);
+  drawCode(document.getElementById('qr2'), 3319);
+})();
+</script>
+
+</div>
+</body>
+</html>

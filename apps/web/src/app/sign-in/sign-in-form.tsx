@@ -67,7 +67,7 @@ export function SignInForm({ requestSignInLink }: SignInFormProps) {
 
       <div>
         <Button type="submit" disabled={pending}>
-          {pending ? "Sending…" : "Email me a link"}
+          {pending ? "Enviando…" : "Envíame un enlace"}
         </Button>
       </div>
 

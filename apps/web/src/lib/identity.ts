@@ -57,7 +57,7 @@ export const SIGNED_OUT_PATH = "/";
  * a provider accepted a message, and neither is known here.
  */
 export const SIGN_IN_CONFIRMATION =
-  "If that address can receive mail, a link is on its way.";
+  "Si esa dirección puede recibir correo, el enlace ya va de camino.";
 
 /**
  * What the request screen says before anything is typed, in three sentences.
@@ -67,9 +67,9 @@ export const SIGN_IN_CONFIRMATION =
  * whether or not an account exists (D1, S6).
  */
 export const SIGN_IN_PROMISES: readonly string[] = [
-  "We email a link that expires in minutes and works once.",
-  "Anyone with access to that mailbox can sign in with it, so a shared inbox is a shared account.",
-  "If the address has no account, nothing is revealed: the same answer comes back either way.",
+  "Te enviamos un enlace que caduca en minutos y sirve una sola vez.",
+  "Cualquiera con acceso a ese buzón puede entrar con él: un buzón compartido es una cuenta compartida.",
+  "Si la dirección no tiene cuenta, no se revela nada: la respuesta es la misma en los dos casos.",
 ];
 
 // ── The request screen ──────────────────────────────────────────────────────
@@ -119,9 +119,9 @@ export function describeSignInRequest(
       kind: "confirmed",
       headline: SIGN_IN_CONFIRMATION,
       message:
-        "The box office took the request. It answers the same way whether that address has an account, whether it had already used up its links for this hour, and whether the counter that keeps track could be read at all — so this page cannot say which of those happened, and it does not guess.",
+        "La taquilla tomó nota de la petición. Responde igual tanto si esa dirección tiene cuenta como si ya había gastado sus enlaces de esta hora, y también si el contador que lo lleva no se pudo leer: esta página no puede decir cuál de las tres cosas pasó, y no lo adivina.",
       nextStep:
-        "Open the message in the next few minutes and follow the link: it expires quickly and works once. If nothing arrives, ask again — and check the spam folder before assuming anything.",
+        "Abre el mensaje en los próximos minutos y sigue el enlace: caduca pronto y sirve una sola vez. Si no llega nada, vuelve a pedirlo, y mira la carpeta de correo no deseado antes de dar nada por hecho.",
     };
   }
 
@@ -129,23 +129,23 @@ export function describeSignInRequest(
   if (problem.code === "invalid_input" || problem.status === 400) {
     return {
       kind: "refused",
-      headline: "That address was not accepted",
+      headline: "Esa dirección no se ha aceptado",
       // The API's own sentence, verbatim. Its rule refused the value; a second wording of that
       // rule here could only disagree with the rule that actually decides.
       message: problem.detail,
-      nextStep: "Correct the address and send it again.",
+      nextStep: "Corrige la dirección y envíala otra vez.",
     };
   }
 
   return {
     kind: "unavailable",
-    headline: "The link could not be sent",
+    headline: "No se pudo enviar el enlace",
     // Our failure, said as ours. Nothing here is a verdict on the address, and nothing is a claim
     // that no account exists — the box office never got as far as looking.
     message:
-      "The box office could not take the request, so no link was sent and nothing was decided about that address. This is our failure, not an answer about your mailbox or about whether an account exists.",
+      "La taquilla no pudo tomar la petición, así que no se envió ningún enlace y no se decidió nada sobre esa dirección. Es un fallo nuestro, no una respuesta sobre tu buzón ni sobre si existe una cuenta.",
     nextStep:
-      "Send it again. If it keeps failing, this deployment's mail side is down, and signing in will not work until it is back.",
+      "Envíalo otra vez. Si sigue fallando, el correo de este despliegue está caído y no se podrá entrar hasta que vuelva.",
     retryable: true,
     problem,
   };
@@ -255,23 +255,23 @@ export function describeSignInLink(
   if (problem.code === "unauthorized" || problem.status === 401) {
     return {
       kind: "unusable",
-      headline: "This link cannot be used",
+      headline: "Este enlace no se puede usar",
       message:
-        "A sign-in link expires in minutes and works once. The box office gives one answer for a link that was already used, one that aged out, and one that was never real — so this page cannot tell you which of those this is, and it will not guess. That is deliberate: the answer to \"did this link ever exist\" is not one this system gives out.",
+        "Un enlace de acceso caduca en minutos y sirve una sola vez. La taquilla da la misma respuesta para un enlace ya usado, para uno que se pasó de tiempo y para uno que nunca existió, así que esta página no puede decirte cuál de los tres es, y no lo adivina. Es a propósito: la respuesta a \"¿existió este enlace?\" no es una que este sistema dé.",
       nextStep:
-        "Ask for a new link at Sign in. If you signed in a moment ago, your list is under My tickets — and if you reloaded this page after signing in, this is the spent link answering, not a problem with your account.",
+        "Pide un enlace nuevo en Iniciar sesión. Si acabas de entrar, tu lista está en Mis entradas; y si recargaste esta página después de entrar, lo que responde es el enlace ya gastado, no un problema con tu cuenta.",
     };
   }
 
   return {
     kind: "unavailable",
-    headline: "This link could not be checked",
+    headline: "No se pudo comprobar este enlace",
     // Nothing about the link is known, and the page says exactly that instead of borrowing a
     // verdict: an outage must never look like an expired mail.
     message:
-      "The box office could not spend this link, so nothing about it is known — not whether it is spent, not whether it expired. This is our failure and not a verdict on the link.",
+      "La taquilla no pudo gastar este enlace, así que no se sabe nada de él: ni si está gastado, ni si caducó. Es un fallo nuestro, no un veredicto sobre el enlace.",
     nextStep:
-      "Open the link from your message again in a moment. If it keeps failing, this deployment is having a bad minute; ask for a new link once it is back.",
+      "Abre otra vez el enlace de tu mensaje dentro de un momento. Si sigue fallando, este despliegue está teniendo un mal minuto; pide un enlace nuevo cuando vuelva.",
     retryable: true,
     problem,
   };

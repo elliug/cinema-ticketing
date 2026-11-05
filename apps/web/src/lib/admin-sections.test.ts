@@ -49,6 +49,16 @@ test("the four screens are the four the administration has, each exactly once", 
   }
 });
 
+test("the four screens are named in the one vocabulary the section prints", () => {
+  // The navigation, the index and the browser gate all say these four names, and the
+  // administration speaks Castilian since the Marquesina redesign: a screen labelled in
+  // English here would be the only English words on a dark Spanish board.
+  assert.deepEqual(
+    ADMIN_SECTIONS.map((section) => section.label),
+    ["Cines, salas y planos", "Editor de planos", "Películas y sesiones", "Acceso"],
+  );
+});
+
 test("the index is a map, not one of the screens it maps", () => {
   assert.equal(ADMIN_INDEX_PATH, "/admin");
   const hrefs = ADMIN_SECTIONS.map((section) => section.href);

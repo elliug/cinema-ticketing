@@ -31,6 +31,15 @@ export type { FieldIds, FieldLabelProps, FieldProps } from "./field";
 export { PageHeader } from "./page-header";
 export type { PageHeaderProps } from "./page-header";
 
+export { PosterArt } from "./poster-art";
+export type { PosterArtProps } from "./poster-art";
+
+export { ScreeningRow } from "./screening-row";
+export type { ScreeningRowProps } from "./screening-row";
+
+export { TimeChip } from "./time-chip";
+export type { TimeChipProps, TimeChipState } from "./time-chip";
+
 export { SITE_NAV, SITE_NAV_PENDING_LABEL, SiteHeader } from "./site-header";
 export type { SiteNavItem } from "./site-header";
 
