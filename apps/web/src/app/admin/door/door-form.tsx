@@ -1,6 +1,7 @@
 "use client";
 
-// The door's whole interaction: one field, one action, one answer (M4.1 · T8 · S4, S5).
+// The door's whole interaction: one field, one action, one answer (M4.1 · T8 · S4, S5;
+// Marquesina since visual-redesign).
 //
 // A cashier has a buyer in front of them and a queue behind them, so the screen is a text field
 // and a button. There is no list of tickets, no identifier to copy, and no second form: the code
@@ -22,6 +23,10 @@
 //
 // The verdict itself is not decided here: `describeRedemption` in ./door-outcome.ts owns it, so
 // what this component prints is exactly what its tests proved.
+//
+// The station reads like the artboard's: the code in a tall mono field, one primary action, and
+// the answer as a doorman's stamp — a doubled edge, spaced capitals and the word, so the four
+// verdicts differ by their letters before they differ by their colour.
 import { useState, useTransition } from "react";
 
 import { Alert } from "@/components/ui/alert";
@@ -30,7 +35,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { RedemptionResponse } from "@/lib/public-api";
-import type { DoorAnswer } from "./door-outcome";
+import type { DoorAnswer, DoorOutcomeKind, DoorTone } from "./door-outcome";
 import { describeRedemption } from "./door-outcome";
 
 /** The one alert tone each verdict is drawn with; the headline is what says which it is. */
@@ -40,6 +45,23 @@ const TONE_VARIANT = {
   error: "destructive",
   info: "default",
 } as const;
+
+/** The stamp's tone. It reinforces the word on the stamp; it never stands in for it. */
+const STAMP_CLASS: Record<DoorTone, string> = {
+  success: "stamp stamp--success",
+  warning: "stamp stamp--warning",
+  error: "stamp stamp--danger",
+  info: "stamp stamp--info",
+};
+
+/** The stamp's glyph, decoration only (`aria-hidden` where it is printed). */
+const STAMP_GLYPH: Record<DoorOutcomeKind, string> = {
+  admitted: "✓",
+  already_used: "!",
+  not_ours: "✕",
+  not_admissible: "✕",
+  unavailable: "?",
+};
 
 export interface DoorFormProps {
   /** The server action that presents a code; it runs on the server, never here. */
@@ -71,17 +93,21 @@ export function DoorForm({ redeem }: DoorFormProps) {
     <Card className="flex flex-col gap-4 p-5">
       <CardHeader className="p-0">
         <h2 id="door-check" className="m-0 text-lg leading-tight font-semibold">
-          Check a ticket
+          Comprobar una entrada
         </h2>
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          Paste or type the code the buyer shows, then press the button once. The answer
-          replaces the last one, and the code is not kept.
+          Pega o escribe el código que enseña el comprador y pulsa el botón una sola vez. La
+          respuesta sustituye a la anterior, y el código no se guarda.
         </p>
       </CardHeader>
 
-      <form className="flex flex-wrap items-end gap-3" onSubmit={present} aria-labelledby="door-check">
+      <form
+        className="flex flex-wrap items-end gap-3"
+        onSubmit={present}
+        aria-labelledby="door-check"
+      >
         <div className="flex min-w-72 flex-1 flex-col gap-1.5">
-          <Label htmlFor="door-code">Ticket code</Label>
+          <Label htmlFor="door-code">Código de la entrada</Label>
           <Input
             id="door-code"
             name="code"
@@ -90,38 +116,49 @@ export function DoorForm({ redeem }: DoorFormProps) {
             autoComplete="off"
             spellCheck={false}
             aria-describedby="door-code-hint"
-            placeholder="Paste the code from the buyer's ticket"
+            placeholder="Pega el código de la entrada del comprador"
+            // Tall, mono and spaced: a code is read character by character, and `uppercase`
+            // only changes how it looks — the value travels exactly as it was typed.
+            className="h-14 font-mono text-2xl tracking-[0.18em] uppercase"
           />
         </div>
         <Button type="submit" disabled={blank || asking}>
-          {asking ? "Checking…" : "Admit or refuse"}
+          {asking ? "Comprobando…" : "Comprobar el código"}
         </Button>
       </form>
       <p id="door-code-hint" className="m-0 max-w-prose text-sm text-muted-foreground">
-        The code is checked by the server and nothing is stored in this browser. A printed
-        ticket is a record of the sale, never the verdict — the server&#39;s answer is.
+        El servidor comprueba el código y no se guarda nada en este navegador. Una entrada
+        impresa es un registro de la venta, nunca el veredicto: lo es la respuesta del servidor.
       </p>
 
       {/* The region exists before the first answer, so the first answer is announced too. */}
       <div role="status" aria-live="polite" aria-atomic="true" className="flex flex-col gap-2">
         {answer === null ? (
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            No code has been checked yet.
+            Ningún código se ha comprobado todavía.
           </p>
         ) : (
-          <Alert variant={TONE_VARIANT[answer.tone]} className="flex flex-col gap-2">
-            <h3 className="m-0 text-base leading-tight font-semibold">{answer.headline}</h3>
+          <Alert variant={TONE_VARIANT[answer.tone]} className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* The stamp is the verdict in one or two words, and the headline beside it is
+                  the same verdict in a sentence: two words, never a colour, carry it. */}
+              <p className={STAMP_CLASS[answer.tone]}>
+                <span aria-hidden="true">{STAMP_GLYPH[answer.kind]}</span>
+                {answer.stamp}
+              </p>
+              <h3 className="m-0 text-base leading-tight font-semibold">{answer.headline}</h3>
+            </div>
             <p className="m-0 max-w-prose">{answer.message}</p>
 
             {answer.screening === null ? null : (
               <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-                <dt className="text-muted-foreground">Screening</dt>
+                <dt className="text-muted-foreground">Sesión</dt>
                 <dd className="m-0 font-medium break-words">
                   {answer.screening.filmTitle}
                 </dd>
-                <dt className="text-muted-foreground">Where</dt>
+                <dt className="text-muted-foreground">Dónde</dt>
                 <dd className="m-0 break-words">{answer.screening.venue}</dd>
-                <dt className="text-muted-foreground">Starts</dt>
+                <dt className="text-muted-foreground">Empieza</dt>
                 <dd className="m-0">
                   <time dateTime={answer.screening.startsAt}>
                     {answer.screening.startsAtLocal}
@@ -129,7 +166,7 @@ export function DoorForm({ redeem }: DoorFormProps) {
                 </dd>
                 {answer.seatLabels.length === 0 ? null : (
                   <>
-                    <dt className="text-muted-foreground">Seat</dt>
+                    <dt className="text-muted-foreground">Butaca</dt>
                     <dd className="m-0 font-medium">{answer.seatLabels.join(", ")}</dd>
                   </>
                 )}
@@ -141,7 +178,8 @@ export function DoorForm({ redeem }: DoorFormProps) {
 
       {answer !== null && answer.retryable ? (
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          This answer is not a verdict on the ticket. Present the same code again in a moment.
+          Esta respuesta no es un veredicto sobre la entrada. Vuelve a presentar el mismo
+          código dentro de un momento.
         </p>
       ) : null}
     </Card>

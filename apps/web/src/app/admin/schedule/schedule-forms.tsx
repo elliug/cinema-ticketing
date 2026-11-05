@@ -85,7 +85,13 @@ function FeedbackLine({ feedback }: { feedback: Feedback }) {
   );
 }
 
-/** Creates one film. */
+/**
+ * Creates one film.
+ *
+ * The words are Castilian since the Marquesina redesign; the rules this form applies did not
+ * move with them. The confirmation names what the API stored, so it says what can be done
+ * next instead of what the form hoped for.
+ */
 export function FilmForm() {
   const router = useRouter();
   const ids = useIds("film");
@@ -109,7 +115,7 @@ export function FilmForm() {
       }
       setFeedback({
         kind: "success",
-        message: `Created ${result.value.title} (${result.value.runtimeMinutes} min, ${result.value.rating}). It can be scheduled now.`,
+        message: `Creada ${result.value.title} (${result.value.runtimeMinutes} min, ${result.value.rating}). Ya se puede programar.`,
       });
       setTitle("");
       setRuntimeMinutes("");
@@ -122,10 +128,10 @@ export function FilmForm() {
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Create a film">
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Crear una película">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.title}>Title</Label>
+          <Label htmlFor={ids.title}>Título</Label>
           <Input
             id={ids.title}
             name="title"
@@ -135,7 +141,7 @@ export function FilmForm() {
           />
         </div>
         <div className="flex w-40 flex-col gap-1.5">
-          <Label htmlFor={ids.runtime}>Runtime (minutes)</Label>
+          <Label htmlFor={ids.runtime}>Duración (minutos)</Label>
           <Input
             id={ids.runtime}
             name="runtimeMinutes"
@@ -147,7 +153,7 @@ export function FilmForm() {
           />
         </div>
         <div className="flex w-28 flex-col gap-1.5">
-          <Label htmlFor={ids.rating}>Rating</Label>
+          <Label htmlFor={ids.rating}>Calificación</Label>
           <Input
             id={ids.rating}
             name="rating"
@@ -157,7 +163,7 @@ export function FilmForm() {
           />
         </div>
         <Button type="submit" disabled={pending}>
-          {pending ? "Creating…" : "Create film"}
+          {pending ? "Creando…" : "Crear película"}
         </Button>
       </div>
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -230,8 +236,8 @@ export function EventForm({
         kind: "success",
         message:
           created.status === "on_sale"
-            ? `Created a screening at ${created.startsAt} with price ${created.priceDisplay}, on sale: the catalogue lists it while its start is ahead.`
-            : `Created a ${(createdStatus?.label ?? created.status).toLowerCase()} screening at ${created.startsAt} with price ${created.priceDisplay}. Its price and status can still be changed below.`,
+            ? `Creada la sesión a las ${created.startsAt} con precio ${created.priceDisplay}, en venta: la cartelera la lista mientras su inicio siga por delante.`
+            : `Creada la sesión a las ${created.startsAt} con precio ${created.priceDisplay}, en estado ${(createdStatus?.label ?? created.status).toLowerCase()}. Su precio y su estado se pueden cambiar abajo.`,
       });
       setStartsAt("");
       setPrice("");
@@ -245,13 +251,13 @@ export function EventForm({
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Schedule a screening">
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Programar una sesión">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.film}>Film</Label>
+          <Label htmlFor={ids.film}>Película</Label>
           <Select value={filmId} onValueChange={setFilmId} disabled={pending || films.length === 0}>
             <SelectTrigger id={ids.film} aria-describedby={ids.filmHint}>
-              <SelectValue placeholder="Choose a film" />
+              <SelectValue placeholder="Elige una película" />
             </SelectTrigger>
             <SelectContent>
               {films.map((film) => (
@@ -263,20 +269,20 @@ export function EventForm({
           </Select>
           <p id={ids.filmHint} className="m-0 text-sm text-muted-foreground">
             {films.length === 0
-              ? "The repertoire is empty. Create a film first: this form cannot schedule one that does not exist."
-              : "Chosen from the list the API serves, never typed as an identifier."}
+              ? "El repertorio está vacío. Crea una película primero: este formulario no puede programar una que no exista."
+              : "Se elige de la lista que sirve la API, nunca se escribe un identificador."}
           </p>
         </div>
 
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.layout}>Published layout version</Label>
+          <Label htmlFor={ids.layout}>Versión publicada del plano</Label>
           <Select
             value={layoutVersionId}
             onValueChange={setLayoutVersionId}
             disabled={pending || layouts.length === 0}
           >
             <SelectTrigger id={ids.layout} aria-describedby={ids.layoutHint}>
-              <SelectValue placeholder="Choose a layout version" />
+              <SelectValue placeholder="Elige una versión del plano" />
             </SelectTrigger>
             <SelectContent>
               {layouts.map((layout) => (
@@ -288,13 +294,13 @@ export function EventForm({
           </Select>
           <p id={ids.layoutHint} className="m-0 max-w-prose text-sm text-muted-foreground">
             {layouts.length === 0
-              ? "This room has no published layout version, so a screening in it would be refused as a conflict. Publish one in the layout editor first."
-              : "Only published versions are offered: a draft version is refused as a conflict."}
+              ? "Esta sala no tiene ninguna versión publicada del plano, así que una sesión en ella se rechazaría como conflicto. Publica una en el editor de planos primero."
+              : "Sólo se ofrecen las versiones publicadas: una versión en borrador se rechaza como conflicto."}
           </p>
         </div>
 
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.startsAt}>Start time (UTC)</Label>
+          <Label htmlFor={ids.startsAt}>Hora de inicio (UTC)</Label>
           <Input
             id={ids.startsAt}
             name="startsAt"
@@ -306,7 +312,7 @@ export function EventForm({
         </div>
 
         <div className="flex min-w-44 flex-col gap-1.5">
-          <Label htmlFor={ids.price}>Price per seat</Label>
+          <Label htmlFor={ids.price}>Precio por butaca</Label>
           <Input
             id={ids.price}
             name="price"
@@ -317,20 +323,21 @@ export function EventForm({
             aria-describedby={ids.priceHint}
           />
           <p id={ids.priceHint} className="m-0 max-w-prose text-sm text-muted-foreground">
-            As a person writes money: <code>12.50</code>. Left empty, this form names no
-            price and the screening is stored at 0.00, to be priced below.
+            Como lo escribe una persona: <code>12.50</code>. Si se deja vacío, este
+            formulario no nombra ningún precio y la sesión se guarda sin precio, para
+            ponerle uno abajo.
           </p>
         </div>
 
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.status}>Status</Label>
+          <Label htmlFor={ids.status}>Estado</Label>
           <Select
             value={status}
             onValueChange={(value) => setStatus(value as EventStatus)}
             disabled={pending}
           >
             <SelectTrigger id={ids.status} aria-describedby={ids.statusHint}>
-              <SelectValue placeholder="Choose a status" />
+              <SelectValue placeholder="Elige un estado" />
             </SelectTrigger>
             <SelectContent>
               {EVENT_STATUS_OPTIONS.map((option) => (
@@ -346,14 +353,15 @@ export function EventForm({
         </div>
 
         <Button type="submit" disabled={pending || !ready}>
-          {pending ? "Scheduling…" : "Schedule screening"}
+          {pending ? "Programando…" : "Programar la sesión"}
         </Button>
       </div>
 
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        One submit: a price and a status of <code>on_sale</code> here put the screening in the
-        catalogue. Leave the price empty and the status as a draft to schedule it as a draft
-        at price 0.00, exactly as before, and set both in the form below when you are ready.
+        Un solo envío: un precio y un estado <code>on_sale</code> aquí ponen la sesión en la
+        cartelera. Si dejas el precio vacío y el estado en borrador, se programa como un
+        borrador sin precio, igual que antes, y fijas los dos en el formulario de abajo cuando
+        quieras.
       </p>
 
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -399,7 +407,7 @@ export function SaleStateForm({
       }
       setFeedback({
         kind: "success",
-        message: `Saved. The screening now holds ${result.value.priceDisplay} per seat and its stored status is ${result.value.status}.`,
+        message: `Guardado. La sesión tiene ahora ${result.value.priceDisplay} por butaca y su estado guardado es ${result.value.status}.`,
       });
       router.refresh();
     });
@@ -415,11 +423,11 @@ export function SaleStateForm({
     <form
       className="flex flex-col gap-4"
       onSubmit={handleSubmit}
-      aria-label={`Price and status for ${heading}`}
+      aria-label={`Precio y estado de ${heading}`}
     >
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex min-w-44 flex-col gap-1.5">
-          <Label htmlFor={ids.price}>Price per seat</Label>
+          <Label htmlFor={ids.price}>Precio por butaca</Label>
           <Input
             id={ids.price}
             name="price"
@@ -431,20 +439,20 @@ export function SaleStateForm({
             aria-describedby={`${ids.priceHint}${priceInvalid ? ` ${ids.error}` : ""}`}
           />
           <p id={ids.priceHint} className="m-0 max-w-prose text-sm text-muted-foreground">
-            As a person writes money: <code>12.50</code>. Zero is a free screening, not a
-            missing price.
+            Como lo escribe una persona: <code>12.50</code>. Cero es una sesión gratuita,
+            no un precio que falta.
           </p>
         </div>
 
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.status}>Status</Label>
+          <Label htmlFor={ids.status}>Estado</Label>
           <Select value={status} onValueChange={setStatus} disabled={pending}>
             <SelectTrigger
               id={ids.status}
               aria-invalid={statusInvalid}
               aria-describedby={`${ids.statusHint}${statusInvalid ? ` ${ids.error}` : ""}`}
             >
-              <SelectValue placeholder="Choose a status" />
+              <SelectValue placeholder="Elige un estado" />
             </SelectTrigger>
             <SelectContent>
               {EVENT_STATUS_OPTIONS.map((option) => (
@@ -456,19 +464,19 @@ export function SaleStateForm({
           </Select>
           <p id={ids.statusHint} className="m-0 max-w-prose text-sm text-muted-foreground">
             {chosen === undefined
-              ? "This screening's stored status is not one this build offers. Choosing one above replaces it."
+              ? "El estado guardado de esta sesión no es uno de los que ofrece esta versión. Elegir uno arriba lo sustituye."
               : chosen.note}
           </p>
         </div>
 
         <Button type="submit" disabled={pending || price.trim() === "" || status.trim() === ""}>
-          {pending ? "Saving…" : "Save price and status"}
+          {pending ? "Guardando…" : "Guardar precio y estado"}
         </Button>
       </div>
 
       {chosen === undefined ? null : (
         <p className="m-0 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-muted-foreground">This status reads</span>
+          <span className="text-muted-foreground">Este estado se lee</span>
           <Badge variant={toneBadgeVariant(chosen.tone)}>{chosen.label}</Badge>
         </p>
       )}

@@ -1,4 +1,5 @@
-// /admin/schedule — films, screenings, and the price and status that sell one (M3.5 · T8).
+// /admin/schedule — films, screenings, and the price and status that sell one (M3.5 · T8;
+// Marquesina since visual-redesign).
 //
 // The screen exists because a screening created in the administration has to become
 // sellable without a SQL prompt. `POST /admin/events` carries an optional price and an
@@ -21,6 +22,11 @@
 // still ahead. So the list prints the stored status and, when that status says on sale but
 // the start has passed, says so — it never calls a screening on sale on its own authority
 // (that rule is `describeScreeningStatus`, tested in lib/scheduling.ts).
+//
+// Since the Marquesina redesign the list is a ledger, not a wall of cards: an uppercase head,
+// one hairline per session, the hour and the price in the mono face, and the state in a word.
+// Every value is still the one the read served — the ledger added no number, and the box
+// office's own counts live in the seats card below, where the read actually carries them.
 //
 // The route is server-rendered per request because it depends on local administrative
 // configuration and live data; it is never prerendered at build time.
@@ -104,25 +110,26 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Local administration · M3.5"
-        title="Films and screenings"
+        eyebrow="Administración local · M3.5"
+        title="Películas y sesiones"
         description={
           <>
-            Create a film, then schedule it in a room against a published layout version with
-            the price and the status that let the catalogue sell it. A screening can also be
-            scheduled as a draft and priced afterwards. Works in local development only: the
-            API must run with local administration enabled, and this page needs the same{" "}
-            <code>{ADMIN_TOKEN_ENV}</code> token as the API.
+            Crea una película y prográmala después en una sala, contra una versión publicada
+            del plano, con el precio y el estado que dejan que la cartelera la venda. Una
+            sesión también se puede programar como borrador y ponerle precio más tarde. Sólo
+            funciona en desarrollo local: la API tiene que correr con la administración local
+            activada, y esta página necesita el mismo <code>{ADMIN_TOKEN_ENV}</code> que la
+            API.
           </>
         }
       />
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Create a film</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Crear una película</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            A film is what a screening is scheduled from, so it is created once here and
-            chosen from the list below.
+            Una película es aquello de lo que se programa una sesión, así que se crea una vez
+            aquí y luego se elige de la lista.
           </p>
         </CardHeader>
         <CardContent>
@@ -131,7 +138,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           ) : (
             <ReadProblem
               id="films-problem"
-              title="The film repertoire could not be loaded"
+              title="No se pudo cargar el repertorio de películas"
               problem={filmsResult.error}
             />
           )}
@@ -140,12 +147,12 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Schedule a screening</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Programar una sesión</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Choose the room, then a published layout version of it, then the film from the
-            repertoire. The price and the status are optional here: with both named, this one
-            submit schedules a screening the catalogue already sells; with neither, it is the
-            draft at price 0.00 the form below prices.
+            Elige la sala, luego una versión publicada del plano de esa sala y por último la
+            película del repertorio. El precio y el estado son opcionales aquí: con los dos
+            puestos, este único envío programa una sesión que la cartelera ya vende; sin
+            ninguno, es el borrador sin precio al que el formulario de abajo pone precio.
           </p>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
@@ -155,11 +162,11 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                 className="flex flex-wrap items-end gap-4"
                 action={ADMIN_SCHEDULE_PATH}
                 method="get"
-                aria-label="Select a cinema"
+                aria-label="Elegir un cine"
               >
                 <div className="flex min-w-56 flex-col gap-1.5">
                   <label className="text-sm font-medium" htmlFor="schedule-cinema">
-                    Cinema
+                    Cine
                   </label>
                   <select
                     className={FILTER_SELECT_CLASS}
@@ -167,7 +174,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                     name="cinemaId"
                     defaultValue={cinemaId}
                   >
-                    <option value="">Select a cinema</option>
+                    <option value="">Elige un cine</option>
                     {cinemaRows.map((cinema) => (
                       <option key={cinema.id} value={cinema.id}>
                         {cinema.label}
@@ -176,33 +183,33 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                   </select>
                 </div>
                 <Button type="submit" variant="outline">
-                  Show this cinema&apos;s rooms
+                  Ver las salas de este cine
                 </Button>
               </form>
 
               {cinemaId === "" ? (
                 <p className="m-0 max-w-prose text-sm text-muted-foreground">
-                  Choose a cinema to see its rooms. A screening needs a room and a published
-                  layout version, and neither can be guessed.
+                  Elige un cine para ver sus salas. Una sesión necesita una sala y una versión
+                  publicada del plano, y ninguna de las dos se puede adivinar.
                 </p>
               ) : roomsResult === null || !roomsResult.ok ? (
                 <ReadProblem
                   id="rooms-problem"
-                  title="The rooms could not be loaded"
+                  title="No se pudieron cargar las salas"
                   problem={roomsResult?.error ?? configurationProblem()}
-                  selection={`Cinema ${cinemaId}`}
+                  selection={`Cine ${cinemaId}`}
                 />
               ) : (
                 <form
                   className="flex flex-wrap items-end gap-4"
                   action={ADMIN_SCHEDULE_PATH}
                   method="get"
-                  aria-label="Select a room"
+                  aria-label="Elegir una sala"
                 >
                   <input type="hidden" name="cinemaId" value={cinemaId} />
                   <div className="flex min-w-56 flex-col gap-1.5">
                     <label className="text-sm font-medium" htmlFor="schedule-room">
-                      Room
+                      Sala
                     </label>
                     <select
                       className={FILTER_SELECT_CLASS}
@@ -210,7 +217,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       name="roomId"
                       defaultValue={roomId}
                     >
-                      <option value="">Select a room</option>
+                      <option value="">Elige una sala</option>
                       {roomRows.map((room) => (
                         <option key={room.id} value={room.id}>
                           {room.label}
@@ -219,7 +226,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                     </select>
                   </div>
                   <Button type="submit" variant="outline">
-                    Show this room&apos;s layout versions
+                    Ver las versiones del plano
                   </Button>
                 </form>
               )}
@@ -227,9 +234,9 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
               {roomId === "" ? null : layoutsResult === null || !layoutsResult.ok ? (
                 <ReadProblem
                   id="layouts-problem"
-                  title="The layout versions could not be loaded"
+                  title="No se pudieron cargar las versiones del plano"
                   problem={layoutsResult?.error ?? configurationProblem()}
-                  selection={`Room ${roomId}`}
+                  selection={`Sala ${roomId}`}
                 />
               ) : (
                 <EventForm
@@ -256,7 +263,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           ) : (
             <ReadProblem
               id="scheduling-cinemas-problem"
-              title="The cinemas could not be loaded"
+              title="No se pudieron cargar los cines"
               problem={cinemasResult.error}
             />
           )}
@@ -265,11 +272,11 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Screenings</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Sesiones</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Every screening, in the order the API answers them, with the film it shows, the
-            room and cinema it is in, its start in UTC, its price per seat and the status
-            that is actually stored.
+            Todas las sesiones, en el orden en que las responde la API, con la película que
+            proyectan, la sala y el cine en que están, su inicio en UTC, su precio por butaca y
+            el estado que hay realmente guardado.
           </p>
         </CardHeader>
         <CardContent>
@@ -283,7 +290,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           ) : (
             <ReadProblem
               id="screenings-problem"
-              title="The screenings could not be loaded"
+              title="No se pudieron cargar las sesiones"
               problem={eventsResult.error}
             />
           )}
@@ -292,28 +299,28 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Price and status</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Precio y estado</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            One request sets the price, the status, or both. A field that did not change is
-            not sent, and a status of <code>on_sale</code> is what puts a screening in the
-            catalogue while its start is still ahead.
+            Una petición fija el precio, el estado o los dos. Un campo que no cambió no se
+            envía, y un estado de <code>on_sale</code> es lo que pone una sesión en la
+            cartelera mientras su inicio siga por delante.
           </p>
         </CardHeader>
         <CardContent>
           {eventId === "" ? (
             <p className="m-0 max-w-prose text-sm text-muted-foreground">
-              Pick a screening from the list above, or schedule one, to set what it costs and
-              whether it is for sale.
+              Elige una sesión de la lista de arriba, o programa una, para fijar cuánto cuesta
+              y si está a la venta.
             </p>
           ) : selected === undefined ? (
             <Alert variant="warning" role="alert" className="flex flex-col gap-1">
               <p className="m-0 font-semibold">
-                No screening in the list answers to that address
+                Ninguna sesión de la lista responde a esa dirección
               </p>
               <AlertDescription className="flex flex-col gap-1">
                 <p className="m-0">
-                  <code>{eventId}</code> is not one of the screenings the API listed, so
-                  there is nothing to edit. Pick one from the list above.
+                  <code>{eventId}</code> no es ninguna de las sesiones que la API listó, así
+                  que no hay nada que editar. Elige una de la lista de arriba.
                 </p>
               </AlertDescription>
             </Alert>
@@ -354,8 +361,9 @@ function ScreeningsList({
   if (screenings.length === 0) {
     return (
       <p className="m-0 max-w-prose text-sm text-muted-foreground">
-        No screening is scheduled yet. One created above appears here with the price and the
-        status it was created with — a draft at price 0.00 when the form named neither.
+        Todavía no hay ninguna sesión programada. La que se cree arriba aparece aquí con el
+        precio y el estado con que se creó — un borrador sin precio cuando el formulario no
+        nombró ninguno.
       </p>
     );
   }
@@ -364,93 +372,88 @@ function ScreeningsList({
   const now = new Date();
 
   return (
-    <ul role="list" className="m-0 flex list-none flex-col gap-3 p-0">
-      {screenings.map((screening) => {
-        const view = describeScreeningStatus(screening, now);
-        const editing = screening.id === eventId;
-        const query = new URLSearchParams({ eventId: screening.id });
-        if (cinemaId !== "") {
-          query.set("cinemaId", cinemaId);
-        }
-        if (roomId !== "") {
-          query.set("roomId", roomId);
-        }
+    <div className="overflow-x-auto">
+      <table className="ledger">
+        {/* The card's heading already names the list, so the caption is for a screen reader
+            only: it says what the rows are, in one word, instead of repeating the h2. */}
+        <caption className="visually-hidden">
+          Sesiones programadas, con su inicio, su precio y su estado
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Inicio (UTC)</th>
+            <th scope="col">Película</th>
+            <th scope="col">Precio por butaca</th>
+            <th scope="col">Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {screenings.map((screening) => {
+            const view = describeScreeningStatus(screening, now);
+            const editing = screening.id === eventId;
+            const query = new URLSearchParams({ eventId: screening.id });
+            if (cinemaId !== "") {
+              query.set("cinemaId", cinemaId);
+            }
+            if (roomId !== "") {
+              query.set("roomId", roomId);
+            }
 
-        return (
-          <li key={screening.id} className="min-w-0">
-            <Card
-              className={
-                editing
-                  ? "flex flex-col gap-3 p-4 ring-2 ring-ring"
-                  : "flex flex-col gap-3 p-4"
-              }
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <h3 className="m-0 text-base leading-tight font-semibold break-words">
-                    {screening.filmTitle}
-                  </h3>
-                  <p className="m-0 text-sm text-muted-foreground">
-                    {screening.cinemaName} · {screening.roomName}
-                  </p>
-                </div>
-                {/* The word is the state; the tone only reinforces it, so the row reads the
-                    same in greyscale. */}
-                <Badge variant={toneBadgeVariant(view.tone)}>{view.label}</Badge>
-              </div>
-
-              <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-                <dt>
-                  <span className="text-muted-foreground">Starts (UTC)</span>
-                </dt>
-                <dd className="m-0 font-medium break-words">
+            return (
+              <tr key={screening.id} className={editing ? "ledger__row--current" : undefined}>
+                <td className="ledger__num">
                   <time dateTime={screening.startsAt}>{screening.startsAt}</time>
-                </dd>
-
-                <dt>
-                  <span className="text-muted-foreground">Price per seat</span>
-                </dt>
-                <dd className="m-0 font-medium">{screening.priceDisplay}</dd>
-
-                <dt>
-                  <span className="text-muted-foreground">Stored status</span>
-                </dt>
-                <dd className="m-0 font-medium">
-                  <code>{view.status}</code>
-                </dd>
-              </dl>
-
-              {view.catalogueNote === null ? null : (
-                <p className="m-0 max-w-prose text-sm">{view.catalogueNote}</p>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Button asChild variant="outline" size="sm">
-                  <Link
-                    href={`${ADMIN_SCHEDULE_PATH}?${query.toString()}`}
-                    aria-current={editing ? "true" : undefined}
-                    // Not prefetched, deliberately. This screen renders one of these per
-                    // screening, and every one of them is *this same route* with a different
-                    // query: prefetching them buys next to nothing (the payload is a full
-                    // render, not a cheap fragment) and costs one request per screening — a
-                    // month of programming is dozens. It also made the browser gate fail on
-                    // Firefox alone: Firefox reports the aborted prefetches that a navigation
-                    // away leaves behind as console errors, Chromium swallows them. Removing
-                    // the waste removes the symptom; filtering the console would have hidden
-                    // the next real error that looked like this one.
-                    prefetch={false}
-                  >
-                    {editing
-                      ? "Editing the price and status below"
-                      : `Set the price and status of ${screening.filmTitle}`}
-                  </Link>
-                </Button>
-              </div>
-            </Card>
-          </li>
-        );
-      })}
-    </ul>
+                </td>
+                <td>
+                  <span className="block font-medium break-words">
+                    {screening.filmTitle}
+                  </span>
+                  <span className="block text-muted-foreground">
+                    {screening.cinemaName} · {screening.roomName}
+                  </span>
+                </td>
+                <td className="ledger__num">{screening.priceDisplay}</td>
+                <td>
+                  <div className="flex flex-col gap-1">
+                    {/* The word is the state; the tone only reinforces it, so the row reads the
+                        same in greyscale. */}
+                    <div>
+                      <Badge variant={toneBadgeVariant(view.tone)}>{view.label}</Badge>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      Estado guardado: <code>{view.status}</code>
+                    </span>
+                    {view.catalogueNote === null ? null : (
+                      <span className="block max-w-prose text-sm">{view.catalogueNote}</span>
+                    )}
+                    <Button asChild variant="outline" size="sm" className="mt-1 self-start">
+                      <Link
+                        href={`${ADMIN_SCHEDULE_PATH}?${query.toString()}`}
+                        aria-current={editing ? "true" : undefined}
+                        // Not prefetched, deliberately. This screen renders one of these per
+                        // screening, and every one of them is *this same route* with a different
+                        // query: prefetching them buys next to nothing (the payload is a full
+                        // render, not a cheap fragment) and costs one request per screening — a
+                        // month of programming is dozens. It also made the browser gate fail on
+                        // Firefox alone: Firefox reports the aborted prefetches that a navigation
+                        // away leaves behind as console errors, Chromium swallows them. Removing
+                        // the waste removes the symptom; filtering the console would have hidden
+                        // the next real error that looked like this one.
+                        prefetch={false}
+                      >
+                        {editing
+                          ? "Editando el precio y el estado abajo"
+                          : `Poner precio y estado a ${screening.filmTitle}`}
+                      </Link>
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -462,14 +465,14 @@ async function renderEventSeats(eventId: string) {
     return (
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Materialized seats</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">Butacas materializadas</h2>
         </CardHeader>
         <CardContent>
           <ReadProblem
             id="event-seats-problem"
-            title="The event seats could not be loaded"
+            title="No se pudieron cargar las butacas de la sesión"
             problem={result.error}
-            selection={`Screening ${eventId}`}
+            selection={`Sesión ${eventId}`}
           />
         </CardContent>
       </Card>
@@ -483,10 +486,10 @@ async function renderEventSeats(eventId: string) {
 function configurationProblem(): AdminProblem {
   return {
     type: "https://cinema.local/problems/configuration",
-    title: "Configuration error",
+    title: "Error de configuración",
     status: 0,
     code: "configuration_error",
-    detail: `${ADMIN_TOKEN_ENV} must be set to use local administration`,
+    detail: `${ADMIN_TOKEN_ENV} tiene que estar definido para usar la administración local`,
   };
 }
 
@@ -495,7 +498,8 @@ function configurationProblem(): AdminProblem {
  *
  * An unavailable list is never rendered as an empty one: the code, the HTTP status and the
  * API's own detail are printed, and the surface says it is local-development only rather
- * than looking like a screen with nothing in it.
+ * than looking like a screen with nothing in it. The API's detail stays in the API's own
+ * words: it is the box office's sentence, not this screen's.
  */
 function ReadProblem({
   id,
@@ -520,9 +524,9 @@ function ReadProblem({
         </p>
         <p className="m-0">{problem.detail}</p>
         <p className="m-0">
-          This surface works only in local development: the API must run with local
-          administration enabled, and this page needs the same <code>{ADMIN_TOKEN_ENV}</code>{" "}
-          token as the API.
+          Esta pantalla sólo funciona en desarrollo local: la API tiene que correr con la
+          administración local activada, y esta página necesita el mismo{" "}
+          <code>{ADMIN_TOKEN_ENV}</code> que la API.
         </p>
       </AlertDescription>
     </Alert>

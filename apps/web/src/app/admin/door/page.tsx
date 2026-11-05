@@ -1,4 +1,5 @@
-// /admin/door — the door screen a cashier uses to admit one person (M4.1 · T8 · S4, S5).
+// /admin/door — the door screen a cashier uses to admit one person (M4.1 · T8 · S4, S5;
+// Marquesina since visual-redesign).
 //
 // It takes the code a buyer shows, offers one action, and prints one answer. The route
 // authenticates nobody new: it sits under the local administration exactly as the venue, layout
@@ -28,27 +29,27 @@ export default function DoorPage() {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Local administration · M4.1"
-        title="Door"
-        description="One code, one answer. A ticket admits exactly one person, once: a code that has already been used, a ticket that was voided — or whose screening was cancelled — and a code that is not a ticket of ours are four different answers, and each one says so in words. Nothing is stored in this browser."
+        eyebrow="Administración local · M4.1"
+        title="Acceso"
+        description="Un código, una respuesta. Una entrada admite a una persona exactamente una vez: un código ya usado, una entrada anulada — o cuya sesión se canceló — y un código que no es una entrada nuestra son cuatro respuestas distintas, y cada una lo dice con palabras. No se guarda nada en este navegador."
       />
 
       <DoorForm redeem={redeemCodeAction} />
 
       <Card>
         <CardHeader>
-          <h2 className="m-0 text-lg leading-tight font-semibold">Where the code comes from</h2>
+          <h2 className="m-0 text-lg leading-tight font-semibold">De dónde sale el código</h2>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Every ticket a payment issued carries its own code on its page and in its PDF. The
-            door reads neither of them as a verdict: the same public route a scanner would call
-            answers what the code admits, and two doors presenting one code at the same moment is
-            the ordinary case rather than an accident.
+            Toda entrada que emitió un pago lleva su propio código en su página y en su PDF. El
+            acceso no lee ninguno de los dos como veredicto: la misma ruta pública que llamaría
+            un escáner responde qué admite el código, y dos accesos presentando un código en el
+            mismo momento es el caso normal, no un accidente.
           </p>
         </CardHeader>
         <CardContent>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Buy one from <Link href="/events">the catalogue</Link>, then open it from{" "}
-            <Link href="/tickets">the tickets this browser bought</Link>.
+            Compra una en <Link href="/events">la cartelera</Link> y ábrela después desde{" "}
+            <Link href="/tickets">las entradas que compró este navegador</Link>.
           </p>
         </CardContent>
       </Card>

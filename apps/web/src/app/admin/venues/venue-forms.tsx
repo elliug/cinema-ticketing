@@ -78,7 +78,7 @@ export function CinemaForm() {
       }
       setFeedback({
         kind: "success",
-        message: `Created ${result.value.name} (${result.value.timezone}). It can hold rooms now.`,
+        message: `Creado ${result.value.name} (${result.value.timezone}). Ya puede tener salas.`,
       });
       setName("");
       setTimezone("");
@@ -88,10 +88,10 @@ export function CinemaForm() {
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Create a cinema">
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Crear un cine">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.name}>Name</Label>
+          <Label htmlFor={ids.name}>Nombre</Label>
           <Input
             id={ids.name}
             name="name"
@@ -101,7 +101,7 @@ export function CinemaForm() {
           />
         </div>
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.timezone}>Timezone</Label>
+          <Label htmlFor={ids.timezone}>Zona horaria</Label>
           <Input
             id={ids.timezone}
             name="timezone"
@@ -112,7 +112,7 @@ export function CinemaForm() {
           />
         </div>
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.address}>Address (optional)</Label>
+          <Label htmlFor={ids.address}>Dirección (opcional)</Label>
           <Input
             id={ids.address}
             name="address"
@@ -122,7 +122,7 @@ export function CinemaForm() {
           />
         </div>
         <Button type="submit" disabled={pending}>
-          {pending ? "Creating…" : "Create cinema"}
+          {pending ? "Creando…" : "Crear cine"}
         </Button>
       </div>
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -159,7 +159,7 @@ export function RoomForm({
       }
       setFeedback({
         kind: "success",
-        message: `Created ${result.value.name} in ${cinemaLabel(cinemas, result.value.cinemaId)}.`,
+        message: `Creada ${result.value.name} en ${cinemaLabel(cinemas, result.value.cinemaId)}.`,
       });
       setName("");
       router.push(
@@ -170,17 +170,17 @@ export function RoomForm({
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Create a room">
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Crear una sala">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.cinema}>Cinema</Label>
+          <Label htmlFor={ids.cinema}>Cine</Label>
           <Select
             value={selectedCinema}
             onValueChange={setSelectedCinema}
             disabled={pending || cinemas.length === 0}
           >
             <SelectTrigger id={ids.cinema}>
-              <SelectValue placeholder="Choose a cinema" />
+              <SelectValue placeholder="Elige un cine" />
             </SelectTrigger>
             <SelectContent>
               {cinemas.map((cinema) => (
@@ -192,7 +192,7 @@ export function RoomForm({
           </Select>
         </div>
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.name}>Room name</Label>
+          <Label htmlFor={ids.name}>Nombre de la sala</Label>
           <Input
             id={ids.name}
             name="name"
@@ -202,7 +202,7 @@ export function RoomForm({
           />
         </div>
         <Button type="submit" disabled={pending || selectedCinema === ""}>
-          {pending ? "Creating…" : "Create room"}
+          {pending ? "Creando…" : "Crear sala"}
         </Button>
       </div>
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -235,24 +235,24 @@ export function LayoutForm({
       }
       setFeedback({
         kind: "success",
-        message: `Created version ${result.value.version} of the layout in ${roomLabel(rooms, result.value.roomId)}. It is a draft until it is published.`,
+        message: `Creada la versión ${result.value.version} del plano de ${roomLabel(rooms, result.value.roomId)}. Es un borrador hasta que se publique.`,
       });
       router.refresh();
     });
   }
 
   return (
-    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Create a layout">
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit} aria-label="Crear un plano">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex min-w-56 flex-col gap-1.5">
-          <Label htmlFor={ids.room}>Room</Label>
+          <Label htmlFor={ids.room}>Sala</Label>
           <Select
             value={selectedRoom}
             onValueChange={setSelectedRoom}
             disabled={pending || rooms.length === 0}
           >
             <SelectTrigger id={ids.room}>
-              <SelectValue placeholder="Choose a room" />
+              <SelectValue placeholder="Elige una sala" />
             </SelectTrigger>
             <SelectContent>
               {rooms.map((room) => (
@@ -264,7 +264,7 @@ export function LayoutForm({
           </Select>
         </div>
         <Button type="submit" disabled={pending || selectedRoom === ""}>
-          {pending ? "Creating…" : "Create draft layout"}
+          {pending ? "Creando…" : "Crear un plano en borrador"}
         </Button>
       </div>
       {feedback ? <FeedbackLine feedback={feedback} /> : null}
@@ -273,11 +273,11 @@ export function LayoutForm({
 }
 
 function cinemaLabel(cinemas: readonly VenueOption[], id: string): string {
-  return cinemas.find((cinema) => cinema.id === id)?.label ?? `cinema ${id}`;
+  return cinemas.find((cinema) => cinema.id === id)?.label ?? `cine ${id}`;
 }
 
 function roomLabel(rooms: readonly VenueOption[], id: string): string {
-  return rooms.find((room) => room.id === id)?.label ?? `room ${id}`;
+  return rooms.find((room) => room.id === id)?.label ?? `sala ${id}`;
 }
 
 /** A stable id set for the controls of one form. */

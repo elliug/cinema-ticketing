@@ -1,6 +1,7 @@
 "use client";
 
-// Local administrative layout editor view (M3.5 · T8 · S3).
+// Local administrative layout editor view (M3.5 · T8 · S3; Marquesina since
+// visual-redesign).
 //
 // This component is presentation only. Every geometry change is delegated to the pure model
 // in lib/layout-editor.ts, and every write is delegated to a server action in ./actions.ts.
@@ -11,6 +12,11 @@
 // well as a tone, and the two issue lists are printed in full rather than reduced to "fix
 // these" — the whole point of the editor is that saving and publishing refuse for reasons
 // the operator can read.
+//
+// The words are Castilian since the Marquesina redesign, and the rows are drawn as the
+// section's ledgers: a mono `Fila 3` heading, then the fields, then one block per seat. The
+// API's own refusals (`${code}: ${detail}`) are still printed exactly as the API sent them,
+// because that sentence names the field and is not this screen's to reword.
 import { useRouter } from "next/navigation";
 import { useId, useState, useTransition } from "react";
 
@@ -43,11 +49,13 @@ import {
   setSeatKind,
   setSeatNumber,
   setSeatPosition,
+  seatKindLabel,
   toRowPayloads,
   toggleSeatEnabled,
   validateForPublish,
   validateLayout,
 } from "@/lib/layout-editor";
+import { layoutStatusWord } from "@/lib/venue-admin";
 import {
   cloneLayoutAction,
   publishLayoutAction,
@@ -61,6 +69,11 @@ interface LayoutEditorViewProps {
 interface Feedback {
   kind: "success" | "error";
   message: string;
+}
+
+/** One count with the word it needs: "1 fila", "12 butacas". */
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
@@ -94,7 +107,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
       setLayout(fromLayout(result.value));
       setFeedback({
         kind: "success",
-        message: `Saved the rows of draft version ${result.value.version}.`,
+        message: `Guardadas las filas del borrador de la versión ${result.value.version}.`,
       });
       router.refresh();
     });
@@ -114,7 +127,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
       setLayout(fromLayout(result.value));
       setFeedback({
         kind: "success",
-        message: `Published version ${result.value.version}. It is immutable now: clone it to change it. A screening can be scheduled against it.`,
+        message: `Publicada la versión ${result.value.version}. Ahora es inmutable: clónala para cambiarla. Una sesión ya se puede programar contra ella.`,
       });
       router.refresh();
     });
@@ -133,7 +146,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
       }
       setFeedback({
         kind: "success",
-        message: `Opened draft version ${result.value.version}.`,
+        message: `Abierta la versión ${result.value.version} en borrador.`,
       });
       router.push(`/admin/layouts?layoutId=${result.value.id}`);
       router.refresh();
@@ -148,20 +161,23 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
         <CardHeader>
           <div className="flex flex-wrap items-center gap-3">
             <h2 id="layout-version" className="m-0 text-lg leading-tight font-semibold">
-              Version {layout.version}
+              Versión <span className="ledger__num">{layout.version}</span>
             </h2>
             {/* The word is the state; the tone only reinforces it, so the header reads the
                 same in greyscale. */}
-            <Badge variant={isDraft ? "secondary" : "success"}>{layout.status}</Badge>
+            <Badge variant={isDraft ? "secondary" : "success"}>
+              {layoutStatusWord(layout.status)}
+            </Badge>
           </div>
           <p className="m-0 max-w-prose text-sm text-muted-foreground">
-            Layout <code>{layout.layoutId}</code> · {layout.rows.length} row(s) ·{" "}
-            {enabledSeats} enabled seat(s)
+            Plano <code>{layout.layoutId}</code> ·{" "}
+            {countLabel(layout.rows.length, "fila", "filas")} ·{" "}
+            {countLabel(enabledSeats, "butaca habilitada", "butacas habilitadas")}
           </p>
           {isDraft ? null : (
             <p className="m-0 max-w-prose text-sm">
-              Version {layout.version} is published and immutable. Clone it to edit a new
-              draft version.
+              La versión {layout.version} está publicada y es inmutable. Clónala para editar
+              un borrador nuevo.
             </p>
           )}
         </CardHeader>
@@ -175,7 +191,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
           className="flex flex-col gap-2"
         >
           <h2 id="layout-problems" className="m-0 text-lg leading-tight font-semibold">
-            Fix these before saving
+            Corrige esto antes de guardar
           </h2>
           <AlertDescription>
             <ul role="list" className="m-0 flex list-disc flex-col gap-1 pl-5">
@@ -192,7 +208,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
 
       {layout.rows.length === 0 ? (
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          This version has no rows yet. Add a row to describe the room.
+          Esta versión todavía no tiene filas. Añade una fila para describir la sala.
         </p>
       ) : null}
 
@@ -202,7 +218,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
             <Card className="flex flex-col gap-4 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="m-0 text-base leading-tight font-semibold">
-                  Row {rowIndex + 1}
+                  Fila <span className="ledger__num">{rowIndex + 1}</span>
                 </h3>
                 <Button
                   type="button"
@@ -211,7 +227,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                   onClick={() => setLayout(removeRow(layout, rowIndex))}
                   disabled={disabled}
                 >
-                  Remove row {rowIndex + 1}
+                  Quitar la fila {rowIndex + 1}
                 </Button>
               </div>
 
@@ -232,7 +248,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                     <div className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
                       <div className="flex w-28 flex-col gap-1.5">
                         <Label htmlFor={`seat-${rowIndex}-${seatIndex}-number`}>
-                          Number
+                          Número
                         </Label>
                         <Input
                           id={`seat-${rowIndex}-${seatIndex}-number`}
@@ -252,7 +268,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                       </div>
                       <div className="flex w-28 flex-col gap-1.5">
                         <Label htmlFor={`seat-${rowIndex}-${seatIndex}-position`}>
-                          Position
+                          Posición
                         </Label>
                         <Input
                           id={`seat-${rowIndex}-${seatIndex}-position`}
@@ -273,7 +289,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                         />
                       </div>
                       <div className="flex w-40 flex-col gap-1.5">
-                        <Label htmlFor={`seat-${rowIndex}-${seatIndex}-kind`}>Kind</Label>
+                        <Label htmlFor={`seat-${rowIndex}-${seatIndex}-kind`}>Tipo</Label>
                         <Select
                           value={seat.kind}
                           onValueChange={(value) =>
@@ -294,7 +310,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                           <SelectContent>
                             {SEAT_KINDS.map((kind) => (
                               <SelectItem key={kind} value={kind}>
-                                {kind}
+                                {seatKindLabel(kind)}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -312,7 +328,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                           }
                           disabled={disabled}
                         />
-                        Enabled
+                        Habilitada
                       </Label>
                       <Button
                         type="button"
@@ -323,7 +339,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                         }
                         disabled={disabled}
                       >
-                        Remove seat {seat.number.trim() === "" ? "" : seat.number}
+                        Quitar la butaca {seat.number.trim() === "" ? "" : seat.number}
                       </Button>
                     </div>
                   </li>
@@ -338,7 +354,7 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
                   onClick={() => setLayout(addSeat(layout, rowIndex))}
                   disabled={disabled}
                 >
-                  Add a seat to row {rowIndex + 1}
+                  Añadir una butaca a la fila {rowIndex + 1}
                 </Button>
               </div>
             </Card>
@@ -353,22 +369,22 @@ export function LayoutEditorView({ initialLayout }: LayoutEditorViewProps) {
           onClick={() => setLayout(addRow(layout))}
           disabled={disabled}
         >
-          Add row
+          Añadir fila
         </Button>
         <Button type="button" onClick={handleSave} disabled={!canSave}>
-          {pending ? "Saving…" : "Save rows"}
+          {pending ? "Guardando…" : "Guardar filas"}
         </Button>
         <Button type="button" onClick={handlePublish} disabled={!canPublish}>
-          Publish version
+          Publicar la versión
         </Button>
         <Button type="button" variant="secondary" onClick={handleClone} disabled={!canClone}>
-          Clone into new draft
+          Clonar en un borrador nuevo
         </Button>
       </div>
 
       {publishIssues.length > 0 ? (
         <p className="m-0 max-w-prose text-sm text-muted-foreground">
-          Publishing is blocked: <code>{layoutIssueDetail(publishIssues[0])}</code>
+          No se puede publicar: <code>{layoutIssueDetail(publishIssues[0])}</code>
         </p>
       ) : null}
 
@@ -397,7 +413,7 @@ function RowFields({
   return (
     <div className="flex flex-wrap items-end gap-3">
       <div className="flex w-40 flex-col gap-1.5">
-        <Label htmlFor={ids.label}>Label</Label>
+        <Label htmlFor={ids.label}>Etiqueta</Label>
         <Input
           id={ids.label}
           value={rowLabel}
@@ -406,7 +422,7 @@ function RowFields({
         />
       </div>
       <div className="flex w-28 flex-col gap-1.5">
-        <Label htmlFor={ids.position}>Position</Label>
+        <Label htmlFor={ids.position}>Posición</Label>
         <Input
           id={ids.position}
           type="number"
@@ -416,7 +432,9 @@ function RowFields({
           disabled={disabled}
         />
       </div>
-      <p className="m-0 text-sm text-muted-foreground">{seatCount} seat(s)</p>
+      <p className="m-0 text-sm text-muted-foreground">
+        {countLabel(seatCount, "butaca", "butacas")}
+      </p>
     </div>
   );
 }
