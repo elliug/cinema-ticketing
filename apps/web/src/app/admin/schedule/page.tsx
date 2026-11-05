@@ -37,6 +37,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { formatAmount } from "@/lib/receipt";
 import { ADMIN_TOKEN_ENV } from "@/lib/admin-api";
 import type { AdminEventRead, AdminProblem } from "@/lib/admin-api";
 import { summarizeEventSeats } from "@/lib/event-seats";
@@ -412,7 +413,7 @@ function ScreeningsList({
                     {screening.cinemaName} · {screening.roomName}
                   </span>
                 </td>
-                <td className="ledger__num">{screening.priceDisplay}</td>
+                <td className="ledger__num">{formatAmount(screening.priceCents)}</td>
                 <td>
                   <div className="flex flex-col gap-1">
                     {/* The word is the state; the tone only reinforces it, so the row reads the
