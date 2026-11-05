@@ -128,15 +128,18 @@ test.describe("administration", () => {
     const entry = page.getByRole("listitem").filter({ hasText: screening.filmTitle });
     await expect(entry, "the catalogue lists the new screening").toHaveCount(1);
     // The chip carries the served instant as its machine value and the venue's own hour as
-    // what a person reads, so the two are asserted apart.
-    await expect(entry.locator("time"), "the venue's own instant").toHaveAttribute(
+    // what a person reads, so the two are asserted apart: `datetime` is the UTC instant the
+    // API serves, the text is the hour a person reads at that venue.
+    await expect(entry.locator("time"), "the served instant as a machine value").toHaveAttribute(
       "datetime",
-      STARTS_AT.venueHour,
+      STARTS_AT.instant,
     );
     await expect(entry.locator("time"), "the venue's own hour").toHaveText(
       STARTS_AT.venueClock,
     );
-    await expect(entry, "the price the administration set").toContainText(editedPrice);
+    await expect(entry, "the price the administration set").toContainText(
+      editedPrice.replace(".", ","),
+    );
     // A session on sale prints the seats it still has; the board has no status pill.
     await expect(entry).toContainText("quedan");
 

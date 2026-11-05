@@ -68,12 +68,18 @@ export const STARTS_AT = {
   /**
    * The hour the board prints for that instant: the venue's own clock, as a person reads it.
    *
-   * Written down separately from `venueHour` on purpose. `venueHour` is the string the API
-   * serves and the machine value the markup carries; this is what the screen shows, and a
-   * gate that derived one from the other could not tell a screen printing the venue's hour
-   * from one printing the UTC instant the form was given.
+   * Written down separately from `venueHour` on purpose. The board prints the hour, so a
+   * gate that derived one string from the other could not tell a screen printing the venue's
+   * hour from one printing the UTC instant the form was given.
    */
   venueClock: "20:30",
+  /**
+   * The instant the markup carries in `datetime`: the same moment, written in UTC.
+   *
+   * The screen prints the venue's hour and hands a machine the served instant, so these are
+   * two assertions and not one: `2026-…T18:30:00Z` is `20:30` at a Madrid venue in summer.
+   */
+  instant: "2031-05-04T18:30:00Z",
 } as const;
 
 /** One screening the gate creates through the administration screens. */
@@ -449,7 +455,9 @@ export async function purchaseTwoSeats(
   const entry = page.getByRole("listitem").filter({ hasText: screening.filmTitle });
   await expect(entry, "the catalogue lists the new screening").toHaveCount(1);
   await expect(entry).toContainText(screening.venueClock);
-  await expect(entry).toContainText(screening.price);
+  // The board prints the amount the way the application does — comma and euro sign — so
+  // the expectation is the typed price repunctuated, never a second formatting rule.
+  await expect(entry).toContainText(screening.price.replace(".", ","));
   await expect(entry).toContainText("quedan");
 
   await entry
