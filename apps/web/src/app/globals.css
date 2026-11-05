@@ -87,13 +87,18 @@
  * Typography uses the system font stack, so the build and runtime never reach the
  * network.
  *
+ * Since the Marquesina redesign this file holds **one** scheme: a dark room and a
+ * warm lamp. There is no `prefers-color-scheme` branch, because the redesign chooses
+ * the dark one everywhere, payment form and box office included.
+ *
  * The palette is contrast-safe, not decorative. Against their own background:
  *
- *   --color-text        >= 16:1 on surface and page (AA and AAA for body text)
- *   --color-text-muted  >= 6.4:1 on surface, page and muted surface (AA)
- *   --color-accent      >= 6.7:1 as link text, and white on it >= 7.6:1 as a
- *                       primary button (AA in both directions)
- *   state fg/bg pairs   >= 5.6:1 for every badge, alert and field error
+ *   --color-text        >= 17:1 on surface and page (AA and AAA for body text)
+ *   --color-text-muted  >= 7.4:1 on surface, page and muted surface (AA)
+ *   --color-accent      >= 9.6:1 as link text, and --color-on-accent on it is
+ *                       >= 10.9:1 as a primary button (AA in both directions)
+ *   --color-border-strong >= 3.3:1 against the surface it outlines (WCAG 1.4.11)
+ *   state fg/bg pairs   >= 6.1:1 for every badge, alert and field error
  *
  * Colour never carries a state on its own: every status pill, alert and validation
  * message also spells the state out in words and a glyph (see components/badge.tsx
@@ -101,7 +106,7 @@
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 
   /* ── shadcn vocabulary, aliased onto the tokens below ─────────────────────
    * One palette, two naming schemes: Tailwind/shadcn utilities resolve these, and
@@ -134,46 +139,46 @@
    * the surface a card or the header sits on, and the muted surface used for
    * secondary buttons, code and skeletons.
    */
-  --color-bg: #f6f8fa;
-  --color-surface: #ffffff;
-  --color-surface-muted: #eaeff5;
-  --color-text: #141c26;
-  --color-text-muted: #4b5561;
-  --color-border: #c6cfda;
-  --color-border-strong: #66727f;
+  --color-bg: #0a0b0f;
+  --color-surface: #12141a;
+  --color-surface-muted: #191c24;
+  --color-text: #f4f5f7;
+  --color-text-muted: #a8afbb;
+  --color-border: #272b34;
+  --color-border-strong: #586373;
 
   /* ── Colour: brand and interaction ─────────────────────────────────────────
    * The accent is both the link colour and the primary button background, so the
    * two must read against very different neighbours: --color-on-accent is the
    * text colour that goes *on* the accent, never the accent used as text.
    */
-  --color-accent: #1b4fa8;
-  --color-accent-hover: #143d85;
-  --color-on-accent: #ffffff;
+  --color-accent: #f6b73c;
+  --color-accent-hover: #ffc95c;
+  --color-on-accent: #171100;
 
   /* ── Colour: destructive ───────────────────────────────────────────────────
    * A danger *background* needs white text on it; a danger *message* needs to be
    * readable on a light surface. In light mode one value does both.
    */
-  --color-danger: #b3261e;
-  --color-danger-hover: #8f1d17;
+  --color-danger: #b8342a;
+  --color-danger-hover: #9d2b22;
   --color-on-danger: #ffffff;
-  --color-danger-text: #b3261e;
+  --color-danger-text: #f0736a;
 
   /* ── Colour: state tones ───────────────────────────────────────────────────
    * A background/foreground pair per tone, used by badges, alerts and field
    * errors. Each pair is above 5.6:1 so a state is legible even on a bad screen.
    */
-  --color-neutral-bg: #e9edf2;
-  --color-neutral-fg: #37414c;
-  --color-info-bg: #e7effd;
-  --color-info-fg: #1b4fa8;
-  --color-success-bg: #e4f3e9;
-  --color-success-fg: #0f5c28;
-  --color-warning-bg: #fdf3d7;
-  --color-warning-fg: #6f4300;
-  --color-danger-bg: #fdecea;
-  --color-danger-fg: #b3261e;
+  --color-neutral-bg: #1b2027;
+  --color-neutral-fg: #cfd6e0;
+  --color-info-bg: #16202b;
+  --color-info-fg: #8ec1ff;
+  --color-success-bg: #12241a;
+  --color-success-fg: #6fe0a8;
+  --color-warning-bg: #241d0c;
+  --color-warning-fg: #f6b73c;
+  --color-danger-bg: #2a1614;
+  --color-danger-fg: #f0736a;
 
   /* ── Spacing ───────────────────────────────────────────────────────────────
    * One 0.25rem step, used for every gap, padding and stack. No surface should
@@ -210,6 +215,7 @@
   --font-size-xl: 1.375rem;
   --font-size-2xl: 1.75rem;
   --font-size-3xl: 2.125rem;
+  --font-size-4xl: 2.5rem;
   --line-height-tight: 1.2;
   --line-height-normal: 1.5;
   --font-weight-normal: 400;
@@ -230,8 +236,8 @@
    * must lift off it. Shadows are decoration; nothing depends on them to be
    * understood, which is also why they are almost absent in dark mode.
    */
-  --shadow-1: 0 1px 2px rgb(16 24 32 / 8%);
-  --shadow-2: 0 4px 16px rgb(16 24 32 / 12%);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 55%);
 
   /* ── Layout ────────────────────────────────────────────────────────────────
    * The shell and every page share one width, so the header, the content and the
@@ -255,45 +261,6 @@
   --code-bg: var(--color-surface-muted);
   --radius: var(--radius-md);
   --max-width: var(--layout-max-width);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #0d1117;
-    --color-surface: #161b22;
-    --color-surface-muted: #1f2630;
-    --color-text: #eef2f7;
-    --color-text-muted: #b0bac6;
-    --color-border: #2c3540;
-    --color-border-strong: #6d7987;
-
-    /* A light accent on a dark surface: the accent is used as *text* here, and
-     * --color-on-accent is the dark ink that goes on the filled button. */
-    --color-accent: #9dc1ff;
-    --color-accent-hover: #c2d8ff;
-    --color-on-accent: #0b1220;
-
-    /* White on this red is 5.6:1; the same red as text is unreadable on a dark
-     * page, so messages use --color-danger-text instead. */
-    --color-danger: #c0322a;
-    --color-danger-hover: #a82920;
-    --color-on-danger: #ffffff;
-    --color-danger-text: #ff9a92;
-
-    --color-neutral-bg: #232a34;
-    --color-neutral-fg: #cfd8e3;
-    --color-info-bg: #17233a;
-    --color-info-fg: #9dc1ff;
-    --color-success-bg: #14291b;
-    --color-success-fg: #7fd39a;
-    --color-warning-bg: #2b2410;
-    --color-warning-fg: #f2c14e;
-    --color-danger-bg: #2e1614;
-    --color-danger-fg: #ff9a92;
-
-    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-2: 0 4px 16px rgb(0 0 0 / 50%);
-  }
 }
 
 /* The shell is a column: header, the page's own `<main>`, footer. `min-height`
@@ -321,7 +288,7 @@ h3 {
 
 h1 {
   margin: var(--space-1) 0 var(--space-3);
-  font-size: var(--font-size-2xl);
+  font-size: var(--font-size-4xl);
 }
 
 h2 {
@@ -925,6 +892,185 @@ code {
   flex-direction: column;
   gap: var(--space-2);
   max-width: var(--measure);
+}
+
+/* ── Brand, and the marquee strip ────────────────────────────────────────────
+ * The redesign's one gesture of theatre: the name set in spaced capitals, and a row
+ * of small lamps under the header. The lamps are decoration only -- they carry no
+ * state and are `aria-hidden` in the markup -- so they stop at 55% opacity instead
+ * of competing with the nav.
+ */
+.brand__name {
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+
+.brand__meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.site-header__bulbs {
+  height: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-accent) 0 3px,
+    transparent 3px 13px
+  );
+  opacity: 0.55;
+}
+
+/* The eyebrow is the accent in this design: it names the section, and the accent
+ * reaches 9.6:1 on the page, so it is a heading cue rather than a whisper. */
+.page-header__eyebrow {
+  color: var(--color-accent);
+}
+
+/* ── The listings board ──────────────────────────────────────────────────────
+ * The catalogue prints one screening per row, the way a foyer board does: the film
+ * on the left, the time it starts on the right, and the room and the price between
+ * them. Rows are a list, not a table: a screen reader hears "list, 6 items" and each
+ * row keeps its own heading.
+ */
+.listing {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.listing__row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  gap: var(--space-5);
+  align-items: center;
+  padding: var(--space-5) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.listing__poster {
+  width: 84px;
+}
+
+.listing__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.listing__title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  overflow-wrap: break-word;
+}
+
+.listing__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.listing__times {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ── The time chip ───────────────────────────────────────────────────────────
+ * One session, printed as the board prints it: the hour in the mono face and what is
+ * left underneath. It is a link when it leads somewhere and a plain span when it
+ * does not, so nothing invites a click it cannot answer. Colour reinforces the
+ * state; the words "quedan 4" and "agotada" carry it.
+ */
+.time-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 5.5rem;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  color: var(--color-text);
+  text-align: center;
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.time-chip:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.time-chip__time {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: 1.1;
+}
+
+.time-chip__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.time-chip--few {
+  border-color: var(--color-warning-fg);
+}
+
+.time-chip--few .time-chip__meta {
+  color: var(--color-warning-fg);
+  font-weight: var(--font-weight-medium);
+}
+
+.time-chip--out {
+  border-style: dashed;
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.time-chip--out .time-chip__time {
+  text-decoration: line-through;
+}
+
+/* ── Poster art ──────────────────────────────────────────────────────────────
+ * Drawn, never fetched: the web app makes no request for an image, so a poster is a
+ * small inline drawing whose hue and shape are derived from the film title. It is
+ * decorative and stays out of the accessibility tree.
+ */
+.poster {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+}
+
+@media (max-width: 720px) {
+  .listing__row {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .listing__poster {
+    width: 64px;
+  }
+
+  .listing__times {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 640px) {

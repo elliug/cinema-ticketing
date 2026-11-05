@@ -64,17 +64,17 @@ export interface SiteNavItem {
 
 /** The primary navigation, in the order the product presents itself. */
 export const SITE_NAV: readonly SiteNavItem[] = [
-  { label: "Now showing", href: "/events" },
-  { label: "My tickets", href: "/tickets" },
+  { label: "Cartelera", href: "/events" },
+  { label: "Mis entradas", href: "/tickets" },
   // The door used to sit here, beside the section, because a cashier works there all evening
   // and should not have to cross the venue editor to reach it. It is inside the administration
   // now: the primary navigation is for the buyer, and a screen only an operator uses belongs
   // where the operator already is, described with the other three screens and their order.
-  { label: "Administration", href: "/admin/venues", prefix: "/admin" },
+  { label: "Administración", href: "/admin/venues", prefix: "/admin" },
 ];
 
 /** What a navigation entry that has no screen yet says instead of linking. */
-export const SITE_NAV_PENDING_LABEL = "not built yet";
+export const SITE_NAV_PENDING_LABEL = "aún no construida";
 
 /**
  * Whether this path is the entry's page (or one of its children).
@@ -133,9 +133,7 @@ export function SiteHeader() {
       <div className="site-header__inner">
         <Link className="brand" href="/">
           <span className="brand__name">Cinema Ticketing</span>
-          <span className="brand__meta">
-            M3.5 · public purchase and local administration
-          </span>
+          <span className="brand__meta">Entradas con butaca numerada</span>
         </Link>
 
         <nav className="site-nav" aria-label="Primary">
@@ -170,10 +168,13 @@ export function SiteHeader() {
             href={SIGN_IN_PATH}
             aria-current={pathname === SIGN_IN_PATH ? "page" : undefined}
           >
-            Sign in
+            Iniciar sesión
           </Link>
         </div>
       </div>
+      {/* The marquee strip: three pixels of lamps under the header, decoration only, so
+          it is hidden from assistive technology and never carries a state. */}
+      <div className="site-header__bulbs" aria-hidden="true" />
     </header>
   );
 }
