@@ -43,17 +43,9 @@
 import Link from "next/link";
 import { Suspense } from "react";
 
-import { PageHeader } from "@/components";
+import { PageHeader, ScreeningRow } from "@/components";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PublicProblem, PublicScreening } from "@/lib/public-api";
 import { createPublicClient, resolvePublicConfig } from "@/lib/public-api";
@@ -74,9 +66,9 @@ export default function EventsPage({ searchParams }: EventsPageProps) {
   return (
     <main id="main-content" className="foundation">
       <PageHeader
-        eyebrow="Catalogue · M3.5"
-        title="Now showing"
-        description="Screenings on sale from now on, in screening order, one page at a time: when there are more, the address of the next page is offered below the list. Times are the venue's own clock, prices are per seat, and the seats available are the number the API counted when this page was loaded."
+        eyebrow="Cartelera"
+        title="Sesiones en venta"
+        description="Las sesiones que están a la venta desde ahora, en el orden en que las programa el cine, una página cada vez. La hora es la del propio local, el precio es por butaca y las butacas libres son las que la API contó al cargar esta página."
       />
 
       {/* The URL is read inside the boundary, so the header still arrives while the page
@@ -129,26 +121,39 @@ function CatalogueList({
   nextHref: string | null;
 }) {
   return (
-    <section aria-labelledby="screenings-title" className="flex flex-col gap-3">
-      <h2 id="screenings-title">Screenings on sale</h2>
-      <p className="m-0 max-w-prose">
-        {/* The count is a page count, not a programme count: with more pages behind
-            this one, "12 screenings are on sale" would be a number the screen cannot
-            know. `hasMore` is the only thing this page may say about the rest. */}
-        {screenings.length === 1
-          ? "1 screening on this page."
-          : `${screenings.length} screenings on this page.`}{" "}
-        <span className="text-muted-foreground">
-          Each entry opens that screening&apos;s seat map, where the seats are
-          chosen and held.
-        </span>
+    <section aria-labelledby="screenings-title" className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 id="screenings-title">Sesiones en venta</h2>
+        {/* The count is a page count, not a programme count: with more pages behind this
+            one, "12 sesiones están en venta" would be a number the screen cannot know.
+            `hasMore` is the only thing this page may say about the rest. */}
+        <p className="m-0 text-sm text-muted-foreground">
+          {screenings.length === 1
+            ? "1 sesión en esta página"
+            : `${screenings.length} sesiones en esta página`}
+        </p>
+      </div>
+
+      <p className="m-0 max-w-prose text-sm text-muted-foreground">
+        Cada fila abre el plano de butacas de esa sesión, donde se eligen y se reservan.
       </p>
 
-      {/* `role="list"` keeps the list announced as one: `list-none` removes the
-          marker and, in Safari, the list semantics with it. */}
-      <ul role="list" className="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2">
+      {/* `role="list"` keeps the list announced as one: the class removes the marker and,
+          in Safari, the list semantics with it. */}
+      <ul role="list" className="listing">
         {screenings.map((screening) => (
-          <ScreeningEntry key={screening.id} screening={screening} />
+          <ScreeningRow
+            key={screening.id}
+            filmTitle={screening.filmTitle}
+            cinemaName={screening.cinemaName}
+            roomName={screening.roomName}
+            startsAtLocal={screening.startsAtLocal}
+            startsAt={screening.startsAt === "" ? undefined : screening.startsAt}
+            priceDisplay={screening.priceDisplay}
+            availableSeats={screening.availableSeats}
+            seatCount={screening.seatCount}
+            href={`/events/${encodeURIComponent(screening.id)}/seats`}
+          />
         ))}
       </ul>
 
@@ -158,11 +163,11 @@ function CatalogueList({
           be bookmarked, shared and reloaded like any other. */}
       {nextHref === null ? null : (
         <p className="m-0 max-w-prose">
-          More screenings are on sale than fit on this page.{" "}
-          <Link href={nextHref}>Show the next screenings</Link>{" "}
+          Hay más sesiones en venta de las que caben en esta página.{" "}
+          <Link href={nextHref}>Ver las siguientes sesiones</Link>{" "}
           <span className="text-muted-foreground">
-            — the address carries where this page ended, so the next page can be followed,
-            bookmarked and reloaded.
+            — la dirección lleva dónde terminó esta página, así que la siguiente se puede
+            seguir, guardar y recargar.
           </span>
         </p>
       )}
@@ -170,90 +175,12 @@ function CatalogueList({
   );
 }
 
-function ScreeningEntry({ screening }: { screening: PublicScreening }) {
-  const soldOut = screening.availableSeats === 0;
-  const href = `/events/${encodeURIComponent(screening.id)}/seats`;
-  // The machine-readable instant is the UTC one; the text a person reads is the
-  // venue's own presentation, exactly as served.
-  const startsAt = screening.startsAt === "" ? undefined : screening.startsAt;
-
-  return (
-    <li className="min-w-0">
-      {/* `relative` is the positioning context for the link's overlay below, which
-          is what makes the whole entry clickable while the link keeps a short,
-          descriptive name for a screen reader. */}
-      <Card className="relative flex h-full flex-col">
-        <CardHeader>
-          <CardTitle className="break-words">{screening.filmTitle}</CardTitle>
-          <CardDescription>
-            {screening.cinemaName} · {screening.roomName}
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent className="flex flex-1 flex-col gap-3">
-          <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt>
-              <span className="text-muted-foreground">Starts</span>
-            </dt>
-            <dd className="m-0 font-medium break-words">
-              <time dateTime={startsAt}>{screening.startsAtLocal}</time>
-            </dd>
-
-            <dt>
-              <span className="text-muted-foreground">Price per seat</span>
-            </dt>
-            <dd className="m-0 font-medium">{screening.priceDisplay}</dd>
-
-            <dt>
-              <span className="text-muted-foreground">Availability</span>
-            </dt>
-            <dd className="m-0 font-medium">
-              {screening.availableSeats} of {screening.seatCount} seats available
-              {soldOut ? " — sold out" : ""}
-            </dd>
-          </dl>
-
-          <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-            {/* The word is the state; the tone only reinforces it, so the sold-out
-                entry reads the same in greyscale. */}
-            <Badge variant={soldOut ? "danger" : "success"}>
-              {soldOut ? "Sold out" : "On sale"}
-            </Badge>
-            {/* `h-auto` and `whitespace-normal` are merged over the primitive's
-                fixed height and nowrap, so a long film title wraps at 360px
-                instead of pushing the entry sideways. */}
-            <Button
-              asChild
-              variant="outline"
-              size="sm"
-              className="h-auto whitespace-normal py-1.5 text-left"
-            >
-              <Link href={href} className="after:absolute after:inset-0">
-                {soldOut
-                  ? `See the seat map for ${screening.filmTitle}`
-                  : `Choose seats for ${screening.filmTitle}`}
-              </Link>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </li>
-  );
-}
-
-/**
- * The catalogue while it is still being read.
- *
- * It is a real region with a heading and a sentence, so a slow read is announced
- * instead of looking like an empty page; the skeletons are decorative and hidden
- * from assistive technology by the primitive itself.
- */
 function CatalogueLoading() {
   return (
     <section aria-labelledby="catalogue-loading" className="flex flex-col gap-3">
-      <h2 id="catalogue-loading">Screenings on sale</h2>
+      <h2 id="catalogue-loading">Sesiones en venta</h2>
       <p role="status" className="m-0 max-w-prose">
-        <span className="text-muted-foreground">Loading the catalogue…</span>
+        <span className="text-muted-foreground">Cargando la cartelera…</span>
       </p>
       <ul role="list" aria-hidden="true" className="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2">
         {[0, 1, 2, 3].map((slot) => (
@@ -283,28 +210,27 @@ function CatalogueEmpty() {
   return (
     <section aria-labelledby="catalogue-empty" className="flex flex-col gap-3">
       <Card className="flex flex-col gap-2 p-5">
-        <h2 id="catalogue-empty">No screenings are on sale right now</h2>
+        <h2 id="catalogue-empty">Ahora mismo no hay sesiones en venta</h2>
         <p className="m-0 max-w-prose">
           <span className="text-muted-foreground">
-            The catalogue answered an empty list. A screening appears here while it
-            is on sale and has not started yet, so this means there is nothing to
-            sell at the moment rather than that the page failed.
+            La cartelera respondió una lista vacía. Una sesión aparece aquí mientras está
+            a la venta y no ha empezado, así que esto significa que ahora mismo no hay nada
+            que vender, no que la página haya fallado.
           </span>
         </p>
         <p className="m-0 max-w-prose">
           <span className="text-muted-foreground">
-            Nothing is listed in the meantime, and no placeholder screening is
-            shown: a film title, a time or a price here would be a claim the system
-            does not make.
+            Mientras tanto no se lista nada, y no se muestra una sesión de relleno: un
+            título, una hora o un precio aquí serían una afirmación que el sistema no hace.
           </span>
         </p>
         <p className="m-0 max-w-prose text-sm">
           <span className="text-muted-foreground">
-            Scheduling happens in the local administration surface,{" "}
+            La programación se hace en la administración local,{" "}
           </span>
-          <Link href="/admin/schedule">films and screenings</Link>
+          <Link href="/admin/schedule">películas y sesiones</Link>
           <span className="text-muted-foreground">
-            , which is available in this development environment only.
+            , disponible solo en este entorno de desarrollo.
           </span>
         </p>
       </Card>
@@ -328,17 +254,17 @@ function CatalogueStaleLink({ problem }: { problem: PublicProblem }) {
   return (
     <section aria-labelledby="catalogue-stale-link" className="flex flex-col gap-3">
       <Card className="flex flex-col gap-2 p-5">
-        <h2 id="catalogue-stale-link">This catalogue link is no longer valid</h2>
+        <h2 id="catalogue-stale-link">Este enlace de cartelera ya no vale</h2>
         <p className="m-0 max-w-prose">
-          The cursor in this address names a page the catalogue cannot show any more, because
-          the screenings it counted have moved on. Nothing is wrong with the catalogue itself.
+          El cursor de esta dirección nombra una página que la cartelera ya no puede mostrar,
+          porque las sesiones que contó han avanzado. La cartelera no tiene nada malo.
         </p>
         <p className="m-0 max-w-prose">
           <code>{problem.code}</code> · HTTP {problem.status}
         </p>
         <p className="m-0">{problem.detail}</p>
         <p className="m-0 max-w-prose">
-          <Link href={CATALOGUE_PATH}>See the catalogue from the beginning</Link>
+          <Link href={CATALOGUE_PATH}>Ver la cartelera desde el principio</Link>
         </p>
       </Card>
     </section>
@@ -368,7 +294,7 @@ function CatalogueProblem({ problem }: { problem: PublicProblem }) {
       aria-labelledby="catalogue-problem"
       className="flex flex-col gap-2"
     >
-      <h2 id="catalogue-problem">The catalogue could not be loaded</h2>
+      <h2 id="catalogue-problem">No se pudo cargar la cartelera</h2>
       <AlertDescription className="flex flex-col gap-2">
         <p className="m-0">
           <code>{problem.code}</code> · HTTP {problem.status}
@@ -376,12 +302,12 @@ function CatalogueProblem({ problem }: { problem: PublicProblem }) {
         <p className="m-0">{problem.detail}</p>
         <p className="m-0">
           {temporary
-            ? "The catalogue is temporarily unavailable. Reload the page to ask it again; this page only reads, so nothing was lost."
-            : "The API refused this read. Reload the page to try again."}
+            ? "La cartelera no está disponible temporalmente. Recarga la página para volver a preguntar; esta página solo lee, así que no se ha perdido nada."
+            : "La API rechazó esta lectura. Recarga la página para intentarlo otra vez."}
         </p>
         <p className="m-0">
-          No screening is listed while the catalogue is unreadable. An empty list
-          would mean there is nothing on sale, which is not what happened here.
+          Mientras la cartelera no se puede leer no se lista ninguna sesión. Una lista
+          vacía significaría que no hay nada a la venta, que no es lo que ha pasado aquí.
         </p>
       </AlertDescription>
     </Alert>
