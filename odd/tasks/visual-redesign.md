@@ -45,3 +45,48 @@ no implementation starts before the user chooses one.
 - L16 — Remaining: `/in/[token]` (the identity link page) still carries English copy, and no phone-width pass has been done. Everything else on the web app is in Marquesina and in Castilian, with 484 unit tests, lint, typecheck, build and nine Chromium browser scenarios green.
 - L17 — The last English surface is gone: `/in/[token]` (the page a sign-in email opens) and the two link outcomes it renders are Castilian now, with the four assertions that pinned their words moved with them. The only work left in the feature is the phone-width pass.
 - L18 — "lo dejamos para la siguiente fase": the phone-width pass is deferred to a next phase by the user's decision. The feature stays open on that one task; everything else (T1–T8, the gate's Chromium half, the Castilian copy including `/in/[token]`) is closed and pushed on `design/cinema-redesign`.
+
+## Next phase (agreed, not started)
+
+Both items below are deferred together by the user's decision, after PR #126 merged the
+redesign into `main`.
+
+### N1 — Phone-width pass
+
+The three directions were drawn at 1440px and the implementation was verified at that width.
+Nothing has been checked at 390px. Scope: the catalogue rows (poster + title + chip), the seat
+plan (does the map scroll sensibly with 14 seats per row?), the checkout two-column split, the
+ticket stub's perforated side, the box-office ledger tables, and the door's code field.
+
+### N2 — Poster images for films
+
+Today a poster is drawn in the application from the film title (`components/poster-art.tsx`), so
+no image is fetched. Real posters are a **schema and storage change**, and they belong in a
+feature document of their own when the work starts: this entry records the shape and the open
+decisions so nothing is redesigned from scratch.
+
+What exists: `cinema.films` holds only `id`, `title`, `runtime_minutes`, `rating`; the admin API
+creates and lists films as JSON with exactly those four keys; the object store is used only for
+generated ticket PDFs and there is **no upload path anywhere** — no multipart, no admin route
+accepting a file.
+
+The plan that was compared, in three shapes:
+
+- **A — upload to the project's object store** (recommended): `poster_key` column on
+  `cinema.films` (nullable, no backfill; the drawn art stays as the fallback), a normalising
+  `POST /admin/films/{filmId}/poster` that verifies the bytes are really an image and re-encodes
+  to fixed widths, `GET /api/v1/events/{eventID}/poster` on the public side, and `FilmPoster`
+  in the web behind the same-origin proxy the ticket media already uses.
+- **B — a `poster_url` column with an external https URL**: two hours of work, but every visitor's
+  browser then calls a third party, the CSP needs `img-src` widened, and the application loses the
+  property that it never reaches the network for what it shows.
+- **C — nothing**: the drawn art already tells films apart.
+
+Open decisions before any code: upload or external URL; whether posters are served through the API
+or from a public bucket prefix; accepted formats, maximum size, and whether the server normalises
+to a fixed 2:3 ratio; and whether the poster travels with the film creation or in its own call
+(recommended: its own call, so the JSON API stays as it is).
+
+Risk: this is high-risk work — a reversible migration, no required backfill, and the drawn art kept
+as the fallback. Four Go tests and seven TypeScript tests pin the current film keys; they will have
+to move deliberately, not be relaxed.
