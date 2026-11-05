@@ -250,9 +250,9 @@ test("both ticket surfaces call the PDF what the route delivers", () => {
 
   // One exported sentence, because only one of them can be true: the download route
   // declares `Content-Disposition: attachment`, so both screens promise a download and
-  // neither calls it something else (S8).
+  // neither calls it something else (S8). It is Castilian since the Marquesina redesign.
   assert.equal(
-    library.includes('export const TICKET_PDF_LINK_LABEL = "Download the ticket PDF";'),
+    library.includes('export const TICKET_PDF_LINK_LABEL = "Descargar la entrada en PDF";'),
     true,
     "lib/issued-tickets.ts must export the one sentence both ticket surfaces print",
   );
@@ -267,7 +267,7 @@ test("both ticket surfaces call the PDF what the route delivers", () => {
       `${screen.pathname} must print the exported sentence rather than its own`,
     );
     assert.equal(
-      source.includes("Download the ticket PDF"),
+      source.includes("Descargar la entrada en PDF"),
       false,
       `${screen.pathname} must not carry a copy of the sentence: a copy is a promise that can drift`,
     );

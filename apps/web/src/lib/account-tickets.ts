@@ -59,19 +59,19 @@ export function describeTicketsScreen(hasSession: boolean): TicketsScreen {
   if (hasSession) {
     return {
       kind: "account",
-      eyebrow: "Tickets · M3.5",
-      headline: "My tickets",
+      eyebrow: "Entradas",
+      headline: "Mis entradas",
       description:
-        "The tickets this account bought, read from the box office when this screen loads. The list is the box office's answer, so it is the same in another browser and on another device, and this browser keeps no ticket ids of its own. Each entry is one ticket of an order: open it by its own link, which admits whoever holds it — signing in or not.",
+        "Las entradas que compró esta cuenta, leídas de la taquilla al cargar esta pantalla. La lista es la respuesta de la taquilla, así que es la misma en otro navegador y en otro dispositivo, y este navegador no guarda identificadores de entradas propios. Cada entrada es una butaca de un pedido: ábrela por su propio enlace, que admite a quien lo tenga, con sesión o sin ella.",
     };
   }
 
   return {
     kind: "guest",
-    eyebrow: "Tickets · M3.5",
-    headline: "My tickets",
+    eyebrow: "Entradas",
+    headline: "Mis entradas",
     description:
-      "The ticket ids this browser tab kept from the purchases it made in it. No account is signed in on this browser, so this is not a list the box office keeps for you: each entry is read from the box office when this screen loads, and a ticket is opened by its own link. An account would keep this list across devices and browsers instead of leaving it in this tab, and signing in is optional — buying a ticket and opening one need no account. If this deployment sends mail and the purchase left an address, a link to these tickets was mailed to it as well — that link expires, so the PDF is still downloaded from each ticket.",
+      "Los identificadores de entrada que esta pestaña guardó de las compras que hizo en ella. No hay ninguna cuenta abierta en este navegador, así que no es una lista que la taquilla guarde para ti: cada entrada se lee de la taquilla al cargar esta pantalla, y una entrada se abre por su propio enlace. Una cuenta guardaría esta lista entre dispositivos y navegadores en lugar de dejarla en esta pestaña, y abrir sesión es opcional: comprar una entrada y abrirla no necesitan cuenta. Si este despliegue envía correo y la compra dejó una dirección, a esa dirección se le envió también un enlace a estas entradas; ese enlace caduca, así que el PDF se sigue descargando desde cada entrada.",
   };
 }
 
@@ -117,22 +117,22 @@ export function describeAccountTickets(
     if (result.tickets.length === 0) {
       return {
         kind: "empty",
-        headline: "This account has bought no ticket",
+        headline: "Esta cuenta no ha comprado ninguna entrada",
         message:
-          "The box office answered this account's list and it is empty. That is an answer, not a failed read: nothing here is unknown, and no purchase is missing because something could not be asked.",
+          "La taquilla respondió la lista de esta cuenta y está vacía. Eso es una respuesta y no una lectura fallida: aquí no falta nada por saber, y no falta ninguna compra porque algo no se pudiera preguntar.",
         nextStep:
-          "Buy a ticket while signed in and it is added to this list. A ticket is still opened by its own link, and that needs no account.",
+          "Compra una entrada con la sesión abierta y se añadirá a esta lista. Una entrada se sigue abriendo por su propio enlace, y eso no necesita cuenta.",
       };
     }
 
     return {
       kind: "loaded",
       tickets: result.tickets,
-      headline: "Tickets on this account",
+      headline: "Entradas en esta cuenta",
       message:
         result.tickets.length === 1
-          ? "1 ticket, in the box office's own order — newest first. It was read from the box office when this page loaded, so nothing here is remembered detail."
-          : `${result.tickets.length} tickets, in the box office's own order — newest first. Each one was read from the box office when this page loaded, so nothing here is remembered detail.`,
+          ? "1 entrada, en el orden de la taquilla: la más nueva primero. Se leyó de la taquilla al cargar esta página, así que nada aquí es un dato recordado."
+          : `${result.tickets.length} entradas, en el orden de la taquilla: la más nueva primero. Cada una se leyó de la taquilla al cargar esta página, así que nada aquí es un dato recordado.`,
     };
   }
 
@@ -140,26 +140,26 @@ export function describeAccountTickets(
   if (problem.code === "unauthorized" || problem.status === 401) {
     return {
       kind: "ended",
-      headline: "This session has ended",
+      headline: "Esta sesión ha terminado",
       // Nothing of the refusal: a status and a code are not what a person reads here, and the API
       // deliberately gives one answer for a session that expired, one that was revoked and one
       // that never existed.
       message:
-        "The box office refused the session this browser holds, so it cannot say which tickets are yours. A session expires, and it can end at any moment — including between this page and its read, which is what happened here. Nothing about a ticket you bought has changed: a ticket is opened by its own link, and that does not need a session.",
+        "La taquilla rechazó la sesión que guarda este navegador, así que no puede decir qué entradas son tuyas. Una sesión caduca y puede terminar en cualquier momento — también entre esta página y su lectura, que es lo que ha pasado aquí. Nada de una entrada que compraste ha cambiado: una entrada se abre por su propio enlace, y eso no necesita sesión.",
       nextStep:
-        "Sign in again to read this list. This page removes the dead cookie from this browser on the way, because a cookie that no longer works is worse than none.",
+        "Vuelve a abrir sesión para leer esta lista. Esta página quita de paso la cookie muerta de este navegador, porque una cookie que ya no sirve es peor que ninguna.",
     };
   }
 
   return {
     kind: "unavailable",
-    headline: "The account's tickets could not be read",
+    headline: "No se pudieron leer las entradas de la cuenta",
     // Nothing about the account is known, and the screen says exactly that instead of printing an
     // empty list: "you bought nothing" is a claim this read did not earn.
     message:
-      "The box office could not answer, so this page does not know what is on the list — and it will not show an empty list in its place. This is our failure, not an answer about your account.",
+      "La taquilla no pudo responder, así que esta página no sabe qué hay en la lista, y no va a mostrar una lista vacía en su lugar. Es un fallo nuestro, no una respuesta sobre tu cuenta.",
     nextStep:
-      "Ask again in a moment. Nothing about a ticket changes when its list cannot be read, and a ticket is opened by its own link either way.",
+      "Vuelve a preguntar dentro de un momento. Nada de una entrada cambia cuando su lista no se puede leer, y una entrada se abre por su propio enlace de todos modos.",
     retryable: true,
     problem,
   };

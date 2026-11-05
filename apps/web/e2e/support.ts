@@ -65,6 +65,15 @@ export const SEEDED = {
 export const STARTS_AT = {
   utcInput: "2031-05-04T18:30",
   venueHour: "2031-05-04T20:30:00+02:00",
+  /**
+   * The hour the board prints for that instant: the venue's own clock, as a person reads it.
+   *
+   * Written down separately from `venueHour` on purpose. `venueHour` is the string the API
+   * serves and the machine value the markup carries; this is what the screen shows, and a
+   * gate that derived one from the other could not tell a screen printing the venue's hour
+   * from one printing the UTC instant the form was given.
+   */
+  venueClock: "20:30",
 } as const;
 
 /** One screening the gate creates through the administration screens. */
@@ -92,6 +101,8 @@ export interface CreatedScreening {
    * fails instead of quietly agreeing with itself.
    */
   venueHour: string;
+  /** The same instant as the board prints it: the hour on the chip, "20:30". */
+  venueClock: string;
 }
 
 // ── The browser's own complaints ────────────────────────────────────────────
@@ -181,13 +192,13 @@ export async function expectOneH1(page: Page): Promise<void> {
 /**
  * The primary navigation marks this entry as the current page.
  *
- * `SITE_NAV` claims a current entry for the catalogue and for "My tickets", and for the
+ * `SITE_NAV` claims a current entry for the catalogue and for "Mis entradas", and for the
  * administration on every screen of its section: that entry declares the `/admin` prefix
  * as well as the venue href it links to. The gate asserts it exactly where the navigation
  * claims it; a page the navigation does not claim is not asserted to.
  */
 export async function expectActiveNav(page: Page, label: string): Promise<void> {
-  const primary = page.getByRole("navigation", { name: "Primary" });
+  const primary = page.getByRole("navigation", { name: "Principal" });
   await expect(primary.getByRole("link", { name: label })).toHaveAttribute(
     "aria-current",
     "page",
@@ -379,6 +390,7 @@ export async function createAndPublishScreening(
     filmTitle,
     price: fixture.price,
     venueHour: STARTS_AT.venueHour,
+    venueClock: STARTS_AT.venueClock,
   };
 }
 
@@ -429,28 +441,35 @@ export async function purchaseTwoSeats(
   screening: CreatedScreening,
 ): Promise<Purchase> {
   await visit(page, "/events");
-  await expectActiveNav(page, "Now showing");
+  await expectActiveNav(page, "Cartelera");
 
-  // The entry the administration just published, found by its own words.
+  // The entry the administration just published, found by its own words. A row that is on
+  // sale prints what is left under the hour ("quedan 3"), because the board has no status
+  // pill: the seats it still has are the sale state.
   const entry = page.getByRole("listitem").filter({ hasText: screening.filmTitle });
   await expect(entry, "the catalogue lists the new screening").toHaveCount(1);
-  await expect(entry).toContainText(screening.venueHour);
+  await expect(entry).toContainText(screening.venueClock);
   await expect(entry).toContainText(screening.price);
-  await expect(entry).toContainText("On sale");
+  await expect(entry).toContainText("quedan");
 
   await entry
-    .getByRole("link", { name: `Choose seats for ${screening.filmTitle}` })
+    .getByRole("link", { name: screening.filmTitle, exact: true })
     .click();
 
-  // The seat page is a screen of its own, with the screening printed as served.
+  // The seat page is a screen of its own: its `h1` is the deed, and the strip above the map
+  // prints the screening as served.
   await expectOneH1(page);
-  await expect(page.locator("h1")).toHaveText(screening.filmTitle);
-  await expect(page.locator("time")).toHaveText(screening.venueHour);
+  await expect(page.locator("h1")).toHaveText("Elegir butacas");
+  await expect(
+    page.getByRole("region", { name: "Sesión" }),
+    "the strip prints the screening the row opened",
+  ).toContainText(screening.filmTitle);
+  await expect(page.locator("time")).toHaveText(screening.venueClock);
 
   // Keyboard only. The map is one tab stop: Tab reaches its roving seat. The scroll
   // container is the named region that holds the seats, not the section around it.
   const map = page.getByRole("region", {
-    name: "Seat map, scrolls sideways to reach every seat",
+    name: "Plano de butacas, se desplaza en horizontal para llegar a todas",
   });
   await expect(map).toBeVisible();
   await map.focus();
@@ -458,43 +477,43 @@ export async function purchaseTwoSeats(
   const focused = page.locator(":focus");
   await expect(focused, "the map's roving seat has the focus").toHaveAttribute(
     "aria-label",
-    /^Row A seat 1, available$/,
+    /^Fila A, butaca 1: libre$/,
   );
   await page.keyboard.press("Space");
   await expect(
-    page.getByRole("status").filter({ hasText: "1 seat selected" }),
+    page.getByRole("status").filter({ hasText: "1 butaca seleccionada" }),
     "the first seat is selected by the keyboard",
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^Row A seat 1,/ }),
+    page.getByRole("button", { name: /^Fila A, butaca 1,/ }),
     "the seat the keyboard is on reports itself as pressed",
   ).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(":focus")).toHaveAttribute(
     "aria-label",
-    /^Row A seat 2, available$/,
+    /^Fila A, butaca 2: libre$/,
   );
   await page.keyboard.press("Space");
   await expect(
-    page.getByRole("status").filter({ hasText: "2 seats selected" }),
+    page.getByRole("status").filter({ hasText: "2 butacas seleccionadas" }),
     "the second seat is selected by the keyboard",
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^Row A seat 2,/ }),
+    page.getByRole("button", { name: /^Fila A, butaca 2,/ }),
     "the second seat reports itself as pressed",
   ).toHaveAttribute("aria-pressed", "true");
 
   // The hold, and then the way to the payment, both reached without a mouse.
-  const hold = page.getByRole("button", { name: "Hold these seats" });
+  const hold = page.getByRole("button", { name: "Reservar 2 butacas" });
   await focusByTab(page, hold);
   await expectVisibleFocus(hold, "the hold button");
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("heading", { name: "Seats held — one step left" }),
+    page.getByRole("heading", { name: "Butacas reservadas: queda un paso" }),
     "the hold was accepted",
   ).toBeVisible();
 
-  const toPayment = page.getByRole("link", { name: "Continue to payment" });
+  const toPayment = page.getByRole("link", { name: "Ir al pago" });
   await focusByTab(page, toPayment);
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/reservations\/[0-9a-f-]{36}/);
@@ -505,16 +524,16 @@ export async function purchaseTwoSeats(
   // The payment: reached by the keyboard, its focus ring visible before Enter, and the
   // amount is the order's — two seats at 12.50 is the box office's number, not this
   // page's.
-  const pay = page.getByRole("button", { name: "Pay", exact: true });
+  const pay = page.getByRole("button", { name: /^Pagar/ });
   await focusByTab(page, pay);
   await expectVisibleFocus(pay, "the Pay button");
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("heading", { name: "Payment approved" }),
+    page.getByRole("heading", { name: "Pago aprobado" }),
     "the payment was approved",
   ).toBeVisible();
 
-  const ticketLinks = page.getByRole("link", { name: /^Open ticket / });
+  const ticketLinks = page.getByRole("link", { name: /^Abrir la entrada / });
   await expect(ticketLinks, "one ticket per seat").toHaveCount(2);
   const ticketIds: string[] = [];
   for (const href of await ticketLinks.evaluateAll((links) =>
@@ -548,14 +567,14 @@ export async function openTicket(
   };
   page.on("response", listener);
 
-  await page.getByRole("link", { name: `Open ticket ${ticketId}` }).click();
+  await page.getByRole("link", { name: `Abrir la entrada ${ticketId}` }).click();
   await expect(page).toHaveURL(new RegExp(`/tickets/${ticketId}$`));
   await expectOneH1(page);
-  await expectActiveNav(page, "My tickets");
+  await expectActiveNav(page, "Mis entradas");
 
   // Validity is the box office's answer, and the page says so in words.
   await expect(
-    page.getByRole("heading", { name: "This ticket is valid" }),
+    page.getByRole("heading", { name: "Esta entrada es válida" }),
     "the door's answer",
   ).toBeVisible();
 

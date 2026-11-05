@@ -78,14 +78,14 @@ test("with no session the screen is this tab's own note, and it says an account 
   const lowercase = copy.toLowerCase();
 
   // Whose list it is, said in words: this tab's, and nobody else's.
-  assert.match(lowercase, /this browser tab/);
-  assert.match(lowercase, /not a list the box office keeps for you/);
+  assert.match(lowercase, /esta pestaña/);
+  assert.match(lowercase, /no es una lista que la taquilla guarde para ti/);
   // Why an account would be worth it, and that it is not required.
-  assert.match(lowercase, /across devices/);
-  assert.match(lowercase, /optional/);
-  assert.match(lowercase, /no account/);
+  assert.match(lowercase, /entre dispositivos/);
+  assert.match(lowercase, /opcional/);
+  assert.match(lowercase, /no necesitan cuenta/);
   // The heading is the same screen either way; what changes is underneath it.
-  assert.equal(screen.headline, "My tickets");
+  assert.equal(screen.headline, "Mis entradas");
 });
 
 test("with a session the screen is the account's list, and no sentence says the tab keeps it", () => {
@@ -95,12 +95,12 @@ test("with a session the screen is the account's list, and no sentence says the 
   const copy = `${screen.eyebrow} ${screen.headline} ${screen.description}`;
   const lowercase = copy.toLowerCase();
 
-  assert.match(lowercase, /account/);
-  assert.match(lowercase, /box office/);
+  assert.match(lowercase, /cuenta/);
+  assert.match(lowercase, /taquilla/);
   // The ids are the account's now, so the tab's own note is not what this screen is.
-  assert.doesNotMatch(lowercase, /this browser tab kept/);
-  assert.doesNotMatch(lowercase, /not a list the box office keeps/);
-  assert.equal(screen.headline, "My tickets");
+  assert.doesNotMatch(lowercase, /esta pestaña guardó/);
+  assert.doesNotMatch(lowercase, /no es una lista que la taquilla guarde/);
+  assert.equal(screen.headline, "Mis entradas");
 });
 
 // ── What one read means ────────────────────────────────────────────────────
@@ -121,8 +121,8 @@ test("a read that answers tickets is the list, in the order the box office serve
     view.tickets.map((entry) => entry.ticketId),
     ["ticket-1", "ticket-2"],
   );
-  assert.match(view.message, /2 tickets/);
-  assert.match(view.message, /newest first/);
+  assert.match(view.message, /2 entradas/);
+  assert.match(view.message, /la más nueva primero/);
 });
 
 test("an account that bought nothing is an empty list, and an answer rather than a failure", () => {
@@ -132,10 +132,10 @@ test("an account that bought nothing is an empty list, and an answer rather than
   if (view.kind !== "empty") {
     return;
   }
-  assert.match(view.headline.toLowerCase(), /no ticket/);
+  assert.match(view.headline.toLowerCase(), /no ha comprado ninguna entrada/);
   // The difference from a broken read is the whole point of this state.
-  assert.match(view.message.toLowerCase(), /not a failed read/);
-  assert.match(view.nextStep.toLowerCase(), /no account/);
+  assert.match(view.message.toLowerCase(), /no una lectura fallida/);
+  assert.match(view.nextStep.toLowerCase(), /no necesita cuenta/);
 });
 
 test("a refused session is one page, plainly, with none of the opaque refusal in it", () => {
@@ -161,12 +161,15 @@ test("a refused session is one page, plainly, with none of the opaque refusal in
   if (expired.kind !== "ended") {
     return;
   }
-  assert.match(expired.headline.toLowerCase(), /session has ended/);
+  assert.match(expired.headline.toLowerCase(), /sesión ha terminado/);
   // Said plainly: the list is unknown, and the ticket itself is untouched.
-  assert.match(expired.message.toLowerCase(), /nothing about a ticket you bought has changed/);
+  assert.match(
+    expired.message.toLowerCase(),
+    /nada de una entrada que compraste ha cambiado/,
+  );
   // The way out is signing in again, and the dead cookie goes with it.
-  assert.match(expired.nextStep.toLowerCase(), /sign in again/);
-  assert.match(expired.nextStep.toLowerCase(), /dead cookie/);
+  assert.match(expired.nextStep.toLowerCase(), /vuelve a abrir sesión/);
+  assert.match(expired.nextStep.toLowerCase(), /cookie muerta/);
   // Nothing of the refusal is repeated: a status and a code are not what a person reads here.
   const copy = copyOf(expired);
   assert.equal(copy.includes("401"), false);
@@ -187,8 +190,8 @@ test("an outage is retryable, carries its problem, and is never an empty list", 
     }
     assert.equal(view.retryable, true);
     assert.equal(view.problem.code, failure.code);
-    assert.match(view.message.toLowerCase(), /our failure/);
-    assert.match(view.message.toLowerCase(), /will not show an empty list/);
+    assert.match(view.message.toLowerCase(), /fallo nuestro/);
+    assert.match(view.message.toLowerCase(), /no va a mostrar una lista vacía/);
     assert.notEqual(view.kind, "empty");
   }
 });

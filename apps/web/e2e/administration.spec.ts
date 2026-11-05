@@ -118,8 +118,8 @@ test.describe("administration", () => {
     const response = await visit(page, "/events");
     expect(response.status(), "the catalogue answers 200").toBe(200);
 
-    const primary = page.getByRole("navigation", { name: "Primary" });
-    await expect(primary.getByRole("link", { name: "Now showing" })).toHaveAttribute(
+    const primary = page.getByRole("navigation", { name: "Principal" });
+    await expect(primary.getByRole("link", { name: "Cartelera" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -127,11 +127,18 @@ test.describe("administration", () => {
 
     const entry = page.getByRole("listitem").filter({ hasText: screening.filmTitle });
     await expect(entry, "the catalogue lists the new screening").toHaveCount(1);
-    await expect(entry.locator("time"), "the venue's own hour").toHaveText(
+    // The chip carries the served instant as its machine value and the venue's own hour as
+    // what a person reads, so the two are asserted apart.
+    await expect(entry.locator("time"), "the venue's own instant").toHaveAttribute(
+      "datetime",
       STARTS_AT.venueHour,
     );
+    await expect(entry.locator("time"), "the venue's own hour").toHaveText(
+      STARTS_AT.venueClock,
+    );
     await expect(entry, "the price the administration set").toContainText(editedPrice);
-    await expect(entry).toContainText("On sale");
+    // A session on sale prints the seats it still has; the board has no status pill.
+    await expect(entry).toContainText("quedan");
 
     // The navigation's own claim. "Administration" links to the venue screen, and it is
     // the administration on every screen of the section: the entry declares the `/admin`
@@ -139,11 +146,11 @@ test.describe("administration", () => {
     // existed only `/admin/venues` was marked, and the other two had no current entry at
     // all — which the previous run of this gate recorded rather than fixed.
     await visit(page, "/admin/venues");
-    await expectActiveNav(page, "Administration");
+    await expectActiveNav(page, "Administración");
     await visit(page, "/admin/schedule");
-    await expectActiveNav(page, "Administration");
+    await expectActiveNav(page, "Administración");
     await visit(page, "/admin/layouts");
-    await expectActiveNav(page, "Administration");
+    await expectActiveNav(page, "Administración");
 
     expectNoProblems(problems);
   });
@@ -160,7 +167,7 @@ test.describe("administration", () => {
 
     // `/admin` is a map now, not a 404. `visit` asserts the 200 and the screen's single h1.
     await visit(page, "/admin");
-    await expectActiveNav(page, "Administration");
+    await expectActiveNav(page, "Administración");
 
     const sections = page.getByRole("navigation", { name: "Administration sections" });
     for (const label of [
@@ -179,7 +186,7 @@ test.describe("administration", () => {
     await expect(page).toHaveURL(/\/admin\/layouts$/);
     await sections.getByRole("link", { name: "Films and screenings" }).click();
     await expect(page).toHaveURL(/\/admin\/schedule$/);
-    await expectActiveNav(page, "Administration");
+    await expectActiveNav(page, "Administración");
 
     expectNoProblems(problems);
   });

@@ -59,7 +59,7 @@ import type {
  * confirmation panel both already read this module, and a sentence copied into each of
  * them could disagree again.
  */
-export const TICKET_PDF_LINK_LABEL = "Download the ticket PDF";
+export const TICKET_PDF_LINK_LABEL = "Descargar la entrada en PDF";
 
 /** The storage surface this module needs, satisfied by `window.sessionStorage`. */
 export interface IssuedTicketStorage {
@@ -97,11 +97,11 @@ export type KeptTickets =
 
 /** What an unreadable store says, so both callers use one sentence. */
 const UNAVAILABLE_DETAIL =
-  "This browser tab would not let the page read what it keeps, so it cannot show a ticket list. The box office still has the tickets: open one from its own link.";
+  "Esta pestaña no ha dejado leer lo que guarda, así que no puede mostrar la lista de entradas. La taquilla sigue teniendo las entradas: abre una desde su propio enlace.";
 
 /** What a refused write says, so a screen cannot claim a ticket was kept. */
 const UNWRITABLE_DETAIL =
-  "This browser tab refused to store the ticket, so the list may not keep it. The ticket is still valid: open it from its own link at any time.";
+  "Esta pestaña no ha querido guardar la entrada, así que puede que la lista no la conserve. La entrada sigue valiendo: ábrela desde su propio enlace cuando quieras.";
 
 /**
  * The ticket ids this tab kept, in the order it kept them (newest first).
@@ -349,11 +349,11 @@ export function describeTicketValidity(checked: TicketCheck): ValidityView {
   if (verification.valid) {
     return {
       kind: "valid",
-      headline: "This ticket is valid",
+      headline: "Esta entrada es válida",
       message:
-        "The box office checked this ticket just now and answered that it admits its holder to the screening and the seat shown here.",
+        "La taquilla ha comprobado esta entrada ahora mismo y ha respondido que admite a su titular en la sesión y en la butaca que se muestran aquí.",
       nextStep:
-        "Show this code at the door. Validity is decided again every time it is checked, so this answer describes this check and not a later one.",
+        "Enseña este código en el acceso. La validez se decide otra vez cada vez que se comprueba, así que esta respuesta describe esta comprobación y no una posterior.",
       tone: "success",
       admits: true,
       reason: null,
@@ -365,11 +365,11 @@ export function describeTicketValidity(checked: TicketCheck): ValidityView {
   if (reason === "voided") {
     return {
       kind: "voided",
-      headline: "This ticket was withdrawn",
+      headline: "Esta entrada fue anulada",
       message:
-        "The box office reports this ticket as voided: it was withdrawn after it was issued, so it no longer admits anyone even though it was once sold.",
+        "La taquilla informa de que esta entrada está anulada: se retiró después de emitirse, así que ya no admite a nadie aunque se vendiera.",
       nextStep:
-        "This page cannot undo that. Contact the box office with this ticket's id — and do not rely on the printed PDF, which was made before the withdrawal and cannot show it.",
+        "Esta página no puede deshacerlo. Contacta con la taquilla con el identificador de esta entrada — y no te fíes del PDF impreso, que se hizo antes de la anulación y no puede mostrarla.",
       tone: "warning",
       admits: false,
       reason,
@@ -379,11 +379,11 @@ export function describeTicketValidity(checked: TicketCheck): ValidityView {
   if (reason === "event_cancelled") {
     return {
       kind: "event_cancelled",
-      headline: "The screening was cancelled",
+      headline: "La sesión se canceló",
       message:
-        "The ticket itself was issued, but the screening it belongs to was cancelled, so it admits nobody. This is not a fault in the ticket.",
+        "La entrada sí se emitió, pero la sesión a la que pertenece se canceló, así que no admite a nadie. No es un fallo de la entrada.",
       nextStep:
-        "Contact the box office about the cancelled screening. Nothing on this page can change the ticket's state, and reloading it will answer the same.",
+        "Contacta con la taquilla por la sesión cancelada. Nada de esta página puede cambiar el estado de la entrada, y recargarla responderá lo mismo.",
       tone: "warning",
       admits: false,
       reason,
@@ -393,13 +393,13 @@ export function describeTicketValidity(checked: TicketCheck): ValidityView {
 
   return {
     kind: "reason_unrecognised",
-    headline: "This ticket does not admit anyone",
+    headline: "Esta entrada no admite a nadie",
     message:
       reason === null
-        ? "The box office answered that this ticket is not valid, and did not name a reason."
-        : `The box office answered that this ticket is not valid, and named a reason this page does not interpret: "${reason}". It is printed exactly as served rather than translated.`,
+        ? "La taquilla ha respondido que esta entrada no es válida y no ha indicado ningún motivo."
+        : `La taquilla ha respondido que esta entrada no es válida y ha indicado un motivo que esta página no interpreta: «${reason}». Se imprime tal y como lo sirvió la taquilla, sin traducirlo.`,
     nextStep:
-      "Contact the box office with this ticket's id. This page does not decide on its own what an uninterpreted reason means.",
+      "Contacta con la taquilla con el identificador de esta entrada. Esta página no decide por su cuenta qué significa un motivo que no interpreta.",
     tone: "warning",
     admits: false,
     reason,
@@ -412,11 +412,11 @@ function describeCheckFailure(problem: PublicProblem): ValidityView {
   if (problem.code === "invalid_token") {
     return {
       kind: "invalid_token",
-      headline: "This code is not recognised as a ticket",
+      headline: "Este código no se reconoce como una entrada",
       message:
-        "The box office did not sign this code, so it does not belong to any ticket it issued. A forged code and an unknown one are answered the same way on purpose.",
+        "La taquilla no firmó este código, así que no pertenece a ninguna entrada que haya emitido. Un código falsificado y uno desconocido se responden igual a propósito.",
       nextStep:
-        "If you bought a seat, open the ticket from the link the payment returned: a real code is served there, and this page never assembles one of its own.",
+        "Si compraste una butaca, abre la entrada desde el enlace que devolvió el pago: ahí se sirve un código de verdad, y esta página nunca compone uno propio.",
       tone: "error",
       admits: false,
       reason: null,
@@ -433,11 +433,11 @@ function describeCheckFailure(problem: PublicProblem): ValidityView {
   if (temporary) {
     return {
       kind: "unavailable",
-      headline: "The ticket could not be checked",
+      headline: "No se pudo comprobar la entrada",
       message:
-        "The box office could not be reached to check this code, so this page has no answer about it. Nothing about the ticket changed: the check failed, not the purchase.",
+        "No se pudo llegar a la taquilla para comprobar este código, así que esta página no tiene respuesta sobre él. Nada de la entrada ha cambiado: lo que falló fue la comprobación, no la compra.",
       nextStep:
-        "Reload this page to ask again, and show this page to staff if it keeps failing. Whether the ticket admits you is decided by the box office when it is scanned, not by this page.",
+        "Recarga esta página para volver a preguntar, y enseña esta página al personal si sigue fallando. Si la entrada admite a alguien lo decide la taquilla cuando se escanea, no esta página.",
       tone: "warning",
       admits: false,
       reason: null,
@@ -447,10 +447,10 @@ function describeCheckFailure(problem: PublicProblem): ValidityView {
 
   return {
     kind: "refused",
-    headline: "The box office refused to check this code",
-    message: `The check was refused with ${problem.code}: ${problem.detail}`,
+    headline: "La taquilla se negó a comprobar este código",
+    message: `La comprobación se rechazó con ${problem.code}: ${problem.detail}`,
     nextStep:
-      "Reload the page once to ask again. This page does not interpret the refusal into a verdict about the ticket.",
+      "Recarga la página una vez para volver a preguntar. Esta página no interpreta el rechazo como un veredicto sobre la entrada.",
     tone: "error",
     admits: false,
     reason: null,
@@ -512,11 +512,11 @@ export function describeKeptTicket(answer: TicketResponse | null): KeptTicketRow
     return {
       kind: "unknown",
       problem,
-      headline: "The box office does not know this ticket",
+      headline: "La taquilla no conoce esta entrada",
       message:
-        "This identifier answers no ticket, so nothing can be shown for it. A ticket that once existed and was deleted, and an address that was mistyped, look the same from here.",
+        "Este identificador no responde a ninguna entrada, así que no se puede mostrar nada de ella. Una entrada que existió y se borró y una dirección mal escrita se ven igual desde aquí.",
       nextStep:
-        "Check the link you followed, or forget this record on this device so it stops being listed.",
+        "Revisa el enlace que seguiste, u olvida este registro en este dispositivo para que deje de aparecer en la lista.",
       retryable: false,
     };
   }
@@ -530,14 +530,14 @@ export function describeKeptTicket(answer: TicketResponse | null): KeptTicketRow
     kind: "unavailable",
     problem,
     headline: temporary
-      ? "This ticket could not be read"
-      : "The box office refused to read this ticket",
+      ? "No se pudo leer esta entrada"
+      : "La taquilla se negó a leer esta entrada",
     message: temporary
-      ? `The box office could not be reached, so this ticket was not read. The API answered ${problem.code}.`
-      : `The read was refused with ${problem.code}: ${problem.detail}`,
+      ? `No se pudo llegar a la taquilla, así que esta entrada no se ha leído. La API respondió ${problem.code}.`
+      : `La lectura se rechazó con ${problem.code}: ${problem.detail}`,
     nextStep: temporary
-      ? "Ask again: reading a ticket changes nothing, so a retry cannot charge, hold or release anything. The other tickets on this list are unaffected."
-      : "Ask again once; if it persists, open the ticket from the link the payment returned.",
+      ? "Vuelve a preguntar: leer una entrada no cambia nada, así que un reintento no puede cobrar, retener ni liberar nada. Las demás entradas de la lista no se ven afectadas."
+      : "Vuelve a preguntar una vez; si sigue igual, abre la entrada desde el enlace que devolvió el pago.",
     retryable: true,
   };
 }
@@ -555,10 +555,10 @@ export function ticketSeatLabel(seat: Pick<PublicTicketSeat, "rowLabel" | "seatN
     return `${row}${number}`;
   }
   if (row !== "") {
-    return `row ${row}`;
+    return `fila ${row}`;
   }
   if (number !== "") {
     return number;
   }
-  return "unknown seat";
+  return "butaca desconocida";
 }

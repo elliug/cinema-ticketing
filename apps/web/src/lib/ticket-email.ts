@@ -115,11 +115,11 @@ export function describeTicketEmail(
   if (result.ok) {
     return {
       kind: "sent",
-      headline: "The message was sent",
+      headline: "El mensaje se ha enviado",
       message:
-        "The box office handed the message to its mail provider, and it is the message a purchase email carries: the same subject, the same words and the same signed link to this order's tickets. That link expires, so open it while the mail is still around, and anyone with that link can open these tickets — it is not tied to you, to this browser or to this page. The address you typed was not verified, and it is not stored on the order: it is used for this send and nothing else remembers it.",
+        "La taquilla ha entregado el mensaje a su proveedor de correo, y es el mensaje que lleva un correo de compra: el mismo asunto, las mismas palabras y el mismo enlace firmado a las entradas de este pedido. Ese enlace caduca, así que ábrelo mientras el correo siga ahí, y cualquiera que tenga ese enlace puede abrir estas entradas: no está atado a ti, a este navegador ni a esta página. La dirección que escribiste no se ha verificado y no se guarda en el pedido: se usa para este envío y nada más la recuerda.",
       nextStep:
-        "If the mail does not arrive, send it again, or keep the PDF from this page.",
+        "Si el correo no llega, envíalo otra vez o guarda el PDF de esta página.",
       tone: "success",
     };
   }
@@ -130,11 +130,11 @@ export function describeTicketEmail(
   if (problem.status === 400 || problem.code === "invalid_input") {
     return {
       kind: "refused",
-      headline: "That address was not sent anything",
+      headline: "A esa dirección no se le ha enviado nada",
       message:
-        "The box office refused the address, so nothing was mailed. It applies the rule the checkout applies: an address needs a name, an @, and a domain with a dot in it, and it cannot contain spaces.",
+        "La taquilla rechazó la dirección, así que no se envió nada. Aplica la misma regla que el cobro: una dirección necesita un nombre, una @ y un dominio con un punto, y no puede llevar espacios.",
       nextStep:
-        "Correct the address and send it again. Nothing about this ticket changed, and the address was stored nowhere.",
+        "Corrige la dirección y envíala otra vez. Nada de esta entrada ha cambiado, y la dirección no se ha guardado en ninguna parte.",
       tone: "warning",
     };
   }
@@ -144,13 +144,13 @@ export function describeTicketEmail(
     const seconds = problem.retryAfterSeconds ?? null;
     return {
       kind: "limited",
-      headline: "This order has been mailed as often as it can be for now",
+      headline: "Este pedido ya se ha enviado tantas veces como se puede por ahora",
       message:
-        "The box office mails one order at most three times an hour, because a button that emails any address on request is a spam relay. Nothing was sent this time, and the ticket itself is unaffected.",
+        "La taquilla envía un pedido como mucho tres veces por hora, porque un botón que manda correos a cualquier dirección es un relé de spam. Esta vez no se ha enviado nada, y la entrada no se ve afectada.",
       nextStep:
         seconds === null
-          ? "The box office did not say how long the wait is, so this page will not invent a time: try again in a while."
-          : `The box office asked to wait ${describeWait(seconds)} before this order can be mailed again. Try again then.`,
+          ? "La taquilla no ha dicho cuánto dura la espera, así que esta página no va a inventar un tiempo: vuelve a intentarlo dentro de un rato."
+          : `La taquilla pide esperar ${describeWait(seconds)} antes de que este pedido se pueda enviar otra vez. Vuelve a intentarlo entonces.`,
       tone: "warning",
       retryAfterSeconds: seconds,
     };
@@ -160,11 +160,11 @@ export function describeTicketEmail(
   if (problem.status === 503 || problem.code === "service_unavailable") {
     return {
       kind: "no_mail",
-      headline: "This deployment does not send mail",
+      headline: "Este despliegue no envía correo",
       message:
-        "The box office answered that it cannot send mail: either this deployment has no mail provider configured, or the provider could not be reached just now. Nothing was sent, and this page will not say it was. The link is still the one a purchase email carries, and the PDF still downloads from this page.",
+        "La taquilla ha respondido que no puede enviar correo: o a este despliegue le falta un proveedor de correo configurado, o no se ha podido llegar al proveedor ahora mismo. No se ha enviado nada, y esta página no va a decir que sí. El enlace sigue siendo el que lleva un correo de compra, y el PDF se sigue descargando desde esta página.",
       nextStep:
-        "If no provider is configured, asking again here will keep failing and the PDF is the way to keep a copy. If the provider was the one that failed, trying again in a moment may work.",
+        "Si no hay proveedor configurado, volver a preguntar aquí seguirá fallando y el PDF es la forma de conservar una copia. Si el que falló fue el proveedor, intentarlo otra vez dentro de un momento puede funcionar.",
       tone: "error",
     };
   }
@@ -173,22 +173,22 @@ export function describeTicketEmail(
   if (problem.status === 404 || problem.code === "not_found") {
     return {
       kind: "unknown",
-      headline: "The box office will not mail this ticket",
+      headline: "La taquilla no enviará esta entrada",
       message:
-        "It answers an unknown ticket and a ticket of an order that was never paid with the same refusal on purpose, so this page cannot tell you which one this is. Nothing was sent.",
+        "Responde igual, a propósito, a una entrada desconocida y a una entrada de un pedido que nunca se pagó, así que esta página no puede decirte cuál de las dos es. No se ha enviado nada.",
       nextStep:
-        "Nothing about the ticket on this page changed: it still opens here, and it is still what the door checks. The PDF still downloads.",
+        "Nada de la entrada de esta página ha cambiado: se sigue abriendo aquí, y sigue siendo lo que mira el acceso. El PDF se sigue descargando.",
       tone: "warning",
     };
   }
 
   return {
     kind: "unavailable",
-    headline: "The message could not be sent right now",
+    headline: "No se ha podido enviar el mensaje ahora mismo",
     message:
-      "The box office could not be asked to send it, so this page has no answer about your message. This is our failure, not a refusal: nothing about the ticket or the order changed, and the address was not stored.",
+      "No se pudo pedir a la taquilla que lo enviara, así que esta página no tiene respuesta sobre tu mensaje. Es un fallo nuestro, no un rechazo: nada de la entrada ni del pedido ha cambiado, y la dirección no se ha guardado.",
     nextStep:
-      "Try again. If it keeps failing, the PDF on this page is the copy to keep.",
+      "Inténtalo otra vez. Si sigue fallando, el PDF de esta página es la copia que hay que guardar.",
     tone: "error",
     retryable: true,
     problem,
@@ -204,12 +204,12 @@ export function describeTicketEmail(
  * is its own seconds, not "0 minutes".
  */
 function describeWait(seconds: number): string {
-  const whole = `${seconds} seconds`;
+  const whole = `${seconds} segundos`;
   if (seconds < 90) {
     return whole;
   }
   if (seconds < 5400) {
-    return `${whole} (about ${Math.round(seconds / 60)} minutes)`;
+    return `${whole} (unos ${Math.round(seconds / 60)} minutos)`;
   }
-  return `${whole} (about ${Math.round(seconds / 3600)} hours)`;
+  return `${whole} (unas ${Math.round(seconds / 3600)} horas)`;
 }

@@ -20,7 +20,7 @@
 //
 // Accessibility:
 //
-//   - the header is a `header` element with a `nav` landmark named "Primary";
+//   - the header is a `header` element with a `nav` landmark named "Principal";
 //   - the active link carries `aria-current="page"` and a solid underline, so the
 //     current page is visible and announced — and a section entry (the administration)
 //     is current on every page of its section, not only on the one it links to;
@@ -136,7 +136,7 @@ export function SiteHeader() {
           <span className="brand__meta">Entradas con butaca numerada</span>
         </Link>
 
-        <nav className="site-nav" aria-label="Primary">
+        <nav className="site-nav" aria-label="Principal">
           <ul className="site-nav__list">
             {SITE_NAV.map((item) => (
               <li key={item.label}>

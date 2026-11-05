@@ -43,15 +43,19 @@ test.describe("purchase", () => {
 
     const purchase = await purchaseTwoSeats(page, screening);
 
-    // The order carries the two seats the keyboard chose, in the map's own words.
+    // The order carries the two seats the keyboard chose, in the map's own words: the
+    // receipt's row prints the seats the way the door paints them.
     await expect(
-      page.getByText("2 seats: Row A seat 1, Row A seat 2"),
+      page.getByText("Fila A, butaca 1, Fila A, butaca 2"),
       "the order holds the two seats the keyboard selected",
     ).toBeVisible();
 
     // The money: one charge for the whole order, two seats at 12.50, and the number is
     // the payment answer's rather than anything this page multiplied.
-    await expect(page.getByText("25.00 was taken for this order")).toBeVisible();
+    await expect(
+      page.getByText(/Se han cobrado/),
+      "the confirmation says what was charged",
+    ).toContainText("25,00");
 
     // ── The ticket ────────────────────────────────────────────────────────────
     const ticketId = purchase.ticketIds[0] ?? "";
@@ -59,7 +63,9 @@ test.describe("purchase", () => {
     const { qrResponses } = await openTicket(page, ticketId);
 
     // The code the page shows is the API's own image, fetched by the browser.
-    const qr = page.getByRole("img", { name: `Entry code for ticket ${ticketId}` });
+    const qr = page.getByRole("img", {
+      name: `Código de acceso de la entrada ${ticketId}`,
+    });
     await expect(qr).toBeVisible();
     await expect(qr).toHaveAttribute(
       "src",
@@ -80,7 +86,7 @@ test.describe("purchase", () => {
     ).toBe(true);
 
     // The PDF: a real download, named after the ticket, with a real document inside.
-    const pdfLink = page.getByRole("link", { name: "Download the ticket PDF" });
+    const pdfLink = page.getByRole("link", { name: "Descargar la entrada en PDF" });
     const [download] = await Promise.all([
       page.waitForEvent("download"),
       pdfLink.click(),

@@ -83,11 +83,11 @@ export function describeTicketLink(
   if (result.ok) {
     return {
       kind: "opened",
-      headline: "This link opened your tickets",
+      headline: "Este enlace abrió tus entradas",
       message:
-        "The link's signature checked out, it names a paid order, and the box office answered with that order's tickets. The list below is what it opened — nothing here checks who you are, because the link is the only credential this purchase has.",
+        "La firma del enlace era buena, nombra un pedido pagado y la taquilla respondió con las entradas de ese pedido. La lista de abajo es lo que abrió: nada aquí comprueba quién eres, porque el enlace es la única credencial que tiene esta compra.",
       nextStep:
-        "Open each ticket from its own link. This email's link stops working at the instant printed below; the ticket links do not, and this browser keeps a note of them on My tickets.",
+        "Abre cada entrada desde su propio enlace. El enlace de este correo deja de funcionar en el instante que se imprime abajo; los de las entradas no, y este navegador guarda nota de ellas en Mis entradas.",
       tone: "success",
       retryable: false,
       reservationId: result.value.reservationId,
@@ -103,11 +103,11 @@ export function describeTicketLink(
   if (problem.code === "not_found" || problem.status === 404) {
     return {
       kind: "closed",
-      headline: "This link no longer opens",
+      headline: "Este enlace ya no abre",
       message:
-        "A link like this one is signed and dated, and past its date it stops opening. The box office will not say whether this address ever worked — an email that aged out and a link that was never real get one answer on purpose — so this page cannot tell you which happened. Links expire; that is deliberate, because the alternative is a permanent key to somebody's tickets sitting in a mailbox forever.",
+        "Un enlace como este va firmado y fechado, y pasada su fecha deja de abrir. La taquilla no dirá si esta dirección funcionó alguna vez — un correo que caducó y un enlace que nunca existió reciben una sola respuesta a propósito — así que esta página no puede decirte cuál de las dos cosas pasó. Los enlaces caducan; es a propósito, porque la alternativa es una llave permanente a las entradas de alguien en un buzón para siempre.",
       nextStep:
-        "Open My tickets in this browser: a purchase made in this tab is listed there, and each ticket on it opens by its own link. If the purchase was made here, the confirmation the payment returned opens the order again.",
+        "Abre Mis entradas en este navegador: una compra hecha en esta pestaña está en la lista, y cada entrada se abre por su propio enlace. Si la compra se hizo aquí, la confirmación que devolvió el pago abre el pedido otra vez.",
       tone: "warning",
       retryable: false,
     };
@@ -133,11 +133,11 @@ function describeLinkFailure(problem: PublicProblem): TicketLinkView {
   if (temporary) {
     return {
       kind: "unavailable",
-      headline: "This link could not be opened right now",
+      headline: "Este enlace no se ha podido abrir ahora mismo",
       message:
-        "The box office could not be asked what this link opens, so this page has no answer about it. This is our failure and not a verdict on the link: nothing about the link, the order it names or its tickets changed.",
+        "No se pudo preguntar a la taquilla qué abre este enlace, así que esta página no tiene respuesta sobre él. Es un fallo nuestro y no un juicio sobre el enlace: nada del enlace, del pedido que nombra ni de sus entradas ha cambiado.",
       nextStep:
-        "Reload this page to ask again. If it keeps failing, open My tickets in this browser or use the confirmation the payment returned — both are unaffected by this.",
+        "Recarga esta página para preguntar otra vez. Si sigue fallando, abre Mis entradas en este navegador o usa la confirmación que devolvió el pago: nada de eso depende de este enlace.",
       tone: "error",
       retryable: true,
       problem,
@@ -146,10 +146,10 @@ function describeLinkFailure(problem: PublicProblem): TicketLinkView {
 
   return {
     kind: "unavailable",
-    headline: "The box office refused to open this link",
-    message: `The link was not checked: the answer was ${problem.code}, which this page does not interpret into a verdict about the link in your mail.`,
+    headline: "La taquilla se negó a abrir este enlace",
+    message: `No se comprobó el enlace: la respuesta fue ${problem.code}, que esta página no interpreta como un juicio sobre el enlace de tu correo.`,
     nextStep:
-      "Reload the page once to ask again. This page does not decide on its own that a link is invalid.",
+      "Recarga la página una vez para volver a preguntar. Esta página no decide por su cuenta que un enlace no valga.",
     tone: "error",
     retryable: true,
     problem,
@@ -176,17 +176,17 @@ export type LinkRetention = "writing" | "kept" | "refused";
  * link that opens nothing is a refused read and never reaches a surface.
  */
 export function describeLinkRetention(retention: LinkRetention, count: number): string {
-  const tickets = count === 1 ? "1 ticket" : `${count} tickets`;
+  const tickets = count === 1 ? "1 entrada" : `${count} entradas`;
   switch (retention) {
     case "writing":
       return count === 1
-        ? "Keeping this ticket in this tab's list…"
-        : `Keeping ${tickets} in this tab's list…`;
+        ? "Guardando esta entrada en la lista de esta pestaña…"
+        : `Guardando ${tickets} en la lista de esta pestaña…`;
     case "kept":
       return count === 1
-        ? "That 1 ticket is now on My tickets in this tab. That list is this browser's own note of what it bought — not an account, and not a record the box office keeps."
-        : `Those ${tickets} are now on My tickets in this tab. That list is this browser's own note of what it bought — not an account, and not a record the box office keeps.`;
+        ? "Esa entrada ya está en Mis entradas de esta pestaña. Esa lista es la nota de este navegador sobre lo que compró: no es una cuenta, y no es un registro que guarde la taquilla."
+        : `Esas ${tickets} ya están en Mis entradas de esta pestaña. Esa lista es la nota de este navegador sobre lo que compró: no es una cuenta, y no es un registro que guarde la taquilla.`;
     default:
-      return `This tab refused to keep a record of the ${tickets} the link opened, so they will not appear on My tickets. The tickets themselves are unaffected: each one opens from its own link below, at any time.`;
+      return `Esta pestaña se negó a guardar un registro de ${tickets} que abrió el enlace, así que no aparecerán en Mis entradas. Las entradas no se ven afectadas: cada una se abre desde su propio enlace de abajo, en cualquier momento.`;
   }
 }
