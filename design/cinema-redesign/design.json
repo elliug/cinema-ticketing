@@ -1,0 +1,28 @@
+{
+  "title": "Cinema ticketing — tres rediseños de todas las pantallas",
+  "brief": "Rediseño visual de toda la aplicación web (cartelera, selección de butacas, pago, entrada y taquilla) para un cine de Madrid que vende butacas numeradas por internet. Tres direcciones para comparar antes de implementar una.",
+  "feature": "odd/tasks/visual-redesign.md",
+  "artboards": [
+    {
+      "file": "01-marquee.html",
+      "title": "A · Marquesina — cartelera oscura",
+      "tradeoff": "La mayor autoridad cinematográfica y la lectura más rápida de muchas sesiones; un lienzo oscuro en todas partes, incluidos el formulario de pago y el puesto de acceso.",
+      "width": 1440,
+      "height": 5306
+    },
+    {
+      "file": "02-paper-programme.html",
+      "title": "B · Programa de papel — programa impreso y resguardo",
+      "tradeoff": "La más singular y memorable, con recursos de imprenta (troquelados, líneas de puntos, sellos); la que exige más CSS a medida y la menos convencional para quien compra por primera vez.",
+      "width": 1440,
+      "height": 4797
+    },
+    {
+      "file": "03-poster-grid.html",
+      "title": "C · Mosaico de carteles — producto de entradas moderno",
+      "tradeoff": "El camino más corto del cartel a la entrada pagada y el más fácil de llevar al móvil; pierde el carácter de vestíbulo y de imprenta de las otras dos.",
+      "width": 1440,
+      "height": 5061
+    }
+  ]
+}
