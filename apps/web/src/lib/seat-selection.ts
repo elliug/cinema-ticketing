@@ -28,6 +28,7 @@
 // `sold`, `unavailable` or unrecognised state is never offered (S8).
 import type { PublicHold, PublicProblem } from "./public-api.ts";
 import { MAX_HOLD_SEATS } from "./public-api.ts";
+import { formatAmount, presentAmount } from "./receipt.ts";
 
 /** Seat kinds the domain knows, plus the honest "not projected" value. */
 export type SeatKindLabel = "standard" | "accessible" | "companion" | "unknown";
@@ -246,7 +247,7 @@ export function buildSeatMap(
     soldCount,
     blockedCount,
     unknownCount,
-    summaryLabel: `${seatCount} seat(s) · ${availableCount} available · ${heldCount} held`,
+    summaryLabel: `${seatCount} butacas · ${availableCount} libres · ${heldCount} reservadas`,
   };
 }
 
@@ -290,7 +291,7 @@ function statusOf(
 }
 
 /**
- * The seat's own name plus its state: "Row A seat 3, available".
+ * The seat's own name plus its state: "Fila A, butaca 3: libre".
  *
  * The row and the number are the layout's, so the label a screen reader hears is
  * the one painted on the seat; the fallback for a response with no projection uses
@@ -301,9 +302,9 @@ function describeSeat(seat: SeatMapSeat, status: SeatMapStatus): string {
   const rowLabel = (seat.rowLabel ?? "").trim();
   const seatNumber = (seat.seatNumber ?? "").trim();
   if (rowLabel !== "" && seatNumber !== "") {
-    return `Row ${rowLabel} seat ${seatNumber}, ${spoken}`;
+    return `Fila ${rowLabel}, butaca ${seatNumber}: ${spoken}`;
   }
-  return `${seat.label}, ${spoken}`;
+  return `${seat.label}: ${spoken}`;
 }
 
 /**
@@ -356,8 +357,9 @@ export function selectionSummary(
   return {
     count,
     seatIds,
-    labels: seatIds.map((id) => labelsBySeat.get(id) ?? `seat ${id}`),
-    totalLabel: count === 1 ? "1 seat selected" : `${count} seats selected`,
+    labels: seatIds.map((id) => labelsBySeat.get(id) ?? `butaca ${id}`),
+    totalLabel:
+      count === 1 ? "1 butaca seleccionada" : `${count} butacas seleccionadas`,
   };
 }
 
@@ -391,10 +393,10 @@ export function describeCountdown(
   return {
     remainingMs: remaining,
     label: formatCountdown(remaining),
-    displayLabel: expired ? "Hold expired" : formatCountdown(remaining),
+    displayLabel: expired ? "Reserva caducada" : formatCountdown(remaining),
     expired,
     notice: expired
-      ? "This hold expired. The seats are no longer reserved for you."
+      ? "La reserva ha caducado. Las butacas ya no están reservadas para ti."
       : null,
   };
 }
@@ -414,9 +416,9 @@ export function describeHoldFailure(problem: PublicProblem): HoldFailureView {
   ) {
     return {
       kind: "temporary",
-      headline: "Seats are temporarily unavailable",
+      headline: "Las butacas no están disponibles ahora mismo",
       message:
-        "We could not reach the reservation service. Your selection is unchanged, so try again in a moment.",
+        "No se pudo contactar con el servicio de reservas. Tu selección no ha cambiado, así que inténtalo de nuevo en un momento.",
       refetchAvailability: false,
       retryable: true,
       tone: "warning",
@@ -427,9 +429,9 @@ export function describeHoldFailure(problem: PublicProblem): HoldFailureView {
     case "seat_unavailable":
       return {
         kind: "seat_unavailable",
-        headline: "Some of your seats were taken",
+        headline: "Algunas de tus butacas se han ocupado",
         message:
-          "Another guest held some of your seats first, so we refreshed availability and removed those seats from your selection. Everything else is still selected.",
+          "Otra persona ha reservado antes algunas de tus butacas, así que hemos actualizado la disponibilidad y las hemos quitado de tu selección. El resto sigue seleccionado.",
         refetchAvailability: true,
         retryable: true,
         tone: "warning",
@@ -437,9 +439,9 @@ export function describeHoldFailure(problem: PublicProblem): HoldFailureView {
     case "hold_window_expired":
       return {
         kind: "hold_window_expired",
-        headline: "The hold window closed",
+        headline: "La reserva ha caducado",
         message:
-          "The hold window closed before your seats could be claimed. This is about how long the claim took, not about anyone taking your seats. Select your seats again to start a new hold.",
+          "La reserva caducó antes de poder confirmar tus butacas. No es que alguien se las haya llevado: es cuánto tardó la confirmación. Vuelve a elegir las butacas para empezar una reserva nueva.",
         refetchAvailability: false,
         retryable: true,
         tone: "warning",
@@ -451,7 +453,7 @@ export function describeHoldFailure(problem: PublicProblem): HoldFailureView {
     case "not_found":
       return {
         kind: "rejected",
-        headline: "We could not start this hold",
+        headline: "No se pudo iniciar la reserva",
         message: `${problem.code}: ${problem.detail}`,
         refetchAvailability: false,
         retryable: false,
@@ -460,8 +462,8 @@ export function describeHoldFailure(problem: PublicProblem): HoldFailureView {
     default:
       return {
         kind: "unknown",
-        headline: "Something unexpected happened",
-        message: `${problem.detail} No seats were reserved. Reload the page and try again.`,
+        headline: "Ha pasado algo que no esperábamos",
+        message: `${problem.detail} No se reservó ninguna butaca. Recarga la página e inténtalo de nuevo.`,
         refetchAvailability: false,
         retryable: false,
         tone: "error",
@@ -516,7 +518,7 @@ export function dropUnavailableSeats(
   return {
     selection: kept,
     lostEventSeatIds,
-    lostLabels: lostEventSeatIds.map((id) => labels.get(id) ?? `seat ${id}`),
+    lostLabels: lostEventSeatIds.map((id) => labels.get(id) ?? `butaca ${id}`),
   };
 }
 
@@ -597,7 +599,7 @@ function fallbackLayout(
     geometryKnown: false,
     rows: [
       {
-        label: "Seats",
+        label: "Única",
         seats: ordered.map((seat) => ({
           eventSeatId: seat.id,
           label: layoutSeatLabel(seat),
@@ -614,7 +616,7 @@ function projectedSeatLabel(
   seat: AvailabilitySnapshotSeat,
 ): string {
   const seatNumber = number(seat);
-  return seatNumber === "" ? `${rowLabel} seat ${seat.id}` : `${rowLabel}${seatNumber}`;
+  return seatNumber === "" ? `${rowLabel}, butaca ${seat.id}` : `${rowLabel}${seatNumber}`;
 }
 
 /** The served seat number, trimmed, or an empty string when the API sent none. */
@@ -638,7 +640,7 @@ function projectedSeatKind(kind: string | undefined): SeatKindLabel {
 
 function layoutSeatLabel(seat: AvailabilitySnapshotSeat): string {
   const id = (seat.layoutSeatId ?? "").trim();
-  return id === "" ? `seat ${seat.id}` : id;
+  return id === "" ? `butaca ${seat.id}` : id;
 }
 
 /** The state before the first hold attempt. */
@@ -708,47 +710,48 @@ export interface SeatStateEntry {
 export const SEAT_STATE_LEGEND: readonly SeatStateEntry[] = [
   {
     status: "available",
-    legend: "Available",
-    legendDescription: "The API reports it as free. It can be selected.",
+    legend: "Libre",
+    legendDescription: "La API la da por libre. Se puede seleccionar.",
     cellWord: "",
-    spoken: "available",
+    spoken: "libre",
   },
   {
     status: "selected",
-    legend: "Selected",
-    legendDescription: "In your selection right now, and held for nobody yet.",
-    cellWord: "selected",
-    spoken: "selected",
+    legend: "Seleccionada",
+    legendDescription:
+      "Está en tu selección ahora mismo, y todavía no reservada para nadie.",
+    cellWord: "tuya",
+    spoken: "seleccionada por ti",
   },
   {
     status: "held",
-    legend: "Held",
-    legendDescription: "Reserved by another checkout's live hold.",
-    cellWord: "held",
-    spoken: "held by another guest",
+    legend: "Reservada",
+    legendDescription: "Retenida por la reserva en curso de otra persona.",
+    cellWord: "ocupada",
+    spoken: "reservada por otra persona",
   },
   {
     status: "sold",
-    legend: "Sold",
-    legendDescription: "Already paid for. It is not for sale.",
-    cellWord: "sold",
-    spoken: "sold",
+    legend: "Vendida",
+    legendDescription: "Ya está pagada. No está a la venta.",
+    cellWord: "vendida",
+    spoken: "vendida",
   },
   {
     status: "blocked",
-    legend: "Not for sale",
+    legend: "No a la venta",
     legendDescription:
-      "The API reports it as unavailable, or in a state this map does not sell.",
-    cellWord: "n/a",
-    spoken: "not for sale",
+      "La API la da por no disponible, o en un estado que este plano no vende.",
+    cellWord: "n/d",
+    spoken: "no a la venta",
   },
   {
     status: "unknown",
-    legend: "Unknown",
+    legend: "Desconocida",
     legendDescription:
-      "The availability read did not report this seat, so it is never offered.",
+      "La lectura de disponibilidad no informó de esta butaca, así que nunca se ofrece.",
     cellWord: "?",
-    spoken: "unknown to the API",
+    spoken: "desconocida para la API",
   },
 ];
 
@@ -764,10 +767,10 @@ export function seatStateEntry(status: SeatMapStatus): SeatStateEntry {
     // rather than thrown, so a future status cannot break a map that renders it.
     return {
       status: "unknown",
-      legend: "Unknown",
-      legendDescription: "This state has no legend entry.",
+      legend: "Desconocida",
+      legendDescription: "Este estado no tiene entrada en la leyenda.",
       cellWord: "?",
-      spoken: "in an unexplained state",
+      spoken: "en un estado sin explicar",
     };
   }
   return entry;
@@ -815,7 +818,7 @@ export function describeSaleState(screening: {
     return {
       onSale: true,
       reason: null,
-      badge: "On sale",
+      badge: "A la venta",
       headline: null,
       message: null,
     };
@@ -828,19 +831,19 @@ export function describeSaleState(screening: {
       return {
         onSale: false,
         reason: "cancelled",
-        badge: "Cancelled",
-        headline: "This screening was cancelled",
+        badge: "Cancelada",
+        headline: "Esta sesión se canceló",
         message:
-          "The cinema cancelled this screening, so its seats are no longer sold. Nothing on this page was charged: a seat is only paid for in the checkout.",
+          "El cine canceló esta sesión, así que sus butacas ya no se venden. Aquí no se ha cobrado nada: una butaca solo se paga en el pago.",
       };
     case "draft":
       return {
         onSale: false,
         reason: "draft",
-        badge: "Not on sale yet",
-        headline: "This screening is still a draft",
+        badge: "Aún no a la venta",
+        headline: "Esta sesión todavía es un borrador",
         message:
-          "It has not been published for sale yet, so there are no seats to choose. The catalogue lists a screening once it is on sale.",
+          "Todavía no se ha publicado a la venta, así que no hay butacas que elegir. La cartelera lista una sesión en cuanto está a la venta.",
       };
     case "started":
     case "on_sale":
@@ -849,18 +852,18 @@ export function describeSaleState(screening: {
       return {
         onSale: false,
         reason: "started",
-        badge: "No longer on sale",
-        headline: "This screening has already started",
+        badge: "Ya no a la venta",
+        headline: "Esta sesión ya ha empezado",
         message:
-          "Seats stop being sold once a screening starts. The venue's own clock decided that, not this page.",
+          "Las butacas dejan de venderse en cuanto empieza la sesión. Lo decidió el reloj del propio local, no esta página.",
       };
     default:
       return {
         onSale: false,
         reason: "closed",
-        badge: "No longer on sale",
-        headline: "This screening is not on sale",
-        message: `The API reports this screening as ${served === "" ? "unknown" : served}, and only an on-sale screening can be bought. Nothing else about it is assumed here.`,
+        badge: "Ya no a la venta",
+        headline: "Esta sesión no está a la venta",
+        message: `La API informa de esta sesión como ${served === "" ? "desconocida" : served}, y solo se puede comprar una sesión que esté a la venta. Aquí no se da por hecho nada más.`,
       };
   }
 }
@@ -890,9 +893,9 @@ export function describeScreeningFailure(
   if (problem.status === 404 || problem.code === "not_found") {
     return {
       kind: "missing",
-      headline: "This screening does not exist",
+      headline: "Esta sesión no existe",
       message:
-        "No screening answers to this address, so there is nothing to sit in. Check the link you followed: the catalogue lists every screening that is on sale.",
+        "Ninguna sesión responde a esta dirección, así que no hay dónde sentarse. Revisa el enlace que has seguido: la cartelera lista todas las sesiones que están a la venta.",
       retryable: false,
     };
   }
@@ -904,14 +907,14 @@ export function describeScreeningFailure(
   ) {
     return {
       kind: "temporary",
-      headline: "The screening could not be loaded",
-      message: `The reservation service could not be reached (${problem.code}). Nothing is shown in its place: ask for it again in a moment.`,
+      headline: "No se pudo cargar la sesión",
+      message: `No se pudo contactar con el servicio de reservas (${problem.code}). No se muestra nada en su lugar: vuelve a preguntar en un momento.`,
       retryable: true,
     };
   }
   return {
     kind: "refused",
-    headline: "The API refused this screening",
+    headline: "La API rechazó esta sesión",
     message: `${problem.code}: ${problem.detail}`,
     retryable: false,
   };
@@ -933,9 +936,12 @@ export interface SeatPrice {
 export interface PriceSummary {
   count: number;
   amountCents: number;
-  /** The amount in the API's display shape, for example `37.50`. */
+  /** The amount as this application prints money, for example `37,50 €`. */
   amountLabel: string;
+  /** The one-line summary of the running amount, for a surface that prints a sentence. */
   lineLabel: string;
+  /** What the per-seat price is, as the API served it. */
+  priceDisplay: string;
   /** What the page says this number is — and is not. */
   note: string;
   /** Whether the selection is beyond what one hold accepts. */
@@ -945,20 +951,16 @@ export interface PriceSummary {
 
 /** What a summary is, said once: the charge is the order's, never this sentence's. */
 const PRICE_SUMMARY_NOTE =
-  "A summary, not a charge: this is the price per seat the screening was read with, times the seats you picked. The order the API creates is what gets paid, and the amount its payment answer reports is the amount taken.";
+  "Es un resumen, no un cobro: es el precio por butaca con el que se leyó la sesión, multiplicado por las butacas que has elegido. Lo que se paga es el pedido que crea la API, y la cantidad que cobra es la que informa su respuesta de pago.";
 
 /**
- * Minor units as the API renders a price — `12.50`, and `0.00` for anything that is not
- * a whole, non-negative number of cents. Failing closed keeps a malformed amount out of
- * a sentence about money, which is the one place a wrong number is expensive.
+ * Minor units as this application prints money — `12,50 €`, and `0,00 €` for anything that
+ * is not a whole, non-negative number of cents. The punctuation is Spanish, so the receipt
+ * and the catalogue's price read as one language; the rule itself lives in
+ * `lib/receipt.ts`, which fails closed for the same reason this one did.
  */
 export function formatCents(amountCents: number): string {
-  if (!Number.isInteger(amountCents) || amountCents < 0) {
-    return "0.00";
-  }
-  const units = Math.floor(amountCents / 100);
-  const cents = amountCents % 100;
-  return `${units}.${String(cents).padStart(2, "0")}`;
+  return formatAmount(amountCents);
 }
 
 /** The running total of a selection at the screening's price per seat. */
@@ -968,11 +970,11 @@ export function priceSummary(
 ): PriceSummary {
   const amountCents = summary.count * Math.max(0, Math.trunc(price.priceCents));
   const amountLabel = formatCents(amountCents);
-  const perSeat = price.priceDisplay.trim();
+  const perSeat = presentAmount(price.priceDisplay);
   const lineLabel =
     summary.count === 0
-      ? `No seats selected yet · ${perSeat} per seat`
-      : `${summary.totalLabel.replace(" selected", "")} × ${perSeat} = ${amountLabel}`;
+      ? `Todavía no hay butacas · ${perSeat} por butaca`
+      : `${summary.count === 1 ? "1 butaca" : `${summary.count} butacas`} × ${perSeat} = ${amountLabel}`;
   const overLimit = summary.count > MAX_HOLD_SEATS;
 
   return {
@@ -980,10 +982,11 @@ export function priceSummary(
     amountCents,
     amountLabel,
     lineLabel,
+    priceDisplay: perSeat,
     note: PRICE_SUMMARY_NOTE,
     overLimit,
     limitNote: overLimit
-      ? `One hold takes at most ${MAX_HOLD_SEATS} seats. Deselect ${summary.count - MAX_HOLD_SEATS} to continue.`
+      ? `Una reserva admite como mucho ${MAX_HOLD_SEATS} butacas. Quita ${summary.count - MAX_HOLD_SEATS} para continuar.`
       : null,
   };
 }
@@ -1013,10 +1016,10 @@ export function mapAvailability(
     view.seatCount === 0
       ? // An empty room is not a sold-out one: nothing was sold, and calling it
         // "sold out" would be a claim about demand the API never made.
-        "No seats are sold for this screening"
+        "Esta sesión no tiene butacas a la venta"
       : view.availableCount === 0
-        ? `0 of ${view.seatCount} seats available — sold out`
-        : `${view.availableCount} of ${view.seatCount} seats available`;
+        ? `0 de ${view.seatCount} butacas libres — agotada`
+        : `${view.availableCount} de ${view.seatCount} butacas libres`;
   const matchesScreening =
     screening.seatCount === view.seatCount &&
     screening.availableSeats === view.availableCount;
@@ -1028,7 +1031,7 @@ export function mapAvailability(
     matchesScreening,
     note: matchesScreening
       ? null
-      : `The screening read counted ${screening.availableSeats} of ${screening.seatCount} seats available; the seat map was read afterwards and says ${view.availableCount} of ${view.seatCount}. The map is the later answer, and it is what this page sells.`,
+      : `La lectura de la sesión contó ${screening.availableSeats} de ${screening.seatCount} butacas libres; el plano se leyó después y dice ${view.availableCount} de ${view.seatCount}. El plano es la respuesta más reciente, y es lo que vende esta página.`,
   };
 }
 

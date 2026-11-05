@@ -46,6 +46,7 @@
 // address at all is refused before a payment attempt is spent on it. It restates the API's
 // own rule and is never stricter than it — the API stays the authority on what an address
 // is, and nothing here claims one was verified.
+import { presentAmount } from "./receipt.ts";
 import { formatCents, remainingMilliseconds } from "./seat-selection.ts";
 import type { PublicPayment, PublicProblem } from "./public-api.ts";
 
@@ -248,11 +249,11 @@ export function describePaymentOutcome(
   if (payment.paymentStatus === "approved") {
     return {
       kind: "approved",
-      headline: "Payment approved",
+      headline: "Pago aprobado",
       message:
-        "The box office took the money for this order and issued one ticket per seat.",
+        "La taquilla ha cobrado este pedido y ha emitido una entrada por butaca.",
       nextStep:
-        "Open each ticket below, or keep its link: nothing lists a guest's tickets, so the id of a ticket is how it is opened again. A ticket is the record of a sale — whether it still admits you is answered by the box office when it is scanned.",
+        "Abre cada entrada aquí abajo, o guarda su enlace: nada lista las entradas de un invitado, así que el identificador de la entrada es la forma de abrirla otra vez. Una entrada es el registro de una venta: si todavía da acceso lo responde la taquilla al escanearla.",
       tone: "success",
       retryable: false,
       keyDisposition: paymentKeyDisposition({
@@ -266,10 +267,10 @@ export function describePaymentOutcome(
   if (payment.paymentStatus === "declined") {
     return {
       kind: "declined",
-      headline: "The payment was declined",
-      message: `The provider refused this attempt, so no money was taken and no ticket was issued.`,
+      headline: "El pago se ha rechazado",
+      message: `El proveedor rechazó este intento, así que no se ha cobrado nada y no se ha emitido ninguna entrada.`,
       nextStep:
-        "Your seats are still held until the window closes. Trying again starts a new attempt with a new key, so this refusal is never replayed — the order is not lost.",
+        "Tus butacas siguen reservadas hasta que se cierre el plazo. Volver a intentarlo empieza un intento nuevo con una clave nueva, así que este rechazo no se repite: el pedido no se pierde.",
       tone: "warning",
       retryable: true,
       keyDisposition: paymentKeyDisposition({
@@ -282,10 +283,10 @@ export function describePaymentOutcome(
 
   return {
     kind: "unrecognised",
-    headline: "The payment answer was not a verdict this page knows",
-    message: `The box office answered "${payment.paymentStatus}".`,
+    headline: "La respuesta del pago no es un veredicto que esta página conozca",
+    message: `La taquilla contestó "${payment.paymentStatus}".`,
     nextStep:
-      "Nothing is concluded from it: reload this page to read the order's stored state. This page does not decide on its own whether you were charged.",
+      "No se concluye nada de ella: recarga esta página para leer el estado guardado del pedido. Esta página no decide por su cuenta si te han cobrado.",
     tone: "info",
     retryable: false,
     keyDisposition: paymentKeyDisposition({
@@ -317,11 +318,11 @@ export function describePaymentFailure(
     case "payment_in_flight":
       return {
         kind: "payment_in_flight",
-        headline: "A payment is already under way",
+        headline: "Ya hay un pago en curso",
         message:
-          "This order already has a payment attempt in progress. Only the request that started it can settle it, so a second key would be refused — and this page is holding the first.",
+          "Este pedido ya tiene un intento de pago en marcha. Solo la petición que lo abrió puede terminarlo, así que una segunda clave se rechazaría: esta página guarda la primera.",
         nextStep:
-          "Retry from the tab that opened it, or reload this page once the provider has answered: the order read then says what happened. Nothing is charged twice either way.",
+          "Reinténtalo desde la pestaña que lo abrió, o recarga esta página cuando el proveedor haya respondido: la lectura del pedido dirá entonces qué pasó. En ningún caso se cobra dos veces.",
         tone: "warning",
         retryable: true,
         keyDisposition: disposition,
@@ -331,11 +332,11 @@ export function describePaymentFailure(
     case "already_paid":
       return {
         kind: "already_paid",
-        headline: "This order is already paid",
+        headline: "Este pedido ya está pagado",
         message:
-          "The order already carries a captured payment, so there is nothing left to charge.",
+          "El pedido ya lleva un pago capturado, así que no queda nada que cobrar.",
         nextStep:
-          "The tickets belong to the order, not to this answer: the page reads the order and shows them, so no ticket is lost by a reload.",
+          "Las entradas pertenecen al pedido, no a esta respuesta: la página lee el pedido y las muestra, así que recargar no pierde ninguna entrada.",
         tone: "info",
         retryable: false,
         keyDisposition: disposition,
@@ -345,11 +346,11 @@ export function describePaymentFailure(
     case "hold_expired":
       return {
         kind: "hold_expired",
-        headline: "This hold has expired",
+        headline: "Esta reserva ha caducado",
         message:
-          "The hold window closed before the payment completed, so the seats were released and no money was taken.",
+          "El plazo de la reserva se cerró antes de que terminara el pago, así que las butacas se liberaron y no se ha cobrado nada.",
         nextStep:
-          "Choose the seats again from the seat map. This page never takes a hold on its own: only the seat map can do that.",
+          "Vuelve a elegir las butacas en el plano. Esta página nunca reserva por su cuenta: solo el plano de butacas puede hacerlo.",
         tone: "error",
         retryable: false,
         keyDisposition: disposition,
@@ -359,11 +360,11 @@ export function describePaymentFailure(
     case "reservation_not_payable":
       return {
         kind: "not_payable",
-        headline: "This order cannot be paid",
+        headline: "Este pedido no se puede pagar",
         message:
-          "The order is not awaiting payment, so this page cannot charge it.",
+          "El pedido no está esperando un pago, así que esta página no puede cobrarlo.",
         nextStep:
-          "Read the order's state above. If its hold has ended, the seats are released and choosing them again is the only way back.",
+          "Mira el estado del pedido aquí arriba. Si su reserva ha terminado, las butacas están liberadas y elegirlas otra vez es la única forma de volver.",
         tone: "error",
         retryable: false,
         keyDisposition: disposition,
@@ -373,11 +374,11 @@ export function describePaymentFailure(
     case "amount_mismatch":
       return {
         kind: "amount_mismatch",
-        headline: "The amount did not match",
+        headline: "La cantidad no coincidía",
         message:
-          "The amount recorded for this attempt disagrees with the amount the order would be charged now, so the checkout refused to charge at all.",
+          "La cantidad registrada para este intento no coincide con la que se cobraría ahora por el pedido, así que el pago se negó a cobrar nada.",
         nextStep:
-          "Do not pay again: this needs the box office, with this order's reference. Nothing was taken.",
+          "No vuelvas a pagar: esto necesita a la taquilla, con la referencia de este pedido. No se ha cobrado nada.",
         tone: "error",
         retryable: false,
         keyDisposition: disposition,
@@ -387,11 +388,11 @@ export function describePaymentFailure(
     case "not_sellable":
       return {
         kind: "not_sellable",
-        headline: "There is nothing to charge",
+        headline: "No hay nada que cobrar",
         message:
-          "The screening has no price, or the order holds no seat, so the box office has no amount to take.",
+          "La sesión no tiene precio, o el pedido no tiene ninguna butaca, así que la taquilla no tiene cantidad que cobrar.",
         nextStep:
-          "Back to the catalogue to pick a screening that is on sale.",
+          "Vuelve a la cartelera para elegir una sesión que esté a la venta.",
         tone: "error",
         retryable: false,
         keyDisposition: disposition,
@@ -401,11 +402,11 @@ export function describePaymentFailure(
     case "not_found":
       return {
         kind: "not_found",
-        headline: "This order does not exist",
+        headline: "Este pedido no existe",
         message:
-          "The reservation identifier in this address is unknown to the box office, so there is nothing to pay.",
+          "La taquilla no conoce el identificador de reserva de esta dirección, así que no hay nada que pagar.",
         nextStep:
-          "Open the order from the seat map that created it, or start again from the catalogue.",
+          "Abre el pedido desde el plano de butacas que lo creó, o empieza de nuevo desde la cartelera.",
         tone: "error",
         retryable: false,
         keyDisposition: disposition,
@@ -418,11 +419,11 @@ export function describePaymentFailure(
     case "network_error":
       return {
         kind: "temporary",
-        headline: "The payment could not be completed",
+        headline: "El pago no se pudo completar",
         message:
-          "The payment provider or the reservation service is temporarily unavailable, so this attempt has not finished.",
+          "El proveedor de pago o el servicio de reservas no está disponible temporalmente, así que este intento no ha terminado.",
         nextStep:
-          "Retry with the same key: it settles the attempt this page already opened and cannot charge twice. If your window closed in the meantime, the answer will say so.",
+          "Reinténtalo con la misma clave: termina el intento que esta página ya abrió y no puede cobrar dos veces. Si tu plazo se cerró mientras tanto, la respuesta lo dirá.",
         tone: "warning",
         retryable: true,
         keyDisposition: disposition,
@@ -433,11 +434,11 @@ export function describePaymentFailure(
       if (problem.status >= 500) {
         return {
           kind: "temporary",
-          headline: "The payment could not be completed",
+          headline: "El pago no se pudo completar",
           message:
-            "The payment provider or the reservation service is temporarily unavailable, so this attempt has not finished.",
+            "El proveedor de pago o el servicio de reservas no está disponible temporalmente, así que este intento no ha terminado.",
           nextStep:
-            "Retry with the same key: it settles the attempt this page already opened and cannot charge twice. If your window closed in the meantime, the answer will say so.",
+            "Reinténtalo con la misma clave: termina el intento que esta página ya abrió y no puede cobrar dos veces. Si tu plazo se cerró mientras tanto, la respuesta lo dirá.",
           tone: "warning",
           retryable: true,
           keyDisposition: disposition,
@@ -446,10 +447,10 @@ export function describePaymentFailure(
       }
       return {
         kind: "refused",
-        headline: "The payment was refused",
-        message: `The box office answered ${problem.code}: ${problem.detail}`,
+        headline: "La taquilla rechazó el pago",
+        message: `La taquilla contestó ${problem.code}: ${problem.detail}`,
         nextStep:
-          "Nothing was assumed about it. A retry resends the attempt this page already opened with its own key, so it cannot charge twice.",
+          "No se ha dado por hecho nada. Un reintento reenvía el intento que esta página ya abrió, con su propia clave, así que no puede cobrar dos veces.",
         tone: "error",
         retryable: true,
         keyDisposition: disposition,
@@ -512,7 +513,7 @@ export function describeHoldWindow(
     return {
       kind: "paid",
       remainingMs: 0,
-      endLabel: "Paid",
+      endLabel: "Pagado",
       notice: null,
       payable: false,
     };
@@ -521,9 +522,9 @@ export function describeHoldWindow(
     return {
       kind: "cancelled",
       remainingMs: 0,
-      endLabel: "Cancelled",
+      endLabel: "Cancelado",
       notice:
-        "This order was cancelled, so its seats are released and nothing can be paid on it.",
+        "Este pedido se canceló, así que sus butacas están liberadas y no se puede pagar nada por él.",
       payable: false,
     };
   }
@@ -534,7 +535,7 @@ export function describeHoldWindow(
       kind: "unknown",
       remainingMs: 0,
       endLabel: null,
-      notice: `The box office reports this order as "${order.status.trim() === "" ? "unknown" : order.status.trim()}". This page does not interpret that state, so it offers no payment and assumes nothing about the seats.`,
+      notice: `La taquilla informa de este pedido como "${order.status.trim() === "" ? "desconocido" : order.status.trim()}". Esta página no interpreta ese estado, así que no ofrece ningún pago y no da por hecho nada sobre las butacas.`,
       payable: false,
     };
   }
@@ -544,9 +545,9 @@ export function describeHoldWindow(
     return {
       kind: "expired",
       remainingMs: 0,
-      endLabel: "Hold expired",
+      endLabel: "Reserva caducada",
       notice:
-        "This hold has expired. The seats were released, so nothing can be paid on this order: choose them again from the seat map.",
+        "Esta reserva ha caducado. Las butacas se liberaron, así que no se puede pagar nada por este pedido: vuelve a elegirlas en el plano de butacas.",
       payable: false,
     };
   }
@@ -614,7 +615,7 @@ export function describeOrderAmount(
       amountCents: payment.amountCents,
       amountLabel: formatCents(payment.amountCents),
       known: true,
-      note: "The amount the payment answer reported as taken for this order. It is the box office's number, reported back — this page computes none.",
+      note: "La cantidad que la respuesta del pago informa como cobrada por este pedido. Es el número de la taquilla, devuelto tal cual: esta página no calcula ninguno.",
     };
   }
 
@@ -624,11 +625,11 @@ export function describeOrderAmount(
     return {
       source: "reservation",
       amountCents: captured,
-      // The API's own text is printed when it served one; otherwise the number is still
-      // the API's, and only its formatting is local.
-      amountLabel: served === "" ? formatCents(captured) : served,
+      // The API's own text is printed when it served one, re-punctuated for Spanish;
+      // otherwise the number is still the API's, and only its formatting is local.
+      amountLabel: served === "" ? formatCents(captured) : presentAmount(served),
       known: true,
-      note: "The money the order read reports as taken. This page does not re-price an order: a price that moved after the sale cannot change what was charged.",
+      note: "El dinero que la lectura del pedido informa como cobrado. Esta página no vuelve a poner precio a un pedido: un precio que se movió después de la venta no puede cambiar lo que se cobró.",
     };
   }
 
@@ -637,7 +638,7 @@ export function describeOrderAmount(
     amountCents: null,
     amountLabel: null,
     known: false,
-    note: "No amount has been taken for this order yet. The box office computes the charge when it is paid and its answer reports what it took; nothing here multiplies a price by a seat count.",
+    note: "Todavía no se ha cobrado ninguna cantidad por este pedido. La taquilla calcula el cobro cuando se paga, y su respuesta informa de lo que cobró; aquí no se multiplica ningún precio por un número de butacas.",
   };
 }
 
@@ -672,7 +673,7 @@ export const MAX_CONTACT_EMAIL_LENGTH = 320;
  * once it refuses, and the field only owes a person the reason Pay did nothing.
  */
 const CONTACT_EMAIL_PROBLEM =
-  "That is not an address the tickets could be mailed to. An address needs a name, an @, and a domain with a dot in it, and it cannot contain spaces.";
+  "Esa dirección no sirve para enviar las entradas. Una dirección necesita un nombre, una @ y un dominio con un punto, y no puede contener espacios.";
 
 /** What the optional address field currently holds. */
 export type ContactEmailView =
